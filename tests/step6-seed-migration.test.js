@@ -5,12 +5,15 @@
 
 const { describe, it, before, after } = require('node:test');
 const assert = require('node:assert');
-const { createPool } = require('../src/config/database');
+const { createPool, isIntegrationTest } = require('../src/config/database');
 
 const TEST_TIMEOUT = 60000;
 const TEST_ORG_ID = 666666;
 
-describe('Step 6: Seed & Migration Validation', { skip: process.env.RUN_DB_TESTS !== 'true' }, () => {
+// Destructive database suite: gated on isIntegrationTest(), the same predicate
+// that selects TEST_DB_* credentials, so it can never run against runtime
+// DB_*/PG* credentials.
+describe('Step 6: Seed & Migration Validation', { skip: !isIntegrationTest() }, () => {
   let pool;
 
   before(async () => {
