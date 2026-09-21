@@ -8,7 +8,21 @@ if (missing.length || !/(?:^|[_-])test(?:$|[_-])/i.test(process.env.TEST_DB_NAME
   process.exit(1);
 }
 
-const result = spawnSync(process.execPath, ['--test', 'tests/knowledge-versioning.test.js', 'tests/step6-access-control.test.js', 'tests/step6-coverage-e2e.test.js', 'tests/step6-performance.test.js', 'tests/step6-regression.test.js', 'tests/step6-seed-migration.test.js'], {
+// Suites sanctioned for PostgreSQL integration execution. This is the Atiman
+// PostgreSQL acceptance contract, deliberately narrower than the set of
+// database-mutating suites.
+//
+// The five tests/step6-*.test.js suites are legacy ODM-CMMS suites that encode
+// superseded architecture (organization-owned taxonomy via `org_id`, plus the
+// removed tables equipment_type_mappings, smp_templates, seed_tracking and
+// template_steps). They are retained as legacy evidence pending purpose-built
+// Atiman replacement coverage, but they are NOT valid PostgreSQL acceptance
+// suites for current Atiman. See ATM-013D.5D.
+const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
+  'tests/knowledge-versioning.test.js'
+];
+
+const result = spawnSync(process.execPath, ['--test', ...SANCTIONED_POSTGRES_INTEGRATION_SUITES], {
   stdio: 'inherit',
   env: { ...process.env, NODE_ENV: 'test', RUN_DB_TESTS: 'true' }
 });

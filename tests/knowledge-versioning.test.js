@@ -45,6 +45,36 @@ async function ensureTestUser(conn) {
   return user;
 }
 
+// Disposable, deterministic tenants for the tenant-scoped provenance assertions.
+// Atiman taxonomy is global reference data and organizations are NOT part of the
+// knowledge migration, so this suite creates the minimum identity fixtures it
+// needs using the CURRENT organizations schema (organization_name). No legacy
+// ODM-CMMS organization or user is imported, and no per-tenant taxonomy concept
+// is reproduced.
+const TEST_ORGANIZATION_IDS = [990001, 990002];
+
+async function ensureTestOrganizations() {
+  const conn = await getConnection();
+  try {
+    for (const id of TEST_ORGANIZATION_IDS) {
+      await conn.query(
+        `INSERT INTO organizations (id, organization_name)
+         VALUES ($1, $2)
+         ON CONFLICT (id) DO NOTHING`,
+        [id, `Atiman Test Organization ${id}`]
+      );
+    }
+    // Individual tests roll their own work back, so the fixture must be
+    // committed to remain visible to them.
+    await conn.commit();
+  } catch (error) {
+    await conn.rollback();
+    throw error;
+  } finally {
+    conn.release();
+  }
+}
+
 const isForbiddenError = (err) => {
   const msg = (err.message || '').toLowerCase();
   return msg.includes('immutable') || msg.includes('cannot be') || msg.includes('insufficient privilege') || msg.includes('cannot be deleted');
@@ -104,6 +134,10 @@ const isAncestryError = (err) => {
 };
 
 describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () => {
+  before(async () => {
+    await ensureTestOrganizations();
+  });
+
   it('creates required knowledge versioning tables', async () => {
     const tables = await query(`
       SELECT table_name

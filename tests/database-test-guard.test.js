@@ -18,12 +18,17 @@ const DATABASE_ENV_NAMES = [
   'NODE_TEST_CONTEXT'
 ];
 
-// Suites that perform database mutations. Each must be gated on
+// Every suite known to mutate a database. Each must be gated on
 // isIntegrationTest() so that "may this suite execute?" and "are TEST_DB_*
 // credentials selected?" are the same question. A suite gated on anything
 // weaker (for example RUN_DB_TESTS alone) runs while getDatabaseConfig() still
 // resolves runtime DB_*/PG* credentials - production in a configured
 // environment.
+//
+// Membership here is about SAFETY (which files can mutate a database), not about
+// which suites CI should run. The five step6-* files are legacy ODM-CMMS suites
+// that are no longer part of the sanctioned PostgreSQL acceptance path, but they
+// remain database-mutating files, so they stay in this list.
 const DB_MUTATING_SUITES = [
   'knowledge-versioning.test.js',
   'step6-access-control.test.js',
@@ -31,6 +36,14 @@ const DB_MUTATING_SUITES = [
   'step6-performance.test.js',
   'step6-regression.test.js',
   'step6-seed-migration.test.js'
+];
+
+// Suites the sanctioned PostgreSQL runner is expected to execute. Membership
+// here is about CONTRACT (which suites represent current Atiman PostgreSQL
+// architecture), not about safety. This must stay in step with
+// SANCTIONED_POSTGRES_INTEGRATION_SUITES in scripts/run-integration-tests.js.
+const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
+  'knowledge-versioning.test.js'
 ];
 
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -174,13 +187,13 @@ describe('integration runner refuses to run without a sanctioned test database',
   }
 });
 
-// The sanctioned integration runner is the only execution path these suites
-// have, so its suite list must stay complete. If a suite is dropped from it, the
-// suite silently stops running anywhere - which is exactly the coverage gap this
-// assertion exists to prevent. The runner cannot be required for inspection
-// because it validates and then exits at module load, so its source is parsed.
-describe('sanctioned integration runner covers every database-mutating suite', () => {
-  it('invokes exactly the known database-mutating suites', () => {
+// The sanctioned integration runner defines which suites count as Atiman's
+// PostgreSQL acceptance evidence, so its list must not drift silently - either
+// by losing a sanctioned suite, or by a legacy suite being re-added without an
+// architectural decision. The runner cannot be required for inspection because
+// it validates and then exits at module load, so its source is parsed.
+describe('sanctioned integration runner matches the PostgreSQL acceptance contract', () => {
+  it('invokes exactly the sanctioned PostgreSQL integration suites', () => {
     const runnerSource = fs.readFileSync(
       path.join(REPO_ROOT, 'scripts', 'run-integration-tests.js'),
       'utf8'
@@ -190,8 +203,19 @@ describe('sanctioned integration runner covers every database-mutating suite', (
 
     assert.deepStrictEqual(
       [...new Set(listed)].sort(),
-      [...DB_MUTATING_SUITES].sort(),
-      'scripts/run-integration-tests.js must invoke every database-mutating suite'
+      [...SANCTIONED_POSTGRES_INTEGRATION_SUITES].sort(),
+      'scripts/run-integration-tests.js must invoke exactly the sanctioned PostgreSQL integration suites'
+    );
+  });
+
+  it('keeps the sanctioned set a subset of the known database-mutating suites', () => {
+    const unsanctionedMutators = SANCTIONED_POSTGRES_INTEGRATION_SUITES
+      .filter((suiteFile) => !DB_MUTATING_SUITES.includes(suiteFile));
+
+    assert.deepStrictEqual(
+      unsanctionedMutators,
+      [],
+      'every sanctioned integration suite must also be tracked as database-mutating'
     );
   });
 });
