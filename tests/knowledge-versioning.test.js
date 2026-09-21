@@ -6,8 +6,23 @@
 
 const { describe, it, before, afterEach } = require('node:test');
 const assert = require('node:assert');
-const { getConnection, pool } = require('../src/config/database');
+const { getConnection, pool, isIntegrationTest } = require('../src/config/database');
 const taskTemplateController = require('../src/controllers/task-template.controller');
+
+// Database safety gate.
+// This suite performs destructive database mutations, so it must be gated on
+// exactly the same predicate that src/config/database.js uses to choose
+// credentials. `isIntegrationTest()` is what makes the pool read TEST_DB_* and
+// refuse to fall back to the runtime DB_*/PG* credentials. Gating on anything
+// weaker (for example RUN_DB_TESTS alone) would leave the pool pointed at the
+// runtime database - production in a configured environment - while this suite
+// still executed its mutations.
+const DB_TEST_SKIP_REASON = isIntegrationTest()
+  ? false
+  : 'database-mutating knowledge-versioning suite requires the sanctioned '
+    + 'database-test gate (NODE_ENV=test, RUN_DB_TESTS=true, TEST_DB_*) so that '
+    + 'TEST_DB_* is used instead of runtime DB_*/PG* credentials; '
+    + 'run it via `npm run test:integration`';
 
 async function query(sql, params = []) {
   const [rows] = await pool.query(sql, params);
@@ -88,7 +103,7 @@ const isAncestryError = (err) => {
   return msg.includes('does not belong to task_template_id') || msg.includes('check_violation');
 };
 
-describe('Knowledge Versioning Foundation', () => {
+describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () => {
   it('creates required knowledge versioning tables', async () => {
     const tables = await query(`
       SELECT table_name
