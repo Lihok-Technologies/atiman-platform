@@ -1,5 +1,6 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { getDatabaseConfig, isIntegrationTest } = require('../src/config/database');
@@ -171,4 +172,26 @@ describe('integration runner refuses to run without a sanctioned test database',
       );
     });
   }
+});
+
+// The sanctioned integration runner is the only execution path these suites
+// have, so its suite list must stay complete. If a suite is dropped from it, the
+// suite silently stops running anywhere - which is exactly the coverage gap this
+// assertion exists to prevent. The runner cannot be required for inspection
+// because it validates and then exits at module load, so its source is parsed.
+describe('sanctioned integration runner covers every database-mutating suite', () => {
+  it('invokes exactly the known database-mutating suites', () => {
+    const runnerSource = fs.readFileSync(
+      path.join(REPO_ROOT, 'scripts', 'run-integration-tests.js'),
+      'utf8'
+    );
+    const listed = [...runnerSource.matchAll(/'tests\/([A-Za-z0-9_.-]+\.test\.js)'/g)]
+      .map((match) => match[1]);
+
+    assert.deepStrictEqual(
+      [...new Set(listed)].sort(),
+      [...DB_MUTATING_SUITES].sort(),
+      'scripts/run-integration-tests.js must invoke every database-mutating suite'
+    );
+  });
 });

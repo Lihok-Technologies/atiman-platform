@@ -8,7 +8,7 @@ if (missing.length || !/(?:^|[_-])test(?:$|[_-])/i.test(process.env.TEST_DB_NAME
   process.exit(1);
 }
 
-const result = spawnSync(process.execPath, ['--test', 'tests/step6-access-control.test.js', 'tests/step6-coverage-e2e.test.js', 'tests/step6-performance.test.js', 'tests/step6-regression.test.js', 'tests/step6-seed-migration.test.js'], {
+const result = spawnSync(process.execPath, ['--test', 'tests/knowledge-versioning.test.js', 'tests/step6-access-control.test.js', 'tests/step6-coverage-e2e.test.js', 'tests/step6-performance.test.js', 'tests/step6-regression.test.js', 'tests/step6-seed-migration.test.js'], {
   stdio: 'inherit',
   env: { ...process.env, NODE_ENV: 'test', RUN_DB_TESTS: 'true' }
 });
