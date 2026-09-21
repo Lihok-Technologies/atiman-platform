@@ -7,6 +7,26 @@ const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
+// This runner exists to execute destructive database suites, so it must
+// establish the repository's sanctioned integration-test gate itself.
+// NODE_ENV=test and RUN_DB_TESTS=true are exactly what src/config/database.js
+// requires in order to select TEST_DB_* credentials and refuse to fall back to
+// the runtime DB_*/PG* credentials.
+process.env.NODE_ENV = 'test';
+process.env.RUN_DB_TESTS = 'true';
+
+// Fail closed before spawning anything. Requiring the adapter runs the
+// sanctioned validation, which throws unless TEST_DB_* is complete and
+// TEST_DB_NAME clearly identifies a disposable test database. Reusing
+// getDatabaseConfig() keeps this runner from carrying a second, divergent copy
+// of the database-safety rules.
+try {
+  require('../src/config/database').getDatabaseConfig();
+} catch (error) {
+  console.error(`Refusing to run Step 6 database suites: ${error.message}`);
+  process.exit(1);
+}
+
 const TEST_FILES = [
   'step6-coverage-e2e.test.js',
   'step6-access-control.test.js',
@@ -80,7 +100,7 @@ function runTestFile(testPath) {
     
     const child = spawn('node', ['--test', testPath], {
       cwd: process.cwd(),
-      env: { ...process.env, NODE_ENV: 'test' }
+      env: { ...process.env, NODE_ENV: 'test', RUN_DB_TESTS: 'true' }
     });
     
     let output = '';

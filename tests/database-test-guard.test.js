@@ -39,19 +39,22 @@ const restore = (values) => Object.entries(values).forEach(([name, value]) => {
   if (value === undefined) delete process.env[name]; else process.env[name] = value;
 });
 
-// Run one suite in a subprocess with a controlled database environment.
-const runSuite = (suiteFile, overrides = {}) => {
+// Run a node entry point in a subprocess with a controlled database environment.
+const runNode = (args, overrides = {}) => {
   const childEnv = { ...process.env };
   for (const name of DATABASE_ENV_NAMES) delete childEnv[name];
   Object.assign(childEnv, overrides);
 
   const result = spawnSync(
     process.execPath,
-    ['--test', path.join('tests', suiteFile)],
+    args,
     { cwd: REPO_ROOT, env: childEnv, encoding: 'utf8' }
   );
   return { ...result, output: `${result.stdout || ''}${result.stderr || ''}` };
 };
+
+const runSuite = (suiteFile, overrides) =>
+  runNode(['--test', path.join('tests', suiteFile)], overrides);
 
 describe('integration database safety guard', () => {
   const names = ENV_NAMES;
@@ -120,6 +123,51 @@ describe('database-mutating suites cannot execute without the database-test gate
         output,
         /Refusing destructive integration tests/,
         `expected the guard to refuse rather than fall back to runtime credentials:\n${output}`
+      );
+    });
+  }
+});
+
+// tests/step6-runner.js spawns the destructive Step 6 suites, so it must
+// establish the gate itself and must refuse to run unless TEST_DB_* has already
+// passed the repository's sanctioned validation. Every scenario below is one
+// that must never reach a database.
+describe('integration runner refuses to run without a sanctioned test database', () => {
+  const RUNNER = path.join('tests', 'step6-runner.js');
+
+  const completeTestDb = {
+    TEST_DB_HOST: '127.0.0.1',
+    TEST_DB_PORT: '5432',
+    TEST_DB_USER: 'test',
+    TEST_DB_PASSWORD: 'test-password'
+  };
+
+  const SCENARIOS = [
+    ['no database-test configuration at all', {}],
+    ['runtime DB_* credentials only', { DB_HOST: '127.0.0.1', DB_NAME: 'odm_cmms', DB_USER: 'postgres', DB_PASSWORD: 'runtime-password' }],
+    ['runtime PG* credentials only', { PGHOST: '127.0.0.1', PGDATABASE: 'odm_cmms', PGUSER: 'postgres', PGPASSWORD: 'runtime-password' }],
+    ['the partial gate RUN_DB_TESTS=true alone', { RUN_DB_TESTS: 'true' }],
+    ['the partial gate NODE_ENV=test alone', { NODE_ENV: 'test' }],
+    ['a full gate whose TEST_DB_NAME does not identify a test database', {
+      NODE_ENV: 'test', RUN_DB_TESTS: 'true', ...completeTestDb, TEST_DB_NAME: 'production'
+    }],
+    ['a full gate with TEST_DB_* incomplete', {
+      NODE_ENV: 'test', RUN_DB_TESTS: 'true', TEST_DB_HOST: '127.0.0.1'
+    }]
+  ];
+
+  for (const [label, env] of SCENARIOS) {
+    it(`refuses to execute suites with ${label}`, () => {
+      const { status, output } = runNode([RUNNER], env);
+      assert.notStrictEqual(status, 0, `expected the runner to refuse:\n${output}`);
+      assert.match(
+        output,
+        /Refusing (to run Step 6 database suites|destructive integration tests)/,
+        `expected a refusal rather than a database connection attempt:\n${output}`
+      );
+      assert.ok(
+        !/Running: step6-/.test(output),
+        `runner must not reach the point of spawning suites:\n${output}`
       );
     });
   }
