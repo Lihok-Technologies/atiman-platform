@@ -6,7 +6,7 @@
 const { describe, it, before, after } = require('node:test');
 const assert = require('node:assert');
 const http = require('http');
-const { createPool } = require('../src/config/database');
+const { createPool, isIntegrationTest } = require('../src/config/database');
 
 const TEST_PORT = 9998;
 const TEST_TIMEOUT = 30000;
@@ -15,7 +15,10 @@ const TEST_TIMEOUT = 30000;
 const TENANT_A = { id: 888888, name: 'Tenant A' };
 const TENANT_B = { id: 888889, name: 'Tenant B' };
 
-describe('Step 6: Access Control & Tenant Protection', { skip: process.env.RUN_DB_TESTS !== 'true' }, () => {
+// Destructive database suite: gated on isIntegrationTest(), the same predicate
+// that selects TEST_DB_* credentials, so it can never run against runtime
+// DB_*/PG* credentials.
+describe('Step 6: Access Control & Tenant Protection', { skip: !isIntegrationTest() }, () => {
   let server;
   let pool;
   let baseUrl;

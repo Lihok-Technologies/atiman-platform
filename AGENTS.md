@@ -24,7 +24,7 @@ npm run test:all
 npm run db:init
 ```
 
-`npm test` runs non-destructive tests only. `npm run test:integration` runs destructive MySQL suites only when `TEST_DB_HOST`, `TEST_DB_PORT`, `TEST_DB_NAME`, `TEST_DB_USER`, and `TEST_DB_PASSWORD` are supplied; the test database name must clearly identify a test database and is never read from `DB_*`. `npm run test:all` runs both commands.
+`npm test` runs non-destructive tests only — database-mutating suites are skipped unless the integration gate below is satisfied. `npm run test:integration` runs destructive database suites only when `NODE_ENV=test` and `RUN_DB_TESTS=true` are set alongside the supplied `TEST_DB_HOST`, `TEST_DB_PORT`, `TEST_DB_NAME`, `TEST_DB_USER`, and `TEST_DB_PASSWORD`; the test database name must clearly identify a test database, and runtime `DB_*`/`PG*` credentials are never used for destructive tests. `npm run test:all` runs both commands.
 
 ## Environment
 Copy `.env.example` for local use or `.env.production.example` as a production template. Do not commit real `.env` files or secrets. The server defaults to `127.0.0.1`; deployment environments that require external/container binding must set `HOST=0.0.0.0`. Configure `CORS_ALLOWED_ORIGINS` as a comma-separated allowlist when cross-origin browser access is required. `REQUEST_BODY_LIMIT` applies to JSON/form requests; Multer controls multipart limits separately. Production startup validates JWT/database secrets. Configure `TRUST_PROXY` only for a known proxy topology.
