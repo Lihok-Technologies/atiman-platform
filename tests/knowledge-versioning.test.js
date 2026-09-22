@@ -53,6 +53,51 @@ async function ensureTestUser(conn) {
 // is reproduced.
 const TEST_ORGANIZATION_IDS = [990001, 990002];
 
+// ATM-001 M1 — deterministic governance principals for the raw-SQL version
+// fixtures below.
+//
+// A governed task_template_versions row must now carry a frozen publisher that
+// is NOT the approver, so the fixtures cannot rely on "whatever user happens to
+// exist": ordering-dependent principals would be equal to each other on a
+// single-user database and would also drift between runs against a reused test
+// database. Two named principals, seeded once and committed, make the
+// attribution explicit and stable.
+const GOVERNANCE_REVIEWER_USERNAME = 'kv-governance-reviewer';
+const GOVERNANCE_PUBLISHER_USERNAME = 'kv-governance-publisher';
+
+// Interpolated into the fixture SQL as ${GOVERNANCE_*_SQL} by the raw version
+// INSERTs below, so a principal can never drift between the seed and its use.
+const GOVERNANCE_REVIEWER_SQL = `(SELECT id FROM users WHERE username = '${GOVERNANCE_REVIEWER_USERNAME}')`;
+const GOVERNANCE_PUBLISHER_SQL = `(SELECT id FROM users WHERE username = '${GOVERNANCE_PUBLISHER_USERNAME}')`;
+
+async function ensureGovernancePrincipals() {
+  const conn = await getConnection();
+  try {
+    for (const [username, fullName, role] of [
+      [GOVERNANCE_REVIEWER_USERNAME, 'KV Governance Reviewer', 'supervisor'],
+      [GOVERNANCE_PUBLISHER_USERNAME, 'KV Governance Publisher', 'admin']
+    ]) {
+      // Each placeholder is used for exactly one column: reusing one placeholder
+      // for both a varchar column value and a concatenation operand makes
+      // PostgreSQL deduce inconsistent parameter types and reject the statement.
+      await conn.query(
+        `INSERT INTO users (username, email, password_hash, full_name, role, is_active)
+         VALUES ($1, $2, 'hash', $3, $4, true)
+         ON CONFLICT (username) DO NOTHING`,
+        [username, `${username}@test.local`, fullName, role]
+      );
+    }
+    // Committed so every test transaction can see them and the FK cannot be
+    // rolled back out from under a fixture.
+    await conn.commit();
+  } catch (error) {
+    await conn.rollback();
+    throw error;
+  } finally {
+    conn.release();
+  }
+}
+
 async function ensureTestOrganizations() {
   const conn = await getConnection();
   try {
@@ -136,6 +181,7 @@ const isAncestryError = (err) => {
 describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () => {
   before(async () => {
     await ensureTestOrganizations();
+    await ensureGovernancePrincipals();
   });
 
   it('creates required knowledge versioning tables', async () => {
@@ -233,9 +279,14 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       const [valid] = await conn.query(`
         INSERT INTO task_template_versions (
           task_template_id, version_number, equipment_type_id,
-          template_name, maintenance_type, lifecycle_state_at_publish
-        )
-        VALUES ($1, 1, $2, 'Valid State', 'preventive', 'published')
+          template_name, maintenance_type, lifecycle_state_at_publish,
+            reviewer_user_id, reviewed_at, approver_user_id, approved_at,
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+        VALUES ($1, 1, $2, 'Valid State', 'preventive', 'published',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            'reviewed_no_control_required',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
       assert.ok(valid.id);
@@ -246,9 +297,14 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
         await conn.query(`
           INSERT INTO task_template_versions (
             task_template_id, version_number, equipment_type_id,
-            template_name, maintenance_type, lifecycle_state_at_publish
-          )
-          VALUES ($1, 2, $2, 'Draft State', 'preventive', 'draft')
+            template_name, maintenance_type, lifecycle_state_at_publish,
+            reviewer_user_id, reviewed_at, approver_user_id, approved_at,
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+          VALUES ($1, 2, $2, 'Draft State', 'preventive', 'draft',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            'reviewed_no_control_required',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         `, [template.id, template.equipment_type_id]);
       } catch (err) {
         rejected = /check.*constraint|violates check constraint|new row.*violates/i.test(err.message || '');
@@ -294,9 +350,14 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       const [templateVersion] = await conn.query(`
         INSERT INTO task_template_versions (
           task_template_id, version_number, equipment_type_id,
-          template_name, maintenance_type
-        )
-        VALUES ($1, 1, $2, 'Chain Test Template', 'preventive')
+          template_name, maintenance_type,
+            reviewer_user_id, reviewed_at, approver_user_id, approved_at,
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+        VALUES ($1, 1, $2, 'Chain Test Template', 'preventive',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            'reviewed_no_control_required',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -395,18 +456,28 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       const [templateVersionV1] = await conn.query(`
         INSERT INTO task_template_versions (
           task_template_id, version_number, equipment_type_id,
-          template_name, maintenance_type, lifecycle_state_at_publish
-        )
-        VALUES ($1, 1, $2, 'Transition Template v1', 'preventive', 'published')
+          template_name, maintenance_type, lifecycle_state_at_publish,
+            reviewer_user_id, reviewed_at, approver_user_id, approved_at,
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+        VALUES ($1, 1, $2, 'Transition Template v1', 'preventive', 'published',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            'reviewed_no_control_required',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
       const [templateVersionV2] = await conn.query(`
         INSERT INTO task_template_versions (
           task_template_id, version_number, equipment_type_id,
-          template_name, maintenance_type, lifecycle_state_at_publish
-        )
-        VALUES ($1, 2, $2, 'Transition Template v2', 'preventive', 'published')
+          template_name, maintenance_type, lifecycle_state_at_publish,
+            reviewer_user_id, reviewed_at, approver_user_id, approved_at,
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+        VALUES ($1, 2, $2, 'Transition Template v2', 'preventive', 'published',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            'reviewed_no_control_required',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -469,9 +540,14 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       const [templateVersion] = await conn.query(`
         INSERT INTO task_template_versions (
           task_template_id, version_number, equipment_type_id,
-          template_name, maintenance_type, lifecycle_state_at_publish
-        )
-        VALUES ($1, 1, $2, 'Self Super Template', 'preventive', 'published')
+          template_name, maintenance_type, lifecycle_state_at_publish,
+            reviewer_user_id, reviewed_at, approver_user_id, approved_at,
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+        VALUES ($1, 1, $2, 'Self Super Template', 'preventive', 'published',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            'reviewed_no_control_required',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -571,18 +647,28 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       const [versionA1] = await conn.query(`
         INSERT INTO task_template_versions (
           task_template_id, version_number, equipment_type_id,
-          template_name, maintenance_type, lifecycle_state_at_publish
-        )
-        VALUES ($1, 1, $2, 'Template A v1', 'preventive', 'published')
+          template_name, maintenance_type, lifecycle_state_at_publish,
+            reviewer_user_id, reviewed_at, approver_user_id, approved_at,
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+        VALUES ($1, 1, $2, 'Template A v1', 'preventive', 'published',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            'reviewed_no_control_required',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [templateA.id, templateA.equipment_type_id]);
 
       const [versionB1] = await conn.query(`
         INSERT INTO task_template_versions (
           task_template_id, version_number, equipment_type_id,
-          template_name, maintenance_type, lifecycle_state_at_publish
-        )
-        VALUES ($1, 1, $2, 'Template B v1', 'preventive', 'published')
+          template_name, maintenance_type, lifecycle_state_at_publish,
+            reviewer_user_id, reviewed_at, approver_user_id, approved_at,
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+        VALUES ($1, 1, $2, 'Template B v1', 'preventive', 'published',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            'reviewed_no_control_required',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [templateB.id, templateB.equipment_type_id]);
 
@@ -605,9 +691,14 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       const [versionA2] = await conn.query(`
         INSERT INTO task_template_versions (
           task_template_id, version_number, equipment_type_id,
-          template_name, maintenance_type, lifecycle_state_at_publish
-        )
-        VALUES ($1, 2, $2, 'Template A v2', 'preventive', 'published')
+          template_name, maintenance_type, lifecycle_state_at_publish,
+            reviewer_user_id, reviewed_at, approver_user_id, approved_at,
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+        VALUES ($1, 2, $2, 'Template A v2', 'preventive', 'published',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            'reviewed_no_control_required',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [templateA.id, templateA.equipment_type_id]);
 
@@ -633,9 +724,14 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       const [templateVersion] = await conn.query(`
         INSERT INTO task_template_versions (
           task_template_id, version_number, equipment_type_id,
-          template_name, maintenance_type, lifecycle_state_at_publish
-        )
-        VALUES ($1, 1, $2, 'Step Update Template', 'preventive', 'published')
+          template_name, maintenance_type, lifecycle_state_at_publish,
+            reviewer_user_id, reviewed_at, approver_user_id, approved_at,
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+        VALUES ($1, 1, $2, 'Step Update Template', 'preventive', 'published',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            'reviewed_no_control_required',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -676,9 +772,14 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       const [templateVersion] = await conn.query(`
         INSERT INTO task_template_versions (
           task_template_id, version_number, equipment_type_id,
-          template_name, maintenance_type, lifecycle_state_at_publish
-        )
-        VALUES ($1, 1, $2, 'Step Delete Template', 'preventive', 'published')
+          template_name, maintenance_type, lifecycle_state_at_publish,
+            reviewer_user_id, reviewed_at, approver_user_id, approved_at,
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+        VALUES ($1, 1, $2, 'Step Delete Template', 'preventive', 'published',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            'reviewed_no_control_required',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -718,9 +819,14 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       const [templateVersion] = await conn.query(`
         INSERT INTO task_template_versions (
           task_template_id, version_number, equipment_type_id,
-          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed
-        )
-        VALUES ($1, 1, $2, 'Sealed Step Set Template', 'preventive', 'published', FALSE)
+          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
+            reviewer_user_id, reviewed_at, approver_user_id, approved_at,
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+        VALUES ($1, 1, $2, 'Sealed Step Set Template', 'preventive', 'published', FALSE,
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            'reviewed_no_control_required',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -797,9 +903,14 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       const [templateVersion] = await conn.query(`
         INSERT INTO task_template_versions (
           task_template_id, version_number, equipment_type_id,
-          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed
-        )
-        VALUES ($1, 1, $2, 'Unsealed Step Set Template', 'preventive', 'published', FALSE)
+          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
+            reviewer_user_id, reviewed_at, approver_user_id, approved_at,
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+        VALUES ($1, 1, $2, 'Unsealed Step Set Template', 'preventive', 'published', FALSE,
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            'reviewed_no_control_required',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -840,18 +951,28 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       const [v1] = await conn.query(`
         INSERT INTO task_template_versions (
           task_template_id, version_number, equipment_type_id,
-          template_name, maintenance_type, lifecycle_state_at_publish
-        )
-        VALUES ($1, 1, $2, 'Successor Valid v1', 'preventive', 'published')
+          template_name, maintenance_type, lifecycle_state_at_publish,
+            reviewer_user_id, reviewed_at, approver_user_id, approved_at,
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+        VALUES ($1, 1, $2, 'Successor Valid v1', 'preventive', 'published',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            'reviewed_no_control_required',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
       const [v2Retired] = await conn.query(`
         INSERT INTO task_template_versions (
           task_template_id, version_number, equipment_type_id,
-          template_name, maintenance_type, lifecycle_state_at_publish
-        )
-        VALUES ($1, 2, $2, 'Successor Retired', 'preventive', 'retired')
+          template_name, maintenance_type, lifecycle_state_at_publish,
+            reviewer_user_id, reviewed_at, approver_user_id, approved_at,
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+        VALUES ($1, 2, $2, 'Successor Retired', 'preventive', 'retired',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            'reviewed_no_control_required',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -924,9 +1045,14 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       const [version] = await conn.query(`
         INSERT INTO task_template_versions (
           task_template_id, version_number, equipment_type_id,
-          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed
-        )
-        VALUES ($1, 1, $2, 'Unseal Test Template', 'preventive', 'published', FALSE)
+          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
+            reviewer_user_id, reviewed_at, approver_user_id, approved_at,
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+        VALUES ($1, 1, $2, 'Unseal Test Template', 'preventive', 'published', FALSE,
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            'reviewed_no_control_required',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -974,9 +1100,14 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       const [version] = await conn.query(`
         INSERT INTO task_template_versions (
           task_template_id, version_number, equipment_type_id,
-          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed
-        )
-        VALUES ($1, 1, $2, 'Zero Step Seal Template', 'preventive', 'published', FALSE)
+          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
+            reviewer_user_id, reviewed_at, approver_user_id, approved_at,
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+        VALUES ($1, 1, $2, 'Zero Step Seal Template', 'preventive', 'published', FALSE,
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            'reviewed_no_control_required',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -1008,9 +1139,14 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       await conn.query(`
         INSERT INTO task_template_versions (
           task_template_id, version_number, equipment_type_id,
-          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed
-        )
-        VALUES ($1, 1, $2, 'Unsealed Commit Template', 'preventive', 'published', FALSE)
+          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
+            reviewer_user_id, reviewed_at, approver_user_id, approved_at,
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+        VALUES ($1, 1, $2, 'Unsealed Commit Template', 'preventive', 'published', FALSE,
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            'reviewed_no_control_required',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
       `, [template.id, template.equipment_type_id]);
 
       let blocked = false;
@@ -1038,9 +1174,14 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       const [version] = await conn.query(`
         INSERT INTO task_template_versions (
           task_template_id, version_number, equipment_type_id,
-          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed
-        )
-        VALUES ($1, 1, $2, 'Assemble Seal Commit Template', 'preventive', 'published', FALSE)
+          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
+            reviewer_user_id, reviewed_at, approver_user_id, approved_at,
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+        VALUES ($1, 1, $2, 'Assemble Seal Commit Template', 'preventive', 'published', FALSE,
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            'reviewed_no_control_required',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -1086,9 +1227,14 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       const [version] = await conn.query(`
         INSERT INTO task_template_versions (
           task_template_id, version_number, equipment_type_id,
-          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed
-        )
-        VALUES ($1, 1, $2, 'Post-Seal Insert Template', 'preventive', 'published', FALSE)
+          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
+            reviewer_user_id, reviewed_at, approver_user_id, approved_at,
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+        VALUES ($1, 1, $2, 'Post-Seal Insert Template', 'preventive', 'published', FALSE,
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            'reviewed_no_control_required',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -1248,27 +1394,42 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       const [v1] = await conn.query(`
         INSERT INTO task_template_versions (
           task_template_id, version_number, equipment_type_id,
-          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed
-        )
-        VALUES ($1, 1, $2, 'Chain v1', 'preventive', 'published', FALSE)
+          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
+            reviewer_user_id, reviewed_at, approver_user_id, approved_at,
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+        VALUES ($1, 1, $2, 'Chain v1', 'preventive', 'published', FALSE,
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            'reviewed_no_control_required',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
       const [v2] = await conn.query(`
         INSERT INTO task_template_versions (
           task_template_id, version_number, equipment_type_id,
-          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed
-        )
-        VALUES ($1, 2, $2, 'Chain v2', 'preventive', 'published', FALSE)
+          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
+            reviewer_user_id, reviewed_at, approver_user_id, approved_at,
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+        VALUES ($1, 2, $2, 'Chain v2', 'preventive', 'published', FALSE,
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            'reviewed_no_control_required',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
       const [v3] = await conn.query(`
         INSERT INTO task_template_versions (
           task_template_id, version_number, equipment_type_id,
-          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed
-        )
-        VALUES ($1, 3, $2, 'Chain v3', 'preventive', 'published', FALSE)
+          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
+            reviewer_user_id, reviewed_at, approver_user_id, approved_at,
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+        VALUES ($1, 3, $2, 'Chain v3', 'preventive', 'published', FALSE,
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            'reviewed_no_control_required',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -1311,18 +1472,28 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       const [v1] = await conn.query(`
         INSERT INTO task_template_versions (
           task_template_id, version_number, equipment_type_id,
-          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed
-        )
-        VALUES ($1, 1, $2, 'Backlink v1', 'preventive', 'published', FALSE)
+          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
+            reviewer_user_id, reviewed_at, approver_user_id, approved_at,
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+        VALUES ($1, 1, $2, 'Backlink v1', 'preventive', 'published', FALSE,
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            'reviewed_no_control_required',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
       const [v2] = await conn.query(`
         INSERT INTO task_template_versions (
           task_template_id, version_number, equipment_type_id,
-          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed
-        )
-        VALUES ($1, 2, $2, 'Backlink v2', 'preventive', 'published', FALSE)
+          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
+            reviewer_user_id, reviewed_at, approver_user_id, approved_at,
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+        VALUES ($1, 2, $2, 'Backlink v2', 'preventive', 'published', FALSE,
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            'reviewed_no_control_required',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -1363,9 +1534,14 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       await conn.query(`
         INSERT INTO task_template_versions (
           task_template_id, version_number, equipment_type_id,
-          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed
-        )
-        VALUES ($1, 1, $2, 'Unsealed Retired Template', 'preventive', 'retired', FALSE)
+          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
+            reviewer_user_id, reviewed_at, approver_user_id, approved_at,
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+        VALUES ($1, 1, $2, 'Unsealed Retired Template', 'preventive', 'retired', FALSE,
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            'reviewed_no_control_required',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
       `, [template.id, template.equipment_type_id]);
 
       let blocked = false;
@@ -1393,18 +1569,28 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       const [v1] = await conn.query(`
         INSERT INTO task_template_versions (
           task_template_id, version_number, equipment_type_id,
-          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed
-        )
-        VALUES ($1, 1, $2, 'Unsealed Superseded Template', 'preventive', 'published', FALSE)
+          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
+            reviewer_user_id, reviewed_at, approver_user_id, approved_at,
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+        VALUES ($1, 1, $2, 'Unsealed Superseded Template', 'preventive', 'published', FALSE,
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            'reviewed_no_control_required',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
       const [v2] = await conn.query(`
         INSERT INTO task_template_versions (
           task_template_id, version_number, equipment_type_id,
-          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed
-        )
-        VALUES ($1, 2, $2, 'Successor Template', 'preventive', 'published', FALSE)
+          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
+            reviewer_user_id, reviewed_at, approver_user_id, approved_at,
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+        VALUES ($1, 2, $2, 'Successor Template', 'preventive', 'published', FALSE,
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            'reviewed_no_control_required',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -1460,9 +1646,14 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       const [versionA] = await conn.query(`
         INSERT INTO task_template_versions (
           task_template_id, version_number, equipment_type_id,
-          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed
-        )
-        VALUES ($1, 1, $2, 'Ancestry Template A', 'preventive', 'published', FALSE)
+          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
+            reviewer_user_id, reviewed_at, approver_user_id, approved_at,
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+        VALUES ($1, 1, $2, 'Ancestry Template A', 'preventive', 'published', FALSE,
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            'reviewed_no_control_required',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [templateA.id, templateA.equipment_type_id]);
 
@@ -1761,9 +1952,14 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       const [templateVersion] = await conn.query(`
         INSERT INTO task_template_versions (
           task_template_id, version_number, equipment_type_id,
-          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed
-        )
-        VALUES ($1, 1, $2, 'Frozen Evidence Template', 'preventive', 'published', FALSE)
+          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
+            reviewer_user_id, reviewed_at, approver_user_id, approved_at,
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+        VALUES ($1, 1, $2, 'Frozen Evidence Template', 'preventive', 'published', FALSE,
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            'reviewed_no_control_required',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -1849,9 +2045,14 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       const [templateVersion] = await conn.query(`
         INSERT INTO task_template_versions (
           task_template_id, version_number, equipment_type_id,
-          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed
-        )
-        VALUES ($1, 1, $2, 'Frozen Seal Template', 'preventive', 'published', FALSE)
+          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
+            reviewer_user_id, reviewed_at, approver_user_id, approved_at,
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+        VALUES ($1, 1, $2, 'Frozen Seal Template', 'preventive', 'published', FALSE,
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            'reviewed_no_control_required',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -2311,9 +2512,14 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       const [templateVersion] = await conn.query(`
         INSERT INTO task_template_versions (
           task_template_id, version_number, equipment_type_id,
-          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed
-        )
-        VALUES ($1, 1, $2, 'Lineage Template', 'preventive', 'published', FALSE)
+          template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
+            reviewer_user_id, reviewed_at, approver_user_id, approved_at,
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+        VALUES ($1, 1, $2, 'Lineage Template', 'preventive', 'published', FALSE,
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            'reviewed_no_control_required',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -2497,8 +2703,13 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       const [version] = await conn.query(`
         INSERT INTO task_template_versions (
           task_template_id, version_number, equipment_type_id, template_name,
-          maintenance_type, lifecycle_state_at_publish
-        ) VALUES ($1, $2, $3, 'Safety Publish Test', 'corrective', 'published')
+          maintenance_type, lifecycle_state_at_publish,
+            reviewer_user_id, reviewed_at, approver_user_id, approved_at,
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id) VALUES ($1, $2, $3, 'Safety Publish Test', 'corrective', 'published',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            'reviewed_no_control_required',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, versionNo, template.equipment_type_id]);
 
@@ -2572,8 +2783,13 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       const [version] = await conn.query(`
         INSERT INTO task_template_versions (
           task_template_id, version_number, equipment_type_id, template_name,
-          maintenance_type, lifecycle_state_at_publish
-        ) VALUES ($1, $2, $3, 'Cross Safety Test', 'corrective', 'published')
+          maintenance_type, lifecycle_state_at_publish,
+            reviewer_user_id, reviewed_at, approver_user_id, approved_at,
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id) VALUES ($1, $2, $3, 'Cross Safety Test', 'corrective', 'published',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            'reviewed_no_control_required',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [templateA.id, versionNo, templateA.equipment_type_id]);
 
@@ -2635,8 +2851,13 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       const [version] = await conn.query(`
         INSERT INTO task_template_versions (
           task_template_id, version_number, equipment_type_id, template_name,
-          maintenance_type, lifecycle_state_at_publish
-        ) VALUES ($1, $2, $3, 'Seal Safety Test', 'corrective', 'published')
+          maintenance_type, lifecycle_state_at_publish,
+            reviewer_user_id, reviewed_at, approver_user_id, approved_at,
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id) VALUES ($1, $2, $3, 'Seal Safety Test', 'corrective', 'published',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            'reviewed_no_control_required',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, versionNo, template.equipment_type_id]);
 
@@ -2764,35 +2985,76 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       RETURNING id
     `, [template.id]);
 
-    if (options.withEvidence !== false) {
-      const [source] = await conn.query(`
-        INSERT INTO knowledge_sources (source_code, source_category, default_title, organization_id)
-        VALUES ('pub-source-' || floor(random() * 1000000000)::int::text, 'manufacturer_manual', 'Publication Source', NULL)
-        RETURNING id
-      `);
+    // ATM-001 M1 — published knowledge must cite immutable sources. The
+    // fixture therefore always carries evidence; there is no evidenced=false
+    // escape hatch, because such a fixture could never be published and would
+    // make an admission failure look like a versioning defect.
+    const [source] = await conn.query(`
+      INSERT INTO knowledge_sources (source_code, source_category, default_title, organization_id)
+      VALUES ('pub-source-' || floor(random() * 1000000000)::int::text, 'manufacturer_manual', 'Publication Source', NULL)
+      RETURNING id
+    `);
 
-      const [sourceVersion] = await conn.query(`
-        INSERT INTO knowledge_source_versions (knowledge_source_id, version_designation, title)
-        VALUES ($1, '1.0', 'Publication Source Version')
-        RETURNING id
-      `, [source.id]);
+    const [sourceVersion] = await conn.query(`
+      INSERT INTO knowledge_source_versions (knowledge_source_id, version_designation, title)
+      VALUES ($1, '1.0', 'Publication Source Version')
+      RETURNING id
+    `, [source.id]);
 
-      await conn.query(`
-        INSERT INTO knowledge_template_evidence (
-          task_template_id, knowledge_source_version_id,
-          section_or_clause, page_or_paragraph, derivation_notes,
-          confidence_level, supporting_role
-        ) VALUES ($1, $2, 'Section A', 'Page 1', 'Template-level rationale', 'established', 'primary')
-      `, [template.id, sourceVersion.id]);
+    await conn.query(`
+      INSERT INTO knowledge_template_evidence (
+        task_template_id, knowledge_source_version_id,
+        section_or_clause, page_or_paragraph, derivation_notes,
+        confidence_level, supporting_role
+      ) VALUES ($1, $2, 'Section A', 'Page 1', 'Template-level rationale', 'established', 'primary')
+    `, [template.id, sourceVersion.id]);
 
-      await conn.query(`
-        INSERT INTO knowledge_template_evidence (
-          task_template_step_id, knowledge_source_version_id,
-          section_or_clause, page_or_paragraph, derivation_notes,
-          confidence_level, supporting_role
-        ) VALUES ($1, $2, 'Clause 2', 'Paragraph 3', 'Step-level rationale', 'provisional', 'supporting')
-      `, [step1.id, sourceVersion.id]);
-    }
+    await conn.query(`
+      INSERT INTO knowledge_template_evidence (
+        task_template_step_id, knowledge_source_version_id,
+        section_or_clause, page_or_paragraph, derivation_notes,
+        confidence_level, supporting_role
+      ) VALUES ($1, $2, 'Clause 2', 'Paragraph 3', 'Step-level rationale', 'provisional', 'supporting')
+    `, [step1.id, sourceVersion.id]);
+  
+
+    // ATM-001 M1 — a published version must be governed knowledge, so the
+    // fixture is driven through the real governance state: safety explicitly
+    // reviewed, and a review approval bound to the content being published.
+    // The approver is a dedicated principal, distinct from the publisher.
+    const { computeContentSha } = require('../src/services/knowledge-governance.service');
+
+    const [governanceUser] = await conn.query(`
+      INSERT INTO users (username, email, password_hash, full_name, role, is_active)
+      VALUES (
+        'gov-approver-' || floor(random() * 1000000000)::int::text,
+        'gov-approver-' || floor(random() * 1000000000)::int::text || '@test.local',
+        'hash', 'Governance Approver', 'supervisor', true
+      )
+      RETURNING id
+    `);
+
+    const [workingTemplate] = await conn.query(
+      `SELECT * FROM task_templates WHERE id = $1`, [template.id]);
+    const workingSteps = await conn.query(
+      `SELECT * FROM task_template_steps WHERE task_template_id = $1 ORDER BY step_no`, [template.id]);
+    const contentSha = computeContentSha(workingTemplate, workingSteps);
+
+    await conn.query(`
+      UPDATE task_templates
+         SET review_state = 'approved',
+             submitted_for_review_by_user_id = $2,
+             submitted_for_review_at = NOW(),
+             reviewer_user_id = $2,
+             reviewed_at = NOW(),
+             approver_user_id = $2,
+             approved_at = NOW(),
+             approved_content_sha = $3,
+             safety_review_state = 'reviewed_controls_defined',
+             safety_reviewed_by_user_id = $2,
+             safety_reviewed_at = NOW()
+       WHERE id = $1
+    `, [template.id, governanceUser.id, contentSha]);
 
     return {
       template,
@@ -2907,7 +3169,7 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
     try {
       const { TaskTemplate } = require('../src/models');
       const publisher = await ensureTestUser(conn);
-      const { template } = await createPublishableTemplate(conn, { withEvidence: false });
+      const { template } = await createPublishableTemplate(conn);
 
       const result = await TaskTemplate.publishVersion(template.id, publisher.id, {
         publishedByOrganizationId: template.organization_id ?? null,
@@ -2941,7 +3203,7 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
     try {
       const { TaskTemplate } = require('../src/models');
       const publisher = await ensureTestUser(conn);
-      const { template } = await createPublishableTemplate(conn, { withEvidence: false });
+      const { template } = await createPublishableTemplate(conn);
 
       // Force template to be tenant-scoped.
       const [org] = await conn.query(`
@@ -3010,7 +3272,7 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
     try {
       const publisher = await ensureTestUser(setupConn);
       publisherId = publisher.id;
-      const fixture = await createPublishableTemplate(setupConn, { withEvidence: false });
+      const fixture = await createPublishableTemplate(setupConn);
       template = fixture.template;
       fixtureIds = {
         activityCodeId: fixture.activityCodeId,
@@ -3163,7 +3425,7 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
         )
         RETURNING id
       `);
-      const { template } = await createPublishableTemplate(conn, { withEvidence: false });
+      const { template } = await createPublishableTemplate(conn);
 
       // Install a temporary trigger in the same transaction. It will be rolled
       // back with the test transaction, preventing cross-test pollution.

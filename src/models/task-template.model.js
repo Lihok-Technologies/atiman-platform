@@ -8,6 +8,12 @@
 
 const BaseModel = require('./base.model');
 const { getConnection } = require('../config/database');
+const {
+  computeContentSha,
+  validatePublicationAdmission,
+  AdmissionError,
+  SAFETY_REVIEW_STATES
+} = require('../services/knowledge-governance.service');
 
 class TaskTemplate extends BaseModel {
   constructor() {
@@ -643,6 +649,214 @@ class TaskTemplate extends BaseModel {
   }
 
   /**
+   * Load a working template plus its ordered steps for governance decisions.
+   * Scoped to the organization so governance cannot cross tenants.
+   */
+  async loadWorkingContent(templateId, organizationId, conn = null) {
+    const runner = conn || { query: (sql, params) => this.query(sql, params) };
+
+    const [templates] = await Promise.all([
+      runner.query(
+        `SELECT * FROM task_templates WHERE id = ? AND (organization_id IS NULL OR organization_id = ?)`,
+        [templateId, organizationId]
+      )
+    ]);
+
+    const template = (Array.isArray(templates) ? templates[0] : templates) || null;
+    if (!template) {
+      throw Object.assign(new Error('Task template not found'), { statusCode: 404 });
+    }
+
+    const rawSteps = await runner.query(
+      `SELECT * FROM task_template_steps WHERE task_template_id = ? ORDER BY step_no`,
+      [templateId]
+    );
+    const steps = Array.isArray(rawSteps) ? rawSteps : [];
+
+    return { template, steps };
+  }
+
+  /**
+   * Submit a draft template for governance review (draft -> under_review).
+   * System templates are never governed here; they are immutable reference data.
+   */
+  async submitForReview(templateId, userId, organizationId) {
+    const { template } = await this.loadWorkingContent(templateId, organizationId);
+
+    if (template.is_system) {
+      throw Object.assign(new Error('System templates are not submitted for review'), { statusCode: 409 });
+    }
+    if (template.review_state !== 'draft') {
+      throw Object.assign(
+        new Error(`Only a draft template can be submitted for review; current state is '${template.review_state}'`),
+        { statusCode: 409 }
+      );
+    }
+
+    await this.query(
+      `UPDATE task_templates
+          SET review_state = 'under_review',
+              submitted_for_review_by_user_id = ?,
+              submitted_for_review_at = NOW(),
+              updated_at = NOW()
+        WHERE id = ? AND review_state = 'draft'`,
+      [userId, templateId]
+    );
+
+    return this.getWithDetails(templateId);
+  }
+
+  /**
+   * Approve a template under review (under_review -> approved).
+   *
+   * The approval is bound to the material content that was reviewed: the
+   * fingerprint computed here is re-verified at publication, so knowledge edited
+   * after approval cannot be published under the stale approval.
+   */
+  async approveTemplate(templateId, userId, organizationId) {
+    const { template, steps } = await this.loadWorkingContent(templateId, organizationId);
+
+    if (template.review_state !== 'under_review') {
+      throw Object.assign(
+        new Error(`Only a template under review can be approved; current state is '${template.review_state}'`),
+        { statusCode: 409 }
+      );
+    }
+
+    const contentSha = computeContentSha(template, steps);
+
+    await this.query(
+      `UPDATE task_templates
+          SET review_state = 'approved',
+              reviewer_user_id = ?,
+              reviewed_at = NOW(),
+              approver_user_id = ?,
+              approved_at = NOW(),
+              approved_content_sha = ?,
+              rejection_reason = NULL,
+              updated_at = NOW()
+        WHERE id = ? AND review_state = 'under_review'`,
+      [userId, userId, contentSha, templateId]
+    );
+
+    return this.getWithDetails(templateId);
+  }
+
+  /**
+   * Reject a template under review (under_review -> rejected). A reason is
+   * mandatory: an unexplained rejection is not an accountable decision.
+   */
+  async rejectTemplate(templateId, userId, organizationId, rejectionReason) {
+    if (!(typeof rejectionReason === 'string' && rejectionReason.trim())) {
+      throw Object.assign(new Error('Rejecting a template requires a reason'), { statusCode: 400 });
+    }
+
+    const { template } = await this.loadWorkingContent(templateId, organizationId);
+
+    if (template.review_state !== 'under_review') {
+      throw Object.assign(
+        new Error(`Only a template under review can be rejected; current state is '${template.review_state}'`),
+        { statusCode: 409 }
+      );
+    }
+
+    await this.query(
+      `UPDATE task_templates
+          SET review_state = 'rejected',
+              reviewer_user_id = ?,
+              reviewed_at = NOW(),
+              rejection_reason = ?,
+              approver_user_id = NULL,
+              approved_at = NULL,
+              approved_content_sha = NULL,
+              updated_at = NOW()
+        WHERE id = ? AND review_state = 'under_review'`,
+      [userId, rejectionReason, templateId]
+    );
+
+    return this.getWithDetails(templateId);
+  }
+
+  /**
+   * Return a rejected template to draft so it can be corrected and resubmitted.
+   * This is the explicit rework path: a rejected template is never silently made
+   * publishable, and re-approval is always required after rework.
+   */
+  async reopenForRework(templateId, userId, organizationId) {
+    const { template } = await this.loadWorkingContent(templateId, organizationId);
+
+    if (template.review_state !== 'rejected') {
+      throw Object.assign(
+        new Error(`Only a rejected template can be reopened for rework; current state is '${template.review_state}'`),
+        { statusCode: 409 }
+      );
+    }
+
+    await this.query(
+      `UPDATE task_templates
+          SET review_state = 'draft',
+              reviewer_user_id = NULL,
+              reviewed_at = NULL,
+              approver_user_id = NULL,
+              approved_at = NULL,
+              approved_content_sha = NULL,
+              rejection_reason = NULL,
+              updated_at = NOW()
+        WHERE id = ? AND review_state = 'rejected'`,
+      [templateId]
+    );
+
+    return this.getWithDetails(templateId);
+  }
+
+  /**
+   * Record an explicit safety review of the working template.
+   *
+   * 'reviewed_no_control_required' and 'reviewed_controls_defined' both assert
+   * that a human reviewed safety; 'not_assessed' asserts that no review has
+   * happened. This is what makes "no controls required" distinguishable from
+   * "safety never considered" (ATM-001 M1).
+   */
+  async recordSafetyReview(templateId, userId, organizationId, safetyReviewState) {
+    if (!SAFETY_REVIEW_STATES.includes(safetyReviewState)) {
+      throw Object.assign(
+        new Error(`Unknown safety review state: ${safetyReviewState}`),
+        { statusCode: 400 }
+      );
+    }
+
+    const { template } = await this.loadWorkingContent(templateId, organizationId);
+
+    if (!template.is_editable) {
+      throw Object.assign(new Error('Template is not editable'), { statusCode: 409 });
+    }
+
+    if (safetyReviewState === 'not_assessed') {
+      await this.query(
+        `UPDATE task_templates
+            SET safety_review_state = 'not_assessed',
+                safety_reviewed_by_user_id = NULL,
+                safety_reviewed_at = NULL,
+                updated_at = NOW()
+          WHERE id = ?`,
+        [templateId]
+      );
+    } else {
+      await this.query(
+        `UPDATE task_templates
+            SET safety_review_state = ?,
+                safety_reviewed_by_user_id = ?,
+                safety_reviewed_at = NOW(),
+                updated_at = NOW()
+          WHERE id = ?`,
+        [safetyReviewState, userId, templateId]
+      );
+    }
+
+    return this.getWithDetails(templateId);
+  }
+
+  /**
    * Publish a working task template as an immutable version.
    * This creates task_template_versions, task_template_step_versions,
    * task_template_safety_control_versions, and frozen knowledge_template_version_evidence
@@ -771,7 +985,43 @@ class TaskTemplate extends BaseModel {
 
       const versionNumber = snapshot.next_version_number;
 
-      // 1. Insert the unsealed version header.
+      // ---- ATM-001 M1: publication admission gate -------------------------
+      // Everything below this point writes to the database. The admission
+      // validator therefore runs here, before the first irreversible write, so
+      // a failed admission leaves no version, step-version, safety-control or
+      // evidence rows behind and leaves the working knowledge editable.
+      const allEvidence = [
+        ...(snapshot.template_evidence || []),
+        ...(snapshot.step_evidence || [])
+      ];
+
+      const activityCodes = await conn.query(`SELECT id FROM activity_codes`);
+      const scopedSourceVersions = await conn.query(
+        `SELECT ksv.id
+           FROM knowledge_source_versions ksv
+           JOIN knowledge_sources ks ON ks.id = ksv.knowledge_source_id
+          WHERE ks.organization_id IS NULL
+             OR ks.organization_id = $1`,
+        [template.organization_id]
+      );
+
+      const admissionFailures = validatePublicationAdmission({
+        template,
+        steps,
+        safetyControls: snapshot.safety_controls || [],
+        evidence: allEvidence,
+        publisherUserId: userId,
+        validActivityCodeIds: new Set(activityCodes.map((row) => Number(row.id))),
+        validSourceVersionIds: new Set(scopedSourceVersions.map((row) => Number(row.id)))
+      });
+
+      if (admissionFailures.length > 0) {
+        throw new AdmissionError(admissionFailures);
+      }
+
+      // 1. Insert the unsealed version header. Governance attribution is frozen
+      // here so the published version remains historically correct even if the
+      // working template is later edited or re-reviewed (ATM-001 M1).
       const [versionHeader] = await conn.query(`
         INSERT INTO task_template_versions (
           task_template_id, version_number, equipment_type_id, industry_id,
@@ -781,7 +1031,10 @@ class TaskTemplate extends BaseModel {
           priority, task_kind, is_system, is_editable, parent_template_id,
           lifecycle_state_at_publish, is_step_set_sealed, published_by_user_id,
           published_at, superseded_by_version_id, change_rationale,
-          ai_assisted, ai_assistance_detail
+          ai_assisted, ai_assistance_detail,
+          reviewer_user_id, reviewed_at, approver_user_id, approved_at,
+          approved_content_sha, safety_reviewed_by_user_id, safety_reviewed_at,
+          safety_review_state
         ) VALUES (
           $1, $2, $3, $4,
           $5, $6, $7, $8,
@@ -790,7 +1043,10 @@ class TaskTemplate extends BaseModel {
           $16, $17, $18, $19, $20,
           'published', FALSE, $21,
           CURRENT_TIMESTAMP, NULL, $22,
-          $23, $24
+          $23, $24,
+          $25, $26, $27, $28,
+          $29, $30, $31,
+          $32
         )
         RETURNING id
       `, [
@@ -800,7 +1056,12 @@ class TaskTemplate extends BaseModel {
         template.estimated_duration_minutes, template.required_skills, template.required_tools,
         template.priority, template.task_kind, template.is_system, template.is_editable, template.parent_template_id,
         userId, changeRationale,
-        aiAssisted, aiAssistanceDetail
+        aiAssisted, aiAssistanceDetail,
+        template.reviewer_user_id, template.reviewed_at,
+        template.approver_user_id, template.approved_at,
+        template.approved_content_sha,
+        template.safety_reviewed_by_user_id, template.safety_reviewed_at,
+        template.safety_review_state
       ]);
 
       const versionId = versionHeader.id;

@@ -609,6 +609,102 @@ const publish = async (req, res, next) => {
         message: error.message
       });
     }
+    // ATM-001 M1: the publication admission gate fails closed with every reason
+    // it found, so the caller can correct the knowledge rather than guess.
+    if (error.code === 'PUBLICATION_ADMISSION_FAILED') {
+      return res.status(409).json({
+        success: false,
+        message: error.message,
+        code: error.code,
+        failures: error.failures
+      });
+    }
+    next(error);
+  }
+};
+
+/**
+ * ATM-001 M1 — Knowledge governance lifecycle handlers.
+ *
+ * Authorization is enforced by requirePermission on the routes; these handlers
+ * delegate the domain rules (valid transitions, mandatory rejection reason,
+ * approval binding to content) to the model, and map domain errors to HTTP.
+ */
+const governanceAction = (modelMethod) => async (req, res, next) => {
+  try {
+    const templateId = parseInt(req.params.id, 10);
+    if (!Number.isFinite(templateId) || templateId <= 0) {
+      return res.status(400).json({ success: false, message: 'Invalid template id' });
+    }
+
+    const template = await TaskTemplate[modelMethod](
+      templateId,
+      req.user.id,
+      req.user.organization_id,
+      req.body && req.body.reason
+    );
+
+    res.json({ success: true, data: { template } });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const submitForReview = governanceAction('submitForReview');
+const approve = governanceAction('approveTemplate');
+const reopenForRework = governanceAction('reopenForRework');
+
+/**
+ * Reject a template under review. A reason is mandatory.
+ */
+const reject = async (req, res, next) => {
+  try {
+    const templateId = parseInt(req.params.id, 10);
+    if (!Number.isFinite(templateId) || templateId <= 0) {
+      return res.status(400).json({ success: false, message: 'Invalid template id' });
+    }
+
+    const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {};
+    const reason = body.rejection_reason || body.reason;
+    if (!(typeof reason === 'string' && reason.trim())) {
+      return res.status(400).json({ success: false, message: 'rejection_reason is required' });
+    }
+
+    const template = await TaskTemplate.rejectTemplate(
+      templateId,
+      req.user.id,
+      req.user.organization_id,
+      reason
+    );
+
+    res.json({ success: true, data: { template } });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Record an explicit safety review of the working template.
+ */
+const recordSafetyReview = async (req, res, next) => {
+  try {
+    const templateId = parseInt(req.params.id, 10);
+    if (!Number.isFinite(templateId) || templateId <= 0) {
+      return res.status(400).json({ success: false, message: 'Invalid template id' });
+    }
+
+    const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {};
+    const safetyReviewState = body.safety_review_state;
+
+    const template = await TaskTemplate.recordSafetyReview(
+      templateId,
+      req.user.id,
+      req.user.organization_id,
+      safetyReviewState
+    );
+
+    res.json({ success: true, data: { template } });
+  } catch (error) {
     next(error);
   }
 };
@@ -625,5 +721,10 @@ module.exports = {
   getTaskKinds,
   update,
   remove,
-  publish
+  publish,
+  submitForReview,
+  approve,
+  reject,
+  reopenForRework,
+  recordSafetyReview
 };
