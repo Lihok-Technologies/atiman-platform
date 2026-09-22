@@ -23,6 +23,8 @@ module.exports = {
   ...require('./task-template.model'),
   // ODM Findings with SAP Catalog Support
   Finding: require('./finding.model'),
+  // Atiman finding assessment (Operator Corrected / Monitor / Escalate)
+  FindingAssessment: require('./finding-assessment.model'),
   // SAP S/4HANA PM Catalogs (A, B, C, 5)
   ...require('./sap-catalog.model'),
   // Inspection Results
