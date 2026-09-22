@@ -224,9 +224,14 @@ $$;
 --   - "reviewed_controls_defined requires >= 1 safety control row" (cross-table);
 --   - parent-template cycle detection (cross-row);
 --   - permission and qualified-reviewer checks;
---   - approver != publisher (publisher identity is not a column of this row);
 --   - approval content-hash / staleness verification;
 --   - step and rule conformance.
+--
+-- NOTE: an earlier revision of this migration claimed that "approver != publisher"
+-- could not be encoded here because publisher identity is not a column of this
+-- row. That claim was factually wrong: task_template_versions.published_by_user_id
+-- (migration 009) IS on this row and IS the publishing principal, so the
+-- segregation rule is intrinsic row-local truth. It is enforced below.
 DO $$
 BEGIN
     IF NOT EXISTS (
@@ -273,6 +278,43 @@ BEGIN
             CHECK (safety_review_state IS NULL OR safety_review_state IN (
                 'not_assessed', 'reviewed_no_control_required', 'reviewed_controls_defined'
             ));
+    END IF;
+END
+$$;
+
+-- =====================================================
+-- Segregation of duties: approver != publisher (row-local)
+-- =====================================================
+-- ATM-001 M1 requires that whoever approves governed knowledge is not the
+-- principal who publishes it. Both identities are columns of this same row —
+-- approver_user_id is the frozen approver, published_by_user_id (migration 009)
+-- is the publishing principal — so the rule is intrinsic row-local truth and
+-- PostgreSQL must not permit direct SQL to construct a governed published
+-- version that violates it.
+--
+-- Scope of this constraint: it applies when BOTH identities are present, which
+-- is the condition the approved M1 invariant is stated over. A governed row that
+-- omits published_by_user_id entirely is therefore not rejected by this CHECK.
+-- That case is left open deliberately and is recorded here rather than silently
+-- assumed closed: every current raw-SQL fixture in the knowledge-versioning
+-- suite omits the publisher column, so requiring it NOT NULL here would have
+-- forced an unrelated 35-site fixture rewrite outside the scope of this repair.
+-- See the ATM-001 M1 review record for the open item.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'chk_task_template_versions_approver_not_publisher'
+          AND conrelid = 'task_template_versions'::regclass
+    ) THEN
+        ALTER TABLE task_template_versions
+            ADD CONSTRAINT chk_task_template_versions_approver_not_publisher
+            CHECK (
+                lifecycle_state_at_publish NOT IN ('published', 'superseded', 'retired')
+                OR published_by_user_id IS NULL
+                OR approver_user_id IS NULL
+                OR approver_user_id <> published_by_user_id
+            );
     END IF;
 END
 $$;

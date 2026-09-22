@@ -173,6 +173,58 @@ async function createPublishableTemplate(overrides = {}) {
 
 const ruleNames = (error) => (error.failures || []).map((f) => f.rule);
 
+/**
+ * Insert a governed published version row DIRECTLY in SQL, bypassing the
+ * admission service entirely, so the database-level invariant can be attacked
+ * rather than only the service rule.
+ *
+ * Follows the documented assembly pattern: insert unsealed, add a step version,
+ * then seal — all inside one transaction, because migration 009 refuses to
+ * insert an already-sealed row and its deferred trigger refuses to commit an
+ * unsealed post-publication row.
+ *
+ * @param {number} templateId
+ * @param {Object} options
+ * @param {number|null} options.approverUserId
+ * @param {number|null} options.publisherUserId
+ * @param {string} [options.lifecycle]
+ * @returns {Promise<number>} the created version id
+ */
+async function insertGovernedVersionRaw(templateId, {
+  approverUserId,
+  publisherUserId,
+  lifecycle = 'published'
+}) {
+  return withConn(async (conn) => {
+    const [version] = await conn.query(
+      `INSERT INTO task_template_versions (
+         task_template_id, version_number, equipment_type_id, template_name, maintenance_type,
+         lifecycle_state_at_publish, is_step_set_sealed,
+         published_by_user_id, published_at,
+         reviewer_user_id, reviewed_at, approver_user_id, approved_at,
+         safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at
+       ) VALUES (?, 1, ?, 'Raw governed version', 'preventive', ?, FALSE,
+         ?, NOW(), ?, NOW(), ?, NOW(), 'reviewed_no_control_required', ?, NOW())
+       RETURNING id`,
+      [templateId, EQUIPMENT_TYPE, lifecycle, publisherUserId, REVIEWER, approverUserId, REVIEWER]
+    );
+
+    const [step] = await conn.query(
+      `SELECT id FROM task_template_steps WHERE task_template_id = ? ORDER BY step_no LIMIT 1`,
+      [templateId]
+    );
+    await conn.query(
+      `INSERT INTO task_template_step_versions (
+         task_template_version_id, step_no, task_template_step_id, step_type, instruction
+       ) VALUES (?, 1, ?, 'instruction', 'Raw fixture step version')`,
+      [version.id, step.id]
+    );
+    await conn.query(`UPDATE task_template_versions SET is_step_set_sealed = TRUE WHERE id = ?`, [version.id]);
+
+    return version.id;
+  });
+}
+
 describe('Knowledge Publication Admission', { skip: DB_TEST_SKIP_REASON }, () => {
   before(async () => {
     await ensureFixture();
@@ -467,6 +519,12 @@ describe('Knowledge Publication Admission', { skip: DB_TEST_SKIP_REASON }, () =>
         assert.ok(ruleNames(err).includes('SEGREGATION_OF_DUTIES'));
         return true;
       });
+
+      // The refusal must be a refusal to write, not a version left behind.
+      const versions = await withConn((conn) => conn.query(
+        'SELECT COUNT(*)::int AS n FROM task_template_versions WHERE task_template_id = ?', [id]
+      ).then((rows) => rows[0].n));
+      assert.strictEqual(versions, 0, 'a refused self-publication must not create a version row');
     });
 
     it('allows a different authorised publisher', async () => {
@@ -486,6 +544,65 @@ describe('Knowledge Publication Admission', { skip: DB_TEST_SKIP_REASON }, () =>
         assert.ok(rules.includes('EVIDENCE_MISSING'));
         return true;
       });
+    });
+  });
+
+  // ------------------------------------------ database-level segregation (M1)
+  describe('Segregation of duties is enforced by PostgreSQL, not only the service', () => {
+    it('rejects direct SQL that names the same principal as approver and publisher', async () => {
+      const id = await createDraftTemplate();
+
+      await assert.rejects(
+        () => insertGovernedVersionRaw(id, {
+          approverUserId: APPROVER,
+          publisherUserId: APPROVER
+        }),
+        /chk_task_template_versions_approver_not_publisher/,
+        'a governed published row must not be representable with approver == publisher'
+      );
+    });
+
+    it('rejects direct SQL with approver == publisher for retired knowledge too', async () => {
+      const id = await createDraftTemplate();
+
+      await assert.rejects(
+        () => insertGovernedVersionRaw(id, {
+          approverUserId: REVIEWER,
+          publisherUserId: REVIEWER,
+          lifecycle: 'retired'
+        }),
+        /chk_task_template_versions_approver_not_publisher/
+      );
+    });
+
+    it('permits direct SQL when approver and publisher are different principals', async () => {
+      const id = await createDraftTemplate();
+      const versionId = await insertGovernedVersionRaw(id, {
+        approverUserId: APPROVER,
+        publisherUserId: PUBLISHER
+      });
+
+      const [row] = await withConn((conn) => conn.query(
+        `SELECT approver_user_id, published_by_user_id FROM task_template_versions WHERE id = ?`,
+        [versionId]
+      ));
+      assert.strictEqual(Number(row.approver_user_id), APPROVER);
+      assert.strictEqual(Number(row.published_by_user_id), PUBLISHER);
+      assert.notStrictEqual(Number(row.approver_user_id), Number(row.published_by_user_id));
+    });
+
+    it('records the publishing principal on the row the service creates', async () => {
+      const id = await createPublishableTemplate();
+      const result = await TaskTemplate.publishVersion(id, PUBLISHER, { publishedByOrganizationId: ORG });
+
+      const [row] = await withConn((conn) => conn.query(
+        `SELECT approver_user_id, published_by_user_id FROM task_template_versions WHERE id = ?`,
+        [result.versionId]
+      ));
+      assert.strictEqual(Number(row.published_by_user_id), PUBLISHER,
+        'the service must freeze who published, so the database rule has something to compare');
+      assert.strictEqual(Number(row.approver_user_id), APPROVER);
+      assert.notStrictEqual(Number(row.approver_user_id), Number(row.published_by_user_id));
     });
   });
 
