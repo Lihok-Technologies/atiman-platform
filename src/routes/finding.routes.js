@@ -8,6 +8,7 @@ const router = express.Router();
 const { authenticate, requireAdmin } = require('../middleware/auth');
 const { requirePermission } = require('../middleware/rbac');
 const findingController = require('../controllers/finding.controller');
+const findingAssessmentController = require('../controllers/finding-assessment.controller');
 
 // All routes require authentication
 router.use(authenticate);
@@ -55,11 +56,55 @@ router.get('/catalog-options/:equipmentClassId', requirePermission('FINDINGS', '
 router.get('/asset/:assetId', requirePermission('FINDINGS', 'VIEW'), findingController.getByAsset);
 
 /**
+ * @route   GET /api/findings/assessments/queue
+ * @desc    Findings awaiting an assessment decision (supervisor queue)
+ * @access  Private
+ *
+ * Declared before /:id so the literal path is not captured as a finding id.
+ */
+router.get('/assessments/queue', requirePermission('FINDINGS', 'VIEW_ASSESSMENT'), findingAssessmentController.getAssessmentQueue);
+
+/**
+ * @route   POST /api/findings/assessments/:id/confirm
+ * @desc    Confirm or override the recommended outcome (accountable decision)
+ * @access  Private (Admin/Supervisor)
+ */
+router.post('/assessments/:id/confirm', requirePermission('FINDINGS', 'CONFIRM_OUTCOME'), findingAssessmentController.confirmAssessment);
+
+/**
+ * @route   POST /api/findings/assessments/:id/reject
+ * @desc    Reject an assessment (reason required)
+ * @access  Private (Admin/Supervisor)
+ */
+router.post('/assessments/:id/reject', requirePermission('FINDINGS', 'CONFIRM_OUTCOME'), findingAssessmentController.rejectAssessment);
+
+/**
+ * @route   POST /api/findings/assessments/:id/request-evidence
+ * @desc    Request more evidence before deciding
+ * @access  Private (Admin/Supervisor)
+ */
+router.post('/assessments/:id/request-evidence', requirePermission('FINDINGS', 'CONFIRM_OUTCOME'), findingAssessmentController.requestMoreEvidence);
+
+/**
  * @route   GET /api/findings/:id
  * @desc    Get finding details
  * @access  Private
  */
 router.get('/:id', requirePermission('FINDINGS', 'VIEW'), findingController.getById);
+
+/**
+ * @route   GET /api/findings/:id/assessments
+ * @desc    Assessment history for a finding
+ * @access  Private
+ */
+router.get('/:id/assessments', requirePermission('FINDINGS', 'VIEW_ASSESSMENT'), findingAssessmentController.getAssessmentHistory);
+
+/**
+ * @route   POST /api/findings/:id/assessments
+ * @desc    Record a recommended outcome, opening an assessment
+ * @access  Private (Operator and above)
+ */
+router.post('/:id/assessments', requirePermission('FINDINGS', 'RECOMMEND_OUTCOME'), findingAssessmentController.openAssessment);
 
 /**
  * @route   POST /api/findings

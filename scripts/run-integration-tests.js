@@ -19,7 +19,8 @@ if (missing.length || !/(?:^|[_-])test(?:$|[_-])/i.test(process.env.TEST_DB_NAME
 // Atiman replacement coverage, but they are NOT valid PostgreSQL acceptance
 // suites for current Atiman. See ATM-013D.5D.
 const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
-  'tests/knowledge-versioning.test.js'
+  'tests/knowledge-versioning.test.js',
+  'tests/finding-assessment.test.js'
 ];
 
 const result = spawnSync(process.execPath, ['--test', ...SANCTIONED_POSTGRES_INTEGRATION_SUITES], {
