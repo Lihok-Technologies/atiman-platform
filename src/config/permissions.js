@@ -46,7 +46,13 @@ const PERMISSIONS = {
     VIEW: { admin: 'all', supervisor: 'all', operator: 'all' },
     CREATE: { admin: 'all', supervisor: 'all', operator: 'all' },
     MANAGE: { admin: 'all', supervisor: 'all', operator: 'none' },
-    LINK_SAP: { admin: 'all', supervisor: 'all', operator: 'none' }
+    LINK_SAP: { admin: 'all', supervisor: 'all', operator: 'none' },
+    // Assessment stage (ATM-000 9-10, ATM-002 7.2-7.3, 8.2-8.3).
+    // Operators may recommend an outcome; the accountable confirmation belongs
+    // to supervisor/admin, who own escalation decisions (ATM-002 8.3).
+    VIEW_ASSESSMENT: { admin: 'all', supervisor: 'all', operator: 'all' },
+    RECOMMEND_OUTCOME: { admin: 'all', supervisor: 'all', operator: 'all' },
+    CONFIRM_OUTCOME: { admin: 'all', supervisor: 'all', operator: 'none' }
   },
 
   // SAP Catalogs

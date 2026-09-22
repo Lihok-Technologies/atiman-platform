@@ -8,6 +8,15 @@
 
 const BaseModel = require('./base.model');
 
+/**
+ * Finding statuses produced by a confirmed assessment. They must never be set
+ * directly, or the Assessment stage would be bypassed.
+ * See database/postgresql/013_finding_assessment.sql.
+ */
+const ASSESSMENT_DERIVED_STATUSES = Object.freeze([
+  'assessed', 'monitored', 'escalated', 'resolved'
+]);
+
 class FindingModel extends BaseModel {
   constructor() {
     super('findings');
@@ -199,11 +208,28 @@ class FindingModel extends BaseModel {
 
   /**
    * Update finding status
+   *
+   * The Atiman lifecycle statuses (assessed / monitored / escalated / resolved)
+   * are derived from a confirmed assessment and cannot be set directly here,
+   * because doing so would bypass the Assessment stage entirely
+   * (ATM-000 section 10, ATM-002 section 8.3). Database constraint
+   * chk_findings_outcome_status_coherence enforces the same rule.
+   *
    * @param {number} findingId - Finding ID
    * @param {string} status - New status
    * @param {number} organizationId - Organization ID
    */
   async updateStatus(findingId, status, organizationId) {
+    if (ASSESSMENT_DERIVED_STATUSES.includes(status)) {
+      throw Object.assign(
+        new Error(
+          `Status '${status}' is produced by a confirmed finding assessment; `
+          + 'use POST /api/findings/:id/assessments and confirm the outcome instead'
+        ),
+        { statusCode: 409 }
+      );
+    }
+
     const sql = `
       UPDATE ${this.tableName}
       SET status = ?, updated_at = NOW()
