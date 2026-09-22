@@ -31,6 +31,7 @@ const DATABASE_ENV_NAMES = [
 // remain database-mutating files, so they stay in this list.
 const DB_MUTATING_SUITES = [
   'knowledge-versioning.test.js',
+  'finding-assessment.test.js',
   'step6-access-control.test.js',
   'step6-coverage-e2e.test.js',
   'step6-performance.test.js',
@@ -43,7 +44,8 @@ const DB_MUTATING_SUITES = [
 // architecture), not about safety. This must stay in step with
 // SANCTIONED_POSTGRES_INTEGRATION_SUITES in scripts/run-integration-tests.js.
 const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
-  'knowledge-versioning.test.js'
+  'knowledge-versioning.test.js',
+  'finding-assessment.test.js'
 ];
 
 const REPO_ROOT = path.resolve(__dirname, '..');
