@@ -86,6 +86,24 @@ const PERMISSIONS = {
     DELETE: { admin: 'all', supervisor: 'none', operator: 'none' }
   },
 
+  // Knowledge Foundation governance (ATM-001 M1)
+  //
+  // Deliberately separate from TASKS.CREATE/UPDATE. Being permitted to edit a
+  // task template is not the same as being qualified and accountable for
+  // reviewing or approving governed engineering knowledge, nor the same as
+  // having reviewed its safety implications.
+  //
+  // V1 maps these capabilities onto the existing roles rather than introducing
+  // a user qualification model or a new global role. The separation that
+  // matters is enforced where it is recorded: approval is an explicit act with
+  // attribution, and the approver must not be the publisher.
+  KNOWLEDGE: {
+    VIEW: { admin: 'all', supervisor: 'all', operator: 'all' },
+    REVIEW: { admin: 'all', supervisor: 'all', operator: 'none' },
+    APPROVE: { admin: 'all', supervisor: 'all', operator: 'none' },
+    SAFETY_REVIEW: { admin: 'all', supervisor: 'all', operator: 'none' }
+  },
+
   // Reports
   REPORTS: {
     VIEW: { admin: 'all', supervisor: 'all', operator: 'all' },
