@@ -72,6 +72,10 @@ psql -U postgres -d odm_cmms -f database/postgresql/005_commercial_security.sql
 psql -U postgres -d odm_cmms -f database/postgresql/006_customization_files.sql
 psql -U postgres -d odm_cmms -f database/postgresql/007_indexes.sql
 psql -U postgres -d odm_cmms -f database/postgresql/008_views.sql
+psql -U postgres -d odm_cmms -f database/postgresql/009_knowledge_versioning.sql
+psql -U postgres -d odm_cmms -f database/postgresql/010_knowledge_versioning_indexes.sql
+psql -U postgres -d odm_cmms -f database/postgresql/011_knowledge_provenance.sql
+psql -U postgres -d odm_cmms -f database/postgresql/012_task_template_safety_control_versioning.sql
 
 # 5. Start server
 npm run dev

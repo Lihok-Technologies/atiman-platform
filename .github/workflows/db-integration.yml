@@ -1,0 +1,107 @@
+name: PostgreSQL Integration Validation
+
+# First active GitHub Actions workflow for Atiman.
+#
+# Provisions a disposable, job-scoped PostgreSQL, applies the complete schema
+# (migrations 001-012), and runs the sanctioned integration runner
+# (scripts/run-integration-tests.js). The workflow requires no repository
+# secrets and references no production credential.
+#
+# The ATM-013D.4 safety invariant is preserved: the sanctioned runner is the
+# only execution path, and it establishes NODE_ENV=test / RUN_DB_TESTS=true
+# itself. This workflow deliberately does NOT set those variables, which keeps
+# ordinary `npm test` non-destructive here.
+
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    name: Disposable PostgreSQL integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          # Throwaway literals for the job-scoped service container. They are
+          # destroyed with the runner and are not secrets.
+          POSTGRES_USER: atiman_test
+          POSTGRES_PASSWORD: atiman_test_password
+          POSTGRES_DB: atiman_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # Single source of truth for the disposable test database. TEST_DB_NAME
+      # satisfies the ATM-013D.4 test-database name rule enforced by
+      # src/config/database.js and scripts/run-integration-tests.js.
+      TEST_DB_HOST: localhost
+      TEST_DB_PORT: "5432"
+      TEST_DB_NAME: atiman_test
+      TEST_DB_USER: atiman_test
+      TEST_DB_PASSWORD: atiman_test_password
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Ensure PostgreSQL client
+        run: |
+          if ! command -v psql >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y postgresql-client
+          fi
+          psql --version
+
+      - name: Apply PostgreSQL schema (migrations 001-012)
+        shell: bash
+        env:
+          PGPASSWORD: atiman_test_password
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          migrations=(database/postgresql/[0-9][0-9][0-9]_*.sql)
+          if [ ${#migrations[@]} -eq 0 ]; then
+            echo "No migration files found in database/postgresql/" >&2
+            exit 1
+          fi
+
+          echo "Applying ${#migrations[@]} migration file(s) in filename order"
+          for file in "${migrations[@]}"; do
+            echo "--> ${file}"
+            psql -v ON_ERROR_STOP=1 \
+              -h "${TEST_DB_HOST}" \
+              -p "${TEST_DB_PORT}" \
+              -U "${TEST_DB_USER}" \
+              -d "${TEST_DB_NAME}" \
+              -f "${file}"
+          done
+
+          echo "Schema applied successfully."
+
+      - name: Run sanctioned database integration tests
+        run: npm run test:integration
