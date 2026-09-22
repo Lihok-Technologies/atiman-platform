@@ -53,6 +53,51 @@ async function ensureTestUser(conn) {
 // is reproduced.
 const TEST_ORGANIZATION_IDS = [990001, 990002];
 
+// ATM-001 M1 — deterministic governance principals for the raw-SQL version
+// fixtures below.
+//
+// A governed task_template_versions row must now carry a frozen publisher that
+// is NOT the approver, so the fixtures cannot rely on "whatever user happens to
+// exist": ordering-dependent principals would be equal to each other on a
+// single-user database and would also drift between runs against a reused test
+// database. Two named principals, seeded once and committed, make the
+// attribution explicit and stable.
+const GOVERNANCE_REVIEWER_USERNAME = 'kv-governance-reviewer';
+const GOVERNANCE_PUBLISHER_USERNAME = 'kv-governance-publisher';
+
+// Interpolated into the fixture SQL as ${GOVERNANCE_*_SQL} by the raw version
+// INSERTs below, so a principal can never drift between the seed and its use.
+const GOVERNANCE_REVIEWER_SQL = `(SELECT id FROM users WHERE username = '${GOVERNANCE_REVIEWER_USERNAME}')`;
+const GOVERNANCE_PUBLISHER_SQL = `(SELECT id FROM users WHERE username = '${GOVERNANCE_PUBLISHER_USERNAME}')`;
+
+async function ensureGovernancePrincipals() {
+  const conn = await getConnection();
+  try {
+    for (const [username, fullName, role] of [
+      [GOVERNANCE_REVIEWER_USERNAME, 'KV Governance Reviewer', 'supervisor'],
+      [GOVERNANCE_PUBLISHER_USERNAME, 'KV Governance Publisher', 'admin']
+    ]) {
+      // Each placeholder is used for exactly one column: reusing one placeholder
+      // for both a varchar column value and a concatenation operand makes
+      // PostgreSQL deduce inconsistent parameter types and reject the statement.
+      await conn.query(
+        `INSERT INTO users (username, email, password_hash, full_name, role, is_active)
+         VALUES ($1, $2, 'hash', $3, $4, true)
+         ON CONFLICT (username) DO NOTHING`,
+        [username, `${username}@test.local`, fullName, role]
+      );
+    }
+    // Committed so every test transaction can see them and the FK cannot be
+    // rolled back out from under a fixture.
+    await conn.commit();
+  } catch (error) {
+    await conn.rollback();
+    throw error;
+  } finally {
+    conn.release();
+  }
+}
+
 async function ensureTestOrganizations() {
   const conn = await getConnection();
   try {
@@ -136,6 +181,7 @@ const isAncestryError = (err) => {
 describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () => {
   before(async () => {
     await ensureTestOrganizations();
+    await ensureGovernancePrincipals();
   });
 
   it('creates required knowledge versioning tables', async () => {
@@ -235,12 +281,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
         VALUES ($1, 1, $2, 'Valid State', 'preventive', 'published',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW())
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
       assert.ok(valid.id);
@@ -253,12 +299,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
             task_template_id, version_number, equipment_type_id,
             template_name, maintenance_type, lifecycle_state_at_publish,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
           VALUES ($1, 2, $2, 'Draft State', 'preventive', 'draft',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW())
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         `, [template.id, template.equipment_type_id]);
       } catch (err) {
         rejected = /check.*constraint|violates check constraint|new row.*violates/i.test(err.message || '');
@@ -306,12 +352,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
         VALUES ($1, 1, $2, 'Chain Test Template', 'preventive',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW())
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -412,12 +458,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
         VALUES ($1, 1, $2, 'Transition Template v1', 'preventive', 'published',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW())
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -426,12 +472,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
         VALUES ($1, 2, $2, 'Transition Template v2', 'preventive', 'published',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW())
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -496,12 +542,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
         VALUES ($1, 1, $2, 'Self Super Template', 'preventive', 'published',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW())
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -603,12 +649,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
         VALUES ($1, 1, $2, 'Template A v1', 'preventive', 'published',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW())
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [templateA.id, templateA.equipment_type_id]);
 
@@ -617,12 +663,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
         VALUES ($1, 1, $2, 'Template B v1', 'preventive', 'published',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW())
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [templateB.id, templateB.equipment_type_id]);
 
@@ -647,12 +693,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
         VALUES ($1, 2, $2, 'Template A v2', 'preventive', 'published',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW())
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [templateA.id, templateA.equipment_type_id]);
 
@@ -680,12 +726,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
         VALUES ($1, 1, $2, 'Step Update Template', 'preventive', 'published',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW())
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -728,12 +774,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
         VALUES ($1, 1, $2, 'Step Delete Template', 'preventive', 'published',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW())
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -775,12 +821,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
         VALUES ($1, 1, $2, 'Sealed Step Set Template', 'preventive', 'published', FALSE,
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW())
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -859,12 +905,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
         VALUES ($1, 1, $2, 'Unsealed Step Set Template', 'preventive', 'published', FALSE,
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW())
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -907,12 +953,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
         VALUES ($1, 1, $2, 'Successor Valid v1', 'preventive', 'published',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW())
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -921,12 +967,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
         VALUES ($1, 2, $2, 'Successor Retired', 'preventive', 'retired',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW())
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -1001,12 +1047,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
         VALUES ($1, 1, $2, 'Unseal Test Template', 'preventive', 'published', FALSE,
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW())
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -1056,12 +1102,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
         VALUES ($1, 1, $2, 'Zero Step Seal Template', 'preventive', 'published', FALSE,
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW())
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -1095,12 +1141,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
         VALUES ($1, 1, $2, 'Unsealed Commit Template', 'preventive', 'published', FALSE,
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW())
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
       `, [template.id, template.equipment_type_id]);
 
       let blocked = false;
@@ -1130,12 +1176,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
         VALUES ($1, 1, $2, 'Assemble Seal Commit Template', 'preventive', 'published', FALSE,
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW())
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -1183,12 +1229,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
         VALUES ($1, 1, $2, 'Post-Seal Insert Template', 'preventive', 'published', FALSE,
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW())
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -1350,12 +1396,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
         VALUES ($1, 1, $2, 'Chain v1', 'preventive', 'published', FALSE,
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW())
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -1364,12 +1410,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
         VALUES ($1, 2, $2, 'Chain v2', 'preventive', 'published', FALSE,
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW())
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -1378,12 +1424,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
         VALUES ($1, 3, $2, 'Chain v3', 'preventive', 'published', FALSE,
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW())
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -1428,12 +1474,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
         VALUES ($1, 1, $2, 'Backlink v1', 'preventive', 'published', FALSE,
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW())
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -1442,12 +1488,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
         VALUES ($1, 2, $2, 'Backlink v2', 'preventive', 'published', FALSE,
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW())
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -1490,12 +1536,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
         VALUES ($1, 1, $2, 'Unsealed Retired Template', 'preventive', 'retired', FALSE,
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW())
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
       `, [template.id, template.equipment_type_id]);
 
       let blocked = false;
@@ -1525,12 +1571,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
         VALUES ($1, 1, $2, 'Unsealed Superseded Template', 'preventive', 'published', FALSE,
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW())
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -1539,12 +1585,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
         VALUES ($1, 2, $2, 'Successor Template', 'preventive', 'published', FALSE,
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW())
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -1602,12 +1648,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
         VALUES ($1, 1, $2, 'Ancestry Template A', 'preventive', 'published', FALSE,
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW())
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [templateA.id, templateA.equipment_type_id]);
 
@@ -1908,12 +1954,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
         VALUES ($1, 1, $2, 'Frozen Evidence Template', 'preventive', 'published', FALSE,
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW())
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -2001,12 +2047,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
         VALUES ($1, 1, $2, 'Frozen Seal Template', 'preventive', 'published', FALSE,
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW())
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -2468,12 +2514,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
         VALUES ($1, 1, $2, 'Lineage Template', 'preventive', 'published', FALSE,
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW())
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -2659,11 +2705,11 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id, template_name,
           maintenance_type, lifecycle_state_at_publish,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at) VALUES ($1, $2, $3, 'Safety Publish Test', 'corrective', 'published',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id) VALUES ($1, $2, $3, 'Safety Publish Test', 'corrective', 'published',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW())
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, versionNo, template.equipment_type_id]);
 
@@ -2739,11 +2785,11 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id, template_name,
           maintenance_type, lifecycle_state_at_publish,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at) VALUES ($1, $2, $3, 'Cross Safety Test', 'corrective', 'published',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id) VALUES ($1, $2, $3, 'Cross Safety Test', 'corrective', 'published',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW())
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [templateA.id, versionNo, templateA.equipment_type_id]);
 
@@ -2807,11 +2853,11 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id, template_name,
           maintenance_type, lifecycle_state_at_publish,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at) VALUES ($1, $2, $3, 'Seal Safety Test', 'corrective', 'published',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW(),
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id) VALUES ($1, $2, $3, 'Seal Safety Test', 'corrective', 'published',
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            (SELECT id FROM users ORDER BY id LIMIT 1), NOW())
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [template.id, versionNo, template.equipment_type_id]);
 

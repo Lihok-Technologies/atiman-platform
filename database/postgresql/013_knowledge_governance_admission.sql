@@ -232,27 +232,40 @@ $$;
 -- row. That claim was factually wrong: task_template_versions.published_by_user_id
 -- (migration 009) IS on this row and IS the publishing principal, so the
 -- segregation rule is intrinsic row-local truth. It is enforced below.
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'chk_task_template_versions_requires_governance'
-          AND conrelid = 'task_template_versions'::regclass
-    ) THEN
-        ALTER TABLE task_template_versions
-            ADD CONSTRAINT chk_task_template_versions_requires_governance
-            CHECK (lifecycle_state_at_publish NOT IN ('published', 'superseded', 'retired') OR (
-                reviewer_user_id IS NOT NULL
-                AND reviewed_at IS NOT NULL
-                AND approver_user_id IS NOT NULL
-                AND approved_at IS NOT NULL
-                AND safety_review_state IN ('reviewed_no_control_required', 'reviewed_controls_defined')
-                AND safety_reviewed_by_user_id IS NOT NULL
-                AND safety_reviewed_at IS NOT NULL
-            ));
-    END IF;
-END
-$$;
+--
+-- The required attribution for a governed version is therefore complete:
+--   reviewer, reviewer time, approver, approval time, safety-review state,
+--   safety reviewer, safety-review time, and the publishing principal.
+-- An unattributed governed version is unrepresentable.
+--
+-- Converge on reruns, following the precedent set by migration 009 for
+-- chk_task_template_versions_lifecycle_state: an earlier revision of this
+-- migration already installed this constraint without the publisher
+-- requirement, so a plain IF NOT EXISTS guard would silently leave such a
+-- database ungoverned. DROP + ADD installs the current definition either way.
+--
+-- Consequence, stated deliberately: the ADD validates existing rows, so this
+-- migration FAILS on a database that already contains a governed
+-- task_template_versions row with a NULL publisher. That is fail-closed by
+-- design — such rows are precisely what the invariant forbids — and any
+-- database in that state must be remediated before this migration is applied.
+-- No such row exists in the Atiman corpus (task_template_versions is empty and
+-- no version has ever been published).
+ALTER TABLE task_template_versions
+    DROP CONSTRAINT IF EXISTS chk_task_template_versions_requires_governance;
+
+ALTER TABLE task_template_versions
+    ADD CONSTRAINT chk_task_template_versions_requires_governance
+    CHECK (lifecycle_state_at_publish NOT IN ('published', 'superseded', 'retired') OR (
+        reviewer_user_id IS NOT NULL
+        AND reviewed_at IS NOT NULL
+        AND approver_user_id IS NOT NULL
+        AND approved_at IS NOT NULL
+        AND safety_review_state IN ('reviewed_no_control_required', 'reviewed_controls_defined')
+        AND safety_reviewed_by_user_id IS NOT NULL
+        AND safety_reviewed_at IS NOT NULL
+        AND published_by_user_id IS NOT NULL
+    ));
 
 -- The invariant deliberately applies to every value that
 -- chk_task_template_versions_lifecycle_state permits. There is no lifecycle
@@ -292,14 +305,12 @@ $$;
 -- PostgreSQL must not permit direct SQL to construct a governed published
 -- version that violates it.
 --
--- Scope of this constraint: it applies when BOTH identities are present, which
--- is the condition the approved M1 invariant is stated over. A governed row that
--- omits published_by_user_id entirely is therefore not rejected by this CHECK.
--- That case is left open deliberately and is recorded here rather than silently
--- assumed closed: every current raw-SQL fixture in the knowledge-versioning
--- suite omits the publisher column, so requiring it NOT NULL here would have
--- forced an unrelated 35-site fixture rewrite outside the scope of this repair.
--- See the ATM-001 M1 review record for the open item.
+-- Scope of this constraint: it applies when BOTH identities are present. That is
+-- not a loophole, because a governed version is now required to carry a
+-- publisher at all (chk_task_template_versions_requires_governance above makes
+-- published_by_user_id NOT NULL for every governed lifecycle state). Between the
+-- two constraints an unattributed governed version is unrepresentable and a
+-- governed version whose approver is its publisher is unrepresentable.
 DO $$
 BEGIN
     IF NOT EXISTS (
@@ -322,6 +333,50 @@ $$;
 -- =====================================================
 -- PART 4 — Foreign keys to users
 -- =====================================================
+
+-- =====================================================
+-- Publisher attribution durability (ON DELETE SET NULL -> RESTRICT)
+-- =====================================================
+-- The accountable publisher of immutable governed knowledge must stay
+-- historically attributable. Migration 009 created this foreign key as
+-- ON DELETE SET NULL, which would silently erase the publisher of already
+-- published knowledge when the user row was removed — and, now that a governed
+-- version requires a non-null publisher, would also make such a row violate the
+-- governance constraint on an unrelated user deletion.
+--
+-- This aligns publisher accountability with the frozen reviewer, approver and
+-- safety-review attribution added above, all of which are already
+-- ON DELETE RESTRICT.
+--
+-- The existing constraint name and delete action are read from the catalog
+-- rather than assumed: migration 009 declares it as
+-- fk_task_template_versions_published_by. confdeltype 'r' is RESTRICT; the DROP
+-- is therefore skipped once the database is already converged, which keeps
+-- migration 013 safe to reapply.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'fk_task_template_versions_published_by'
+          AND conrelid = 'task_template_versions'::regclass
+          AND contype = 'f'
+          AND confdeltype <> 'r'
+    ) THEN
+        ALTER TABLE task_template_versions
+            DROP CONSTRAINT fk_task_template_versions_published_by;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'fk_task_template_versions_published_by'
+          AND conrelid = 'task_template_versions'::regclass
+    ) THEN
+        ALTER TABLE task_template_versions
+            ADD CONSTRAINT fk_task_template_versions_published_by
+            FOREIGN KEY (published_by_user_id) REFERENCES users(id) ON DELETE RESTRICT;
+    END IF;
+END
+$$;
 
 DO $$
 BEGIN

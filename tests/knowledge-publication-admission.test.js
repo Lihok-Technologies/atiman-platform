@@ -174,26 +174,59 @@ async function createPublishableTemplate(overrides = {}) {
 const ruleNames = (error) => (error.failures || []).map((f) => f.rule);
 
 /**
- * Insert a governed published version row DIRECTLY in SQL, bypassing the
- * admission service entirely, so the database-level invariant can be attacked
- * rather than only the service rule.
+ * Create a fresh principal to act as the publisher of governed knowledge.
+ *
+ * A dedicated row is required for the publisher-deletion proofs: the publisher
+ * of an immutable version must not be deletable, so the test needs a user that
+ * exists solely for that assertion and can be disposed of with it.
+ *
+ * @returns {Promise<number>} the new user id
+ */
+async function createGovernedPublisherUser() {
+  return withConn(async (conn) => {
+    const [user] = await conn.query(
+      `INSERT INTO users (username, email, password_hash, full_name, role, organization_id, is_active)
+       VALUES (
+         'pub-doomed-' || floor(random() * 1000000000)::int::text,
+         'pub-doomed-' || floor(random() * 1000000000)::int::text || '@test.local',
+         'x', 'Publisher Under Deletion Test', 'admin', ?, true
+       ) RETURNING id`,
+      [ORG]
+    );
+    return user.id;
+  });
+}
+
+/**
+ * Insert a governed version row DIRECTLY in SQL, bypassing the admission
+ * service entirely, so the database-level invariant can be attacked rather
+ * than only the service rule.
  *
  * Follows the documented assembly pattern: insert unsealed, add a step version,
  * then seal — all inside one transaction, because migration 009 refuses to
  * insert an already-sealed row and its deferred trigger refuses to commit an
  * unsealed post-publication row.
  *
+ * Pass publisherUserId or approverUserId as null to withhold that attribution
+ * and provoke the corresponding row-local governance constraint.
+ *
  * @param {number} templateId
  * @param {Object} options
  * @param {number|null} options.approverUserId
  * @param {number|null} options.publisherUserId
  * @param {string} [options.lifecycle]
+ * @param {number} [options.versionNumber]
+ * @param {number|null} [options.supersededByVersionId] - required by migration 009
+ *   for a superseded row, so the supersession precondition is satisfied and the
+ *   row fails only for the governance condition under test
  * @returns {Promise<number>} the created version id
  */
 async function insertGovernedVersionRaw(templateId, {
   approverUserId,
   publisherUserId,
-  lifecycle = 'published'
+  lifecycle = 'published',
+  versionNumber = 1,
+  supersededByVersionId = null
 }) {
   return withConn(async (conn) => {
     const [version] = await conn.query(
@@ -202,11 +235,13 @@ async function insertGovernedVersionRaw(templateId, {
          lifecycle_state_at_publish, is_step_set_sealed,
          published_by_user_id, published_at,
          reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-         safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at
-       ) VALUES (?, 1, ?, 'Raw governed version', 'preventive', ?, FALSE,
-         ?, NOW(), ?, NOW(), ?, NOW(), 'reviewed_no_control_required', ?, NOW())
+         safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at,
+         superseded_by_version_id
+       ) VALUES (?, ?, ?, 'Raw governed version', 'preventive', ?, FALSE,
+         ?, NOW(), ?, NOW(), ?, NOW(), 'reviewed_no_control_required', ?, NOW(), ?)
        RETURNING id`,
-      [templateId, EQUIPMENT_TYPE, lifecycle, publisherUserId, REVIEWER, approverUserId, REVIEWER]
+      [templateId, versionNumber, EQUIPMENT_TYPE, lifecycle,
+        publisherUserId, REVIEWER, approverUserId, REVIEWER, supersededByVersionId]
     );
 
     const [step] = await conn.query(
@@ -603,6 +638,128 @@ describe('Knowledge Publication Admission', { skip: DB_TEST_SKIP_REASON }, () =>
         'the service must freeze who published, so the database rule has something to compare');
       assert.strictEqual(Number(row.approver_user_id), APPROVER);
       assert.notStrictEqual(Number(row.approver_user_id), Number(row.published_by_user_id));
+    });
+  });
+
+  // -------------------------------- publisher accountability is mandatory (M1)
+  describe('A governed version cannot exist without an accountable publisher', () => {
+    // The name of the row-local constraint that makes an unattributed governed
+    // version unrepresentable. Asserting the name keeps this suite honest about
+    // WHICH invariant refused the write.
+    const PUBLISHER_REQUIRED = /chk_task_template_versions_requires_governance/;
+
+    it('rejects direct SQL for a published version with a NULL publisher', async () => {
+      const id = await createDraftTemplate();
+
+      await assert.rejects(
+        () => insertGovernedVersionRaw(id, {
+          approverUserId: APPROVER,
+          publisherUserId: null
+        }),
+        PUBLISHER_REQUIRED,
+        'a published row must not be representable without its accountable publisher'
+      );
+    });
+
+    it('rejects direct SQL for a superseded version with a NULL publisher', async () => {
+      const id = await createDraftTemplate();
+
+      // Migration 009 requires a superseded row to name a published successor in
+      // the same template, and that precondition is enforced by a BEFORE trigger
+      // — so it must be satisfied here, otherwise the row would be refused for
+      // supersession instead of for the missing publisher under test.
+      const successorId = await insertGovernedVersionRaw(id, {
+        approverUserId: APPROVER,
+        publisherUserId: PUBLISHER,
+        versionNumber: 1
+      });
+
+      await assert.rejects(
+        () => insertGovernedVersionRaw(id, {
+          approverUserId: APPROVER,
+          publisherUserId: null,
+          lifecycle: 'superseded',
+          versionNumber: 2,
+          supersededByVersionId: successorId
+        }),
+        PUBLISHER_REQUIRED
+      );
+    });
+
+    it('rejects direct SQL for a retired version with a NULL publisher', async () => {
+      const id = await createDraftTemplate();
+
+      await assert.rejects(
+        () => insertGovernedVersionRaw(id, {
+          approverUserId: APPROVER,
+          publisherUserId: null,
+          lifecycle: 'retired'
+        }),
+        PUBLISHER_REQUIRED
+      );
+    });
+
+    it('permits direct SQL with complete attribution, a publisher, and approver != publisher', async () => {
+      const id = await createDraftTemplate();
+      const versionId = await insertGovernedVersionRaw(id, {
+        approverUserId: APPROVER,
+        publisherUserId: PUBLISHER
+      });
+
+      const [row] = await withConn((conn) => conn.query(
+        `SELECT reviewer_user_id, approver_user_id, published_by_user_id, safety_reviewed_by_user_id
+           FROM task_template_versions WHERE id = ?`,
+        [versionId]
+      ));
+      assert.ok(row.reviewer_user_id, 'reviewer attribution must be frozen');
+      assert.ok(row.approver_user_id, 'approver attribution must be frozen');
+      assert.ok(row.safety_reviewed_by_user_id, 'safety-review attribution must be frozen');
+      assert.strictEqual(Number(row.published_by_user_id), PUBLISHER,
+        'publisher attribution must be frozen and non-null');
+    });
+
+    it('rejects deletion of a user referenced as the publisher of governed knowledge', async () => {
+      const id = await createDraftTemplate();
+      const publisherId = await createGovernedPublisherUser();
+      const versionId = await insertGovernedVersionRaw(id, {
+        approverUserId: APPROVER,
+        publisherUserId: publisherId
+      });
+
+      await assert.rejects(
+        () => withConn((conn) => conn.query(`DELETE FROM users WHERE id = ?`, [publisherId])),
+        /foreign key|violates|restrict/i,
+        'a publisher of immutable governed knowledge must not be deletable'
+      );
+    });
+
+    it('leaves the frozen attribution intact after a refused publisher deletion', async () => {
+      const id = await createDraftTemplate();
+      const publisherId = await createGovernedPublisherUser();
+      const versionId = await insertGovernedVersionRaw(id, {
+        approverUserId: APPROVER,
+        publisherUserId: publisherId
+      });
+
+      const before = await withConn((conn) => conn.query(
+        `SELECT published_by_user_id, approver_user_id FROM task_template_versions WHERE id = ?`, [versionId]
+      ).then((rows) => rows[0]));
+
+      await assert.rejects(
+        () => withConn((conn) => conn.query(`DELETE FROM users WHERE id = ?`, [publisherId]))
+      );
+
+      const after = await withConn((conn) => conn.query(
+        `SELECT published_by_user_id, approver_user_id FROM task_template_versions WHERE id = ?`, [versionId]
+      ).then((rows) => rows[0]));
+      const stillExists = await withConn((conn) => conn.query(
+        `SELECT id FROM users WHERE id = ?`, [publisherId]
+      ).then((rows) => rows.length));
+
+      assert.strictEqual(Number(after.published_by_user_id), Number(before.published_by_user_id),
+        'a refused publisher deletion must not erase the frozen publisher');
+      assert.strictEqual(Number(after.approver_user_id), Number(before.approver_user_id));
+      assert.strictEqual(stillExists, 1, 'the refused deletion must not remove the user');
     });
   });
 
