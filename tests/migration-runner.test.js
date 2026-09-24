@@ -29,6 +29,13 @@ const RUNNER = path.join(REPO_ROOT, 'scripts', 'migrate-postgres.js');
 const SMOKE_TEST = path.join(REPO_ROOT, 'scripts', 'smoke-test-pg.js');
 const MIGRATIONS_DIR = path.join(REPO_ROOT, 'database', 'postgresql');
 
+// Schema fingerprint after the complete migration chain. This is an intentional
+// drift detector, so it must be updated deliberately whenever the chain adds or
+// removes a table — a mismatch here means the applied schema is not the schema
+// the repository describes.
+const EXPECTED_BASE_TABLES = 76;   // 75 through migration 013, +1 in 014 (pack membership)
+const EXPECTED_VIEWS = 6;
+
 const DB_TEST_SKIP_REASON = isIntegrationTest()
   ? false
   : 'database-mutating migration-runner suite requires the sanctioned '
@@ -262,9 +269,9 @@ describe('PostgreSQL migration runner safety', { skip: DB_TEST_SKIP_REASON }, ()
       // Expected final fingerprint, proven from catalog objects rather than a count alone.
       assert.strictEqual(await scalar(db, `
         SELECT COUNT(*)::int FROM information_schema.tables
-        WHERE table_schema='public' AND table_type='BASE TABLE'`), 75);
+        WHERE table_schema='public' AND table_type='BASE TABLE'`), EXPECTED_BASE_TABLES);
       assert.strictEqual(await scalar(db, `
-        SELECT COUNT(*)::int FROM information_schema.views WHERE table_schema='public'`), 6);
+        SELECT COUNT(*)::int FROM information_schema.views WHERE table_schema='public'`), EXPECTED_VIEWS);
       assert.strictEqual(await scalar(db, `
         SELECT COUNT(*)::int FROM pg_constraint
         WHERE conname='chk_task_template_versions_requires_governance'`), 1);
@@ -298,7 +305,7 @@ describe('PostgreSQL migration runner safety', { skip: DB_TEST_SKIP_REASON }, ()
       // No duplicate-object failure, and the fingerprint is unchanged.
       assert.strictEqual(await scalar(db, `
         SELECT COUNT(*)::int FROM information_schema.tables
-        WHERE table_schema='public' AND table_type='BASE TABLE'`), 75);
+        WHERE table_schema='public' AND table_type='BASE TABLE'`), EXPECTED_BASE_TABLES);
       assert.strictEqual(await scalar(db, `
         SELECT COUNT(*)::int FROM pg_constraint
         WHERE conname='chk_task_template_versions_requires_governance'`), 1);
@@ -562,7 +569,7 @@ describe('PostgreSQL migration runner safety', { skip: DB_TEST_SKIP_REASON }, ()
         WHERE conname='fk_task_template_versions_published_by'`), 1);
       assert.strictEqual(await scalar(db, `
         SELECT COUNT(*)::int FROM information_schema.tables
-        WHERE table_schema='public' AND table_type='BASE TABLE'`), 75);
+        WHERE table_schema='public' AND table_type='BASE TABLE'`), EXPECTED_BASE_TABLES);
     });
   });
 

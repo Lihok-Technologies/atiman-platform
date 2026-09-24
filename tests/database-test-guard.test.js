@@ -35,6 +35,7 @@ const DB_MUTATING_SUITES = [
   // Creates and drops disposable databases on the test server, so it mutates
   // databases just as surely as the suites above.
   'migration-runner.test.js',
+  'knowledge-pack-membership.test.js',
   'step6-access-control.test.js',
   'step6-coverage-e2e.test.js',
   'step6-performance.test.js',
@@ -49,7 +50,8 @@ const DB_MUTATING_SUITES = [
 const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'knowledge-versioning.test.js',
   'knowledge-publication-admission.test.js',
-  'migration-runner.test.js'
+  'migration-runner.test.js',
+  'knowledge-pack-membership.test.js'
 ];
 
 const REPO_ROOT = path.resolve(__dirname, '..');
