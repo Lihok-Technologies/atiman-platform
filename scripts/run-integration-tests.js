@@ -20,7 +20,10 @@ if (missing.length || !/(?:^|[_-])test(?:$|[_-])/i.test(process.env.TEST_DB_NAME
 // suites for current Atiman. See ATM-013D.5D.
 const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'tests/knowledge-versioning.test.js',
-  'tests/knowledge-publication-admission.test.js'
+  'tests/knowledge-publication-admission.test.js',
+  // Production migration safety: drives scripts/migrate-postgres.js and the
+  // schema-readiness gate against disposable PostgreSQL databases.
+  'tests/migration-runner.test.js'
 ];
 
 const result = spawnSync(process.execPath, ['--test', ...SANCTIONED_POSTGRES_INTEGRATION_SUITES], {

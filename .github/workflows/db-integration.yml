@@ -3,9 +3,13 @@ name: PostgreSQL Integration Validation
 # First active GitHub Actions workflow for Atiman.
 #
 # Provisions a disposable, job-scoped PostgreSQL, applies the complete schema
-# (migrations 001-012), and runs the sanctioned integration runner
-# (scripts/run-integration-tests.js). The workflow requires no repository
-# secrets and references no production credential.
+# through the CANONICAL migration runner (scripts/migrate-postgres.js, the same
+# command production uses), asserts schema readiness, and runs the sanctioned
+# integration runner (scripts/run-integration-tests.js). The workflow requires
+# no repository secrets and references no production credential.
+#
+# Migrations discovered and applied: whatever database/postgresql/ currently
+# contains. Nothing is hardcoded here.
 #
 # The ATM-013D.4 safety invariant is preserved: the sanctioned runner is the
 # only execution path, and it establishes NODE_ENV=test / RUN_DB_TESTS=true
@@ -68,40 +72,30 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Ensure PostgreSQL client
-        run: |
-          if ! command -v psql >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y postgresql-client
-          fi
-          psql --version
-
-      - name: Apply PostgreSQL schema (migrations 001-012)
+      - name: Apply PostgreSQL schema (canonical migration runner)
         shell: bash
         env:
-          PGPASSWORD: atiman_test_password
+          # The runner deliberately refuses to execute while TEST_DB_* is present,
+          # so it is given explicit DB_* configuration and the test variables are
+          # unset. This is exactly the command production uses, and no PostgreSQL
+          # client tools are required.
+          DB_HOST: localhost
+          DB_PORT: "5432"
+          DB_NAME: atiman_test
+          DB_USER: atiman_test
+          DB_PASSWORD: atiman_test_password
         run: |
           set -euo pipefail
-          shopt -s nullglob
 
-          migrations=(database/postgresql/[0-9][0-9][0-9]_*.sql)
-          if [ ${#migrations[@]} -eq 0 ]; then
-            echo "No migration files found in database/postgresql/" >&2
-            exit 1
-          fi
+          unset TEST_DB_HOST TEST_DB_PORT TEST_DB_NAME TEST_DB_USER TEST_DB_PASSWORD
 
-          echo "Applying ${#migrations[@]} migration file(s) in filename order"
-          for file in "${migrations[@]}"; do
-            echo "--> ${file}"
-            psql -v ON_ERROR_STOP=1 \
-              -h "${TEST_DB_HOST}" \
-              -p "${TEST_DB_PORT}" \
-              -U "${TEST_DB_USER}" \
-              -d "${TEST_DB_NAME}" \
-              -f "${file}"
-          done
+          npm run db:migrate:postgres
 
-          echo "Schema applied successfully."
+          # Read-only assertion that the schema is actually compatible with this
+          # application, not merely present.
+          node scripts/smoke-test-pg.js
+
+          echo "Schema applied and readiness asserted successfully."
 
       - name: Run sanctioned database integration tests
         run: npm run test:integration
