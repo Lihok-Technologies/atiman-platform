@@ -62,29 +62,58 @@ copy .env.example .env
 # 3. Create the PostgreSQL database
 createdb -U postgres odm_cmms
 
-# 4. Initialize the PostgreSQL schema.
-#    Apply the numbered SQL files in database/postgresql/ in order:
-psql -U postgres -d odm_cmms -f database/postgresql/001_core.sql
-psql -U postgres -d odm_cmms -f database/postgresql/002_equipment_taxonomy.sql
-psql -U postgres -d odm_cmms -f database/postgresql/003_templates_maintenance.sql
-psql -U postgres -d odm_cmms -f database/postgresql/004_work_management.sql
-psql -U postgres -d odm_cmms -f database/postgresql/005_commercial_security.sql
-psql -U postgres -d odm_cmms -f database/postgresql/006_customization_files.sql
-psql -U postgres -d odm_cmms -f database/postgresql/007_indexes.sql
-psql -U postgres -d odm_cmms -f database/postgresql/008_views.sql
-psql -U postgres -d odm_cmms -f database/postgresql/009_knowledge_versioning.sql
-psql -U postgres -d odm_cmms -f database/postgresql/010_knowledge_versioning_indexes.sql
-psql -U postgres -d odm_cmms -f database/postgresql/011_knowledge_provenance.sql
-psql -U postgres -d odm_cmms -f database/postgresql/012_task_template_safety_control_versioning.sql
+# 4. Apply the PostgreSQL schema (the canonical, authoritative mechanism).
+#    Migrations are discovered dynamically from database/postgresql/ matching
+#    ^\d{3}_.*\.sql$ and applied in ascending filename order. Each file runs in
+#    its own transaction. The command is forward-only and re-applicable.
+npm run db:migrate:postgres
 
-# 5. Start server
+# 5. Assert the schema is ready for this application (read-only)
+node scripts/smoke-test-pg.js
+
+# 6. Start server
 npm run dev
 ```
 
+The complete PostgreSQL migration chain (currently 001-013) lives in
+`database/postgresql/`:
+
+| Migration | Contents |
+|---|---|
+| `001_core.sql` | Core identity, facilities, organizations |
+| `002_equipment_taxonomy.sql` | Equipment categories, classes, types, ISO 14224 taxonomy |
+| `003_templates_maintenance.sql` | Task templates, steps, safety controls |
+| `004_work_management.sql` | Work orders, findings, scheduling |
+| `005_commercial_security.sql` | Subscriptions, API keys, audit |
+| `006_customization_files.sql` | Custom fields, uploads |
+| `007_indexes.sql` | Indexes |
+| `008_views.sql` | Reporting views |
+| `009_knowledge_versioning.sql` | Immutable knowledge versioning (packs, template versions, step versions) |
+| `010_knowledge_versioning_indexes.sql` | Knowledge versioning indexes |
+| `011_knowledge_provenance.sql` | Knowledge sources, source versions, frozen evidence |
+| `012_task_template_safety_control_versioning.sql` | Safety-control versioning |
+| `013_knowledge_governance_admission.sql` | ATM-001 M1 knowledge governance: review lifecycle, safety-review state, publication admission attribution, publisher durability |
+
+> **Forward-only.** There is no down-migration and no reset command. A faulty
+> migration is corrected by adding a new forward migration.
+>
+> **Never applied at application startup.** `node src/index.js` does not run
+> migrations; schema change is always an explicit operator action.
+>
+> **Production.** Applying migrations to production changes production schema
+> state and requires explicit OWNER authorization. A merge to `main` is not that
+> authorization. See `DEPLOYMENT_CLOUD.md`.
+
 > **Legacy note:** `npm run db:init` runs `src/utils/init-db.js`, which is a
 > **legacy MySQL-only** bootstrap utility that uses `mysql2`. It is not used
-> for PostgreSQL and must not be run against the PostgreSQL runtime. Use the
-> `psql` workflow above (or the Windows installer) to initialize PostgreSQL.
+> for PostgreSQL and must not be run against the PostgreSQL runtime. The same
+> applies to every runner under `database/migrations/`, which is a legacy MySQL
+> directory and is never read by the PostgreSQL migration runner.
+>
+> `scripts/bootstrap-knowledge/bootstrap.js` (corpus import) and
+> `scripts/bootstrap-admin/bootstrap-admin.js` (first administrator) are
+> **one-time manual operations, never deployment steps**. The knowledge
+> bootstrap additionally requires its target tables to be empty.
 
 ### Available Scripts
 

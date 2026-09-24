@@ -32,6 +32,9 @@ const DATABASE_ENV_NAMES = [
 const DB_MUTATING_SUITES = [
   'knowledge-versioning.test.js',
   'knowledge-publication-admission.test.js',
+  // Creates and drops disposable databases on the test server, so it mutates
+  // databases just as surely as the suites above.
+  'migration-runner.test.js',
   'step6-access-control.test.js',
   'step6-coverage-e2e.test.js',
   'step6-performance.test.js',
@@ -45,7 +48,8 @@ const DB_MUTATING_SUITES = [
 // SANCTIONED_POSTGRES_INTEGRATION_SUITES in scripts/run-integration-tests.js.
 const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'knowledge-versioning.test.js',
-  'knowledge-publication-admission.test.js'
+  'knowledge-publication-admission.test.js',
+  'migration-runner.test.js'
 ];
 
 const REPO_ROOT = path.resolve(__dirname, '..');

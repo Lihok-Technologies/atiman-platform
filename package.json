@@ -10,6 +10,7 @@
     "test:watch": "node --test --watch tests/*.test.js",
     "db:init": "node src/utils/init-db.js",
     "db:init-simple": "node src/utils/init-db-simple.js",
+    "db:migrate:postgres": "node scripts/migrate-postgres.js",
     "db:migrate:multitenant": "node database/migrations/run-multitenant-migration.js",
     "import:csv": "node src/utils/import-csv.js",
     "import:smp": "node src/utils/import-smp.js",

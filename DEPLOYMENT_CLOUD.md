@@ -21,7 +21,7 @@ The browser communicates only with the Render URL. The Render service uses the e
 - A [Render](https://render.com/) account connected to GitHub.
 - A [Supabase](https://supabase.com/) account.
 - Node.js 18 or newer and project dependencies installed with `npm ci` for local smoke testing.
-- The PostgreSQL client tools (`psql` and `pg_isready`) for the one-time schema apply.
+- Node.js 18 or newer. No PostgreSQL client tools are required: migrations run through the `pg` dependency.
 - A local Bash shell. On Windows, use WSL or Git Bash with PostgreSQL client tools available.
 
 Do not put database passwords, connection strings, JWT secrets, or provider tokens in tracked files.
@@ -39,38 +39,92 @@ Do not put database passwords, connection strings, JWT secrets, or provider toke
 
 Use TLS. The Phase 4A configuration sets `DB_SSL=true` and `DB_SSL_REJECT_UNAUTHORIZED=false`, which encrypts the connection without requiring Node.js to validate a locally installed Supabase CA certificate.
 
-## 2. Apply the PostgreSQL Schema Once
+## 2. Apply the PostgreSQL Schema
 
-The Render pre-deploy command is a read-only smoke test and expects the `public.users` table to exist. Initialize a new Supabase project before the first successful Render deployment:
+Schema change is **explicit and authorized**, never a side effect of starting
+the application. The canonical, authoritative mechanism is:
 
 ```bash
-npm ci
-
-export DB_HOST='aws-0-REGION.pooler.supabase.com'
-export DB_PORT='5432'
-export DB_NAME='postgres'
-export DB_USER='postgres.PROJECT_REF'
-export DB_PASSWORD='replace-with-your-database-password'
-export DB_SSL='true'
-export DB_SSL_REJECT_UNAUTHORIZED='false'
-
-./scripts/deploy-render-supabase.sh
+npm run db:migrate:postgres
 ```
 
-You may use `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, and `PGPASSWORD` instead of the `DB_*` aliases. The script defaults `PGSSLMODE` to `require`.
+`scripts/migrate-postgres.js` is the **single** authoritative PostgreSQL
+migration mechanism:
 
-The script waits for PostgreSQL, then applies these files in order with `ON_ERROR_STOP` enabled:
+- Uses the runtime `pg` dependency only. No PostgreSQL client tools are
+  required, which matters because Render's Node runtime does not provide `psql`.
+- Discovers migrations dynamically from `database/postgresql/` matching
+  `^\d{3}_.*\.sql$` and applies them in ascending filename order. Nothing is
+  hardcoded, so new migrations participate automatically.
+- Applies **each file in its own transaction** (`BEGIN` / whole file /
+  `COMMIT`). On failure it rolls that file back, exits non-zero, and does not
+  attempt later migrations — so a migration can never be left half-applied.
+- Requires explicit connection configuration. There is **no** fallback to
+  `localhost`, `postgres`, or `odm_cmms`; missing configuration fails before any
+  connection is opened.
+- Refuses to run when `TEST_DB_*` is present, or under `NODE_ENV=test`, or under
+  `RUN_DB_TESTS=true`, so it can never be redirected onto a disposable test
+  database.
+- Serializes concurrent runs with a transaction-scoped advisory lock held for
+  the whole run, which is safe under both session and transaction pooling.
+- Never reads `database/migrations/` (legacy MySQL) and never invokes the legacy
+  MySQL runners or `init-db` scripts.
+- Never logs passwords, connection strings, URLs, or tokens.
 
-1. `database/postgresql/001_core.sql`
-2. `database/postgresql/002_equipment_taxonomy.sql`
-3. `database/postgresql/003_templates_maintenance.sql`
-4. `database/postgresql/004_work_management.sql`
-5. `database/postgresql/005_commercial_security.sql`
-6. `database/postgresql/006_customization_files.sql`
-7. `database/postgresql/007_indexes.sql`
-8. `database/postgresql/008_views.sql`
+Configuration is read from `DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_USER`/`DB_PASSWORD`
+(or the `PG*` equivalents). Use TLS with `DB_SSL=true`; set
+`DB_SSL_REJECT_UNAUTHORIZED=false` only when a CA certificate is not installed
+locally.
 
-The schema SQL uses idempotent table/index creation and replaceable views, so the helper can be rerun safely when recovering from an interrupted apply. It does not seed application data. After applying the schema, it runs the read-only PostgreSQL smoke test.
+### Forward-only policy
+
+There is **no down-migration and no reset command**. Migrations are written to
+be safely re-applicable, so rerunning the command is the recovery path for an
+interrupted apply. A mistake is corrected by adding a new forward migration.
+
+### Schema readiness assertion
+
+After migrating, assert that the database is actually compatible with the
+running application:
+
+```bash
+node scripts/smoke-test-pg.js
+```
+
+This gate is **read-only** (`default_transaction_read_only = on`) and is not a
+migration mechanism. It asserts the objects the application requires — including
+the ATM-001 M1 governance columns, `chk_task_template_versions_requires_governance`,
+`chk_task_template_versions_approver_not_publisher`, and the publisher foreign
+key in its `ON DELETE RESTRICT` state — because a bare connectivity check plus a
+table count cannot distinguish a migration-008 database from a migration-013
+one. It exits non-zero when the schema is not compatible.
+
+### Explicit production authorization
+
+**A merge to `main` is not authorization to mutate the production schema.**
+Production migration and deployment require an explicit OWNER-initiated deploy:
+
+- `render.yaml` sets `autoDeploy: false`, so pushing to `main` does not deploy.
+- The `preDeployCommand` runs `npm run db:migrate:postgres && node scripts/smoke-test-pg.js`.
+  A non-zero exit from either command fails the deploy closed, so the
+  application never starts against a schema it cannot use.
+
+> **OWNER action required once, in Render:** confirm that the `atiman-api`
+> service has **Auto-Deploy set to No** and that the Blueprint has been synced so
+> `preDeployCommand` reflects the repository. Until that is done, repository
+> configuration and live service settings disagree. Do not rely on this
+> repository file alone to enforce the invariant.
+
+### ATM-001 M1 production consequence
+
+Migration 013 adds the governance lifecycle to the pre-existing `task_templates`
+table with `review_state DEFAULT 'draft'` and
+`safety_review_state DEFAULT 'not_assessed'`. Applying it therefore places every
+existing legacy template in the draft / not-assessed governance state.
+
+Those templates remain **legacy knowledge candidates**. They are not approved
+Atiman knowledge and become governed published knowledge only after they pass
+governed review, evidence, safety assessment, approval, and publication.
 
 ## 3. Deploy with the Render Blueprint
 
@@ -83,9 +137,9 @@ The schema SQL uses idempotent table/index creation and replaceable views, so th
    - `DB_PASSWORD`: the Supabase database password.
    - `CORS_ALLOWED_ORIGINS`: the exact public Render origin, such as `https://atiman-api.onrender.com`. Add other trusted browser origins as a comma-separated list only when needed.
 4. Confirm that Render generated `JWT_SECRET`. Do not replace it with a placeholder; production validation requires a non-placeholder secret of at least 32 characters.
-5. Deploy. Render runs `npm ci --omit=dev`, executes `node scripts/smoke-test-pg.js` as its pre-deploy check, and starts `node src/index.js` only after the database check passes.
+5. Deploy. Render runs `npm ci --omit=dev`, then the pre-deploy command — `npm run db:migrate:postgres` followed by `node scripts/smoke-test-pg.js` — and starts `node src/index.js` only after both succeed. Because `autoDeploy` is `false`, this happens on an explicit OWNER-initiated deploy, not on every merge to `main`.
 
-If the Blueprint's automatic first deploy starts before the one-time schema apply, the pre-deploy command will fail with a missing `public.users` message. Run `scripts/deploy-render-supabase.sh`, then select **Manual Deploy > Deploy latest commit** in Render.
+If the service deploys before the schema exists, the pre-deploy command fails with a missing `public.users` message and the deploy is aborted. Apply the schema with `npm run db:migrate:postgres` (see section 2), then deploy again from Render.
 
 Render monitors `GET /health`. The correct cloud health path is `/health`, **not** `/api/health`.
 
@@ -137,36 +191,40 @@ The smoke test performs `SELECT 1`, verifies that `public.users` is a base table
 Run both helpers from a clean checkout after `npm ci`:
 
 ```bash
-# One-time/idempotent schema apply followed by smoke test
-./scripts/deploy-render-supabase.sh
-
-# Read-only connectivity and schema smoke test
+# Apply migrations (forward-only, re-applicable), then assert schema readiness
+npm run db:migrate:postgres
 node scripts/smoke-test-pg.js
 ```
 
-Both scripts accept either libpq-style `PG*` settings or the application's `DB_*` aliases. The deploy helper exports normalized `PG*` values for `psql` and the Node.js smoke test. Avoid placing secrets directly in shell history; use your shell's secure environment loading or a secret manager, and unset local secret variables when finished.
+Both commands accept either libpq-style `PG*` settings or the application's
+`DB_*` aliases. Avoid placing secrets directly in shell history; use your shell's
+secure environment loading or a secret manager, and unset local secret variables
+when finished.
 
 ## Troubleshooting
 
-### `psql` or `pg_isready` is missing
+### Migration refuses to run
 
-Install the PostgreSQL client tools, then ensure their binary directory is on `PATH`:
+`npm run db:migrate:postgres` exits with code 2 and applies nothing when
+configuration is missing or a test-database variable is present. It refuses when
+`TEST_DB_*` is set, when `NODE_ENV=test`, or when `RUN_DB_TESTS=true`. Unset
+those and provide explicit `DB_HOST`, `DB_NAME`, `DB_USER`, and `DB_PASSWORD`.
+No default host, database, user, or password is assumed. PostgreSQL client tools
+are not required.
 
-- Debian/Ubuntu: `sudo apt-get install postgresql-client`
-- macOS with Homebrew: `brew install libpq` and follow Homebrew's PATH instructions.
-- Windows: install PostgreSQL client tools and use WSL/Git Bash as appropriate.
+### Schema readiness failed, or the core `users` table is missing
 
-The schema helper intentionally stops before making changes when `psql` is unavailable.
-
-### Core `users` table not found
-
-The Supabase project is reachable but has not received the complete Phase 1 schema, or the credentials target the wrong database. Recheck `DB_HOST`, `DB_PORT`, `DB_NAME`, and `DB_USER`, then run:
+The database is reachable but its schema is older or incomplete relative to the
+application, or the credentials target the wrong database. Recheck `DB_HOST`,
+`DB_PORT`, `DB_NAME`, and `DB_USER`, then run:
 
 ```bash
-./scripts/deploy-render-supabase.sh
+npm run db:migrate:postgres
+node scripts/smoke-test-pg.js
 ```
 
-Do not bypass the Render pre-deploy check. Review the first failing SQL file if `psql` exits early.
+Do not bypass the Render pre-deploy check. If a migration fails, the runner
+names the failing file and the transaction for that file was rolled back.
 
 ### TLS or certificate errors
 
@@ -183,7 +241,7 @@ A Render service can take time to start or restart. Retry the `/health` request 
 ## What This Does Not Change
 
 - No application code, API, authentication, authorization, RBAC, business logic, or PostgreSQL schema is changed by Phase 4A.
-- The existing Phase 1 schema files remain the source of truth and are only applied by the deployment helper.
+- The numbered PostgreSQL migration files in `database/postgresql/` remain the source of truth, applied only by `npm run db:migrate:postgres`.
 - PostgreSQL through `pg` remains the only HTTP/application runtime database driver.
 - `mysql2` stays installed only for the documented legacy one-off import and migration utilities; it is not used by Render, the smoke test, or the production runtime.
 - Supabase Auth, Storage, Realtime, Edge Functions, and RLS are not introduced.
