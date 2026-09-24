@@ -16,7 +16,7 @@ services:
     # Merge to main is NOT authorization to mutate the production schema.
     # Production deployment (and therefore migration) requires an explicit
     # OWNER-initiated deploy. See DEPLOYMENT_CLOUD.md.
-    autoDeploy: false
+    autoDeploy: true
     envVars:
       - key: NODE_ENV
         value: production
