@@ -53,7 +53,9 @@ const REQUIRED_TABLES = [
   'task_template_step_versions',
   'knowledge_sources',
   'knowledge_source_versions',
-  'knowledge_template_version_evidence'
+  'knowledge_template_version_evidence',
+  // ATM-001 M2 — immutable knowledge pack membership.
+  'knowledge_pack_version_task_template_versions'
 ];
 
 const REQUIRED_COLUMNS = [
@@ -87,6 +89,21 @@ const REQUIRED_CONSTRAINTS = [
     name: 'chk_task_template_versions_approver_not_publisher',
     description: 'the approver must not be the publisher',
     mustInclude: 'approver_user_id <> published_by_user_id'
+  }
+];
+
+/**
+ * Required guard function.
+ *
+ * A membership table without its mutability guard would let a released pack
+ * silently gain or lose members, so the readiness gate asserts the guard itself
+ * rather than only the table. This mirrors the M1 lesson that a name-only
+ * existence check can pass while the protected invariant is not enforced.
+ */
+const REQUIRED_FUNCTIONS = [
+  {
+    name: 'knowledge_pack_membership_guard',
+    description: 'knowledge pack membership immutability guard'
   }
 ];
 
@@ -168,6 +185,31 @@ async function smokeTest() {
       }
     }
 
+    // --- required guard functions -------------------------------------------
+    const routines = await client.query(`
+      SELECT p.proname FROM pg_proc p
+      JOIN pg_namespace n ON n.oid = p.pronamespace
+      WHERE n.nspname = 'public'
+    `);
+    const presentRoutines = new Set(routines.rows.map((row) => row.proname));
+    for (const fn of REQUIRED_FUNCTIONS) {
+      if (!presentRoutines.has(fn.name)) {
+        failures.push(`missing function: ${fn.name} (${fn.description})`);
+      }
+    }
+
+    // --- membership immutability triggers ------------------------------------
+    const membershipTriggers = await client.query(`
+      SELECT COUNT(*)::integer AS count FROM pg_trigger t
+      JOIN pg_class c ON c.oid = t.tgrelid
+      WHERE c.relname = 'knowledge_pack_version_task_template_versions'
+        AND NOT t.tgisinternal
+    `);
+    if (Number(membershipTriggers.rows[0].count) < 3) {
+      failures.push('knowledge pack membership guard triggers are not installed '
+        + `(found ${membershipTriggers.rows[0].count}, expected 3)`);
+    }
+
     // --- publisher FK convergence (delete action) ---------------------------
     const fk = await client.query(`
       SELECT confdeltype::text AS del FROM pg_constraint
@@ -204,6 +246,7 @@ async function smokeTest() {
 
     console.log(`Schema readiness: ${REQUIRED_TABLES.length} required tables, `
       + `${REQUIRED_COLUMNS.length} required columns, ${REQUIRED_CONSTRAINTS.length} required constraints, `
+      + `${REQUIRED_FUNCTIONS.length} required guard function, membership guard triggers, `
       + `publisher FK ${PUBLISHER_FK.description} — all present.`);
 
     client.release();

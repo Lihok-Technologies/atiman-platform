@@ -23,7 +23,9 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'tests/knowledge-publication-admission.test.js',
   // Production migration safety: drives scripts/migrate-postgres.js and the
   // schema-readiness gate against disposable PostgreSQL databases.
-  'tests/migration-runner.test.js'
+  'tests/migration-runner.test.js',
+  // ATM-001 M2: immutable knowledge pack membership.
+  'tests/knowledge-pack-membership.test.js'
 ];
 
 const result = spawnSync(process.execPath, ['--test', ...SANCTIONED_POSTGRES_INTEGRATION_SUITES], {

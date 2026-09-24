@@ -193,7 +193,8 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           'knowledge_packs',
           'knowledge_pack_versions',
           'task_template_versions',
-          'task_template_step_versions'
+          'task_template_step_versions',
+          'knowledge_pack_version_task_template_versions'
         )
       ORDER BY table_name
     `);
@@ -202,16 +203,38 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
     assert.ok(names.includes('knowledge_pack_versions'));
     assert.ok(names.includes('task_template_versions'));
     assert.ok(names.includes('task_template_step_versions'));
+    assert.ok(names.includes('knowledge_pack_version_task_template_versions'));
   });
 
-  it('does not create deferred knowledge_pack_version_items table', async () => {
+  // ATM-001 M2 implemented pack membership as a dedicated, type-specific table
+  // (migration 014). This assertion previously recorded that table as deferred;
+  // it now records the approved architecture instead.
+  it('creates the type-specific knowledge pack membership table', async () => {
     const tables = await query(`
       SELECT table_name
       FROM information_schema.tables
       WHERE table_schema = 'public'
-        AND table_name = 'knowledge_pack_version_items'
+        AND table_name = 'knowledge_pack_version_task_template_versions'
     `);
-    assert.strictEqual(tables.length, 0, 'knowledge_pack_version_items should not exist yet');
+    assert.strictEqual(tables.length, 1,
+      'knowledge_pack_version_task_template_versions should exist (ATM-001 M2)');
+  });
+
+  // M2 deliberately did NOT adopt polymorphic membership, and did NOT build a
+  // generic immutable-version registry. Both absences are architecture, not gaps.
+  it('does not create polymorphic membership or a generic version registry', async () => {
+    const tables = await query(`
+      SELECT table_name
+      FROM information_schema.tables
+      WHERE table_schema = 'public'
+        AND table_name IN (
+          'knowledge_pack_version_items',
+          'knowledge_pack_snapshots',
+          'knowledge_published_snapshots'
+        )
+    `);
+    assert.strictEqual(tables.length, 0,
+      'polymorphic membership and generic snapshot/registry tables are rejected architecture');
   });
 
   it('task_template_versions has no knowledge_pack_version_id column', async () => {
