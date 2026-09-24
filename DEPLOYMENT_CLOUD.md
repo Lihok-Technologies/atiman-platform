@@ -99,21 +99,40 @@ key in its `ON DELETE RESTRICT` state — because a bare connectivity check plus
 table count cannot distinguish a migration-008 database from a migration-013
 one. It exits non-zero when the schema is not compatible.
 
-### Explicit production authorization
+### Production authorization
 
-**A merge to `main` is not authorization to mutate the production schema.**
-Production migration and deployment require an explicit OWNER-initiated deploy:
+**An approved merge to `main` is the production deployment authorization event.**
+Auto-Deploy is intentionally enabled, so the merge deploys and the database
+migrations included in that release are authorized by that same approved merge.
+There is no additional post-merge manual-deploy authorization step.
 
-- `render.yaml` sets `autoDeploy: false`, so pushing to `main` does not deploy.
-- The `preDeployCommand` runs `npm run db:migrate:postgres && node scripts/smoke-test-pg.js`.
-  A non-zero exit from either command fails the deploy closed, so the
-  application never starts against a schema it cannot use.
+Because merging deploys, **PRs must be reviewed for production readiness before
+merge**, not after. The governed path is:
+
+```
+reviewed and approved PR  ->  merge to main  ->  automatic production deployment
+```
+
+Do not commit directly to `main` as a deployment shortcut: the merge is only an
+authorization event because the PR was reviewed and approved first.
+
+The safety rule is unchanged and remains mandatory — Render executes the
+canonical pre-deploy gate before application startup:
+
+- `preDeployCommand` runs `npm run db:migrate:postgres` then
+  `node scripts/smoke-test-pg.js`.
+- Render starts `node src/index.js` **only** after both succeed.
+- A failed migration or readiness assertion fails the deployment **closed**, so
+  the application never starts against a schema it cannot use.
 
 > **OWNER action required once, in Render:** confirm that the `atiman-api`
-> service has **Auto-Deploy set to No** and that the Blueprint has been synced so
-> `preDeployCommand` reflects the repository. Until that is done, repository
-> configuration and live service settings disagree. Do not rely on this
-> repository file alone to enforce the invariant.
+> service has **Auto-Deploy set to On Commit** and that the Blueprint has been
+> synced so `preDeployCommand` reflects the repository. Until that is done,
+> repository configuration and live service settings may disagree.
+
+Manual deploys (`Manual Deploy > Deploy latest commit`) remain available for
+operational recovery, but they are not required by this policy and are not the
+normal authorization path.
 
 ### ATM-001 M1 production consequence
 
@@ -137,7 +156,7 @@ governed review, evidence, safety assessment, approval, and publication.
    - `DB_PASSWORD`: the Supabase database password.
    - `CORS_ALLOWED_ORIGINS`: the exact public Render origin, such as `https://atiman-api.onrender.com`. Add other trusted browser origins as a comma-separated list only when needed.
 4. Confirm that Render generated `JWT_SECRET`. Do not replace it with a placeholder; production validation requires a non-placeholder secret of at least 32 characters.
-5. Deploy. Render runs `npm ci --omit=dev`, then the pre-deploy command — `npm run db:migrate:postgres` followed by `node scripts/smoke-test-pg.js` — and starts `node src/index.js` only after both succeed. Because `autoDeploy` is `false`, this happens on an explicit OWNER-initiated deploy, not on every merge to `main`.
+5. Deploy. Render runs `npm ci --omit=dev`, then the pre-deploy command — `npm run db:migrate:postgres` followed by `node scripts/smoke-test-pg.js` — and starts `node src/index.js` only after both succeed. Because `autoDeploy` is `true`, every subsequent approved merge to `main` deploys automatically and is the production deployment authorization event.
 
 If the service deploys before the schema exists, the pre-deploy command fails with a missing `public.users` message and the deploy is aborted. Apply the schema with `npm run db:migrate:postgres` (see section 2), then deploy again from Render.
 

@@ -13,10 +13,13 @@ services:
     # A non-zero exit from either command fails the deploy closed, so the
     # application never starts against a schema it cannot use.
     preDeployCommand: npm run db:migrate:postgres && node scripts/smoke-test-pg.js
-    # Merge to main is NOT authorization to mutate the production schema.
-    # Production deployment (and therefore migration) requires an explicit
-    # OWNER-initiated deploy. See DEPLOYMENT_CLOUD.md.
-    autoDeploy: false
+    # Auto-Deploy is intentionally ENABLED: an approved merge to main is the
+    # production deployment authorization event, and migrations included in that
+    # release are authorized by the same approved merge. Review PRs for
+    # production readiness BEFORE merge. Manual deploys remain available
+    # operationally but are not the normal authorization path.
+    # See DEPLOYMENT_CLOUD.md.
+    autoDeploy: true
     envVars:
       - key: NODE_ENV
         value: production

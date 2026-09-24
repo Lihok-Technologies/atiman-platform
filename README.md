@@ -100,9 +100,10 @@ The complete PostgreSQL migration chain (currently 001-013) lives in
 > **Never applied at application startup.** `node src/index.js` does not run
 > migrations; schema change is always an explicit operator action.
 >
-> **Production.** Applying migrations to production changes production schema
-> state and requires explicit OWNER authorization. A merge to `main` is not that
-> authorization. See `DEPLOYMENT_CLOUD.md`.
+> **Production.** Applying migrations to production still requires
+> authorization. Under the governed Auto-Deploy policy an **approved merge to
+> `main`** is that authorization event, so production readiness must be reviewed
+> **before** merge. See `DEPLOYMENT_CLOUD.md` for the governed deployment path.
 
 > **Legacy note:** `npm run db:init` runs `src/utils/init-db.js`, which is a
 > **legacy MySQL-only** bootstrap utility that uses `mysql2`. It is not used
