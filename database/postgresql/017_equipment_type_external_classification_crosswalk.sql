@@ -37,6 +37,12 @@
 -- pseudo-state. `approved` is the terminal governed state for a crosswalk; there
 -- is NO separate publication state for V1 (§U / §AI item 2).
 --
+-- Supersession is governed too (refined by ATM-001 M5R.3C-R1): setting the
+-- supersession pointer decides which governed knowledge is current, so an
+-- APPROVED crosswalk may only be superseded by an APPROVED successor about the
+-- SAME equipment type. A governed conclusion therefore cannot be deactivated by
+-- ungoverned or unrelated knowledge. See Trigger 5/5 below.
+--
 -- WHAT THIS MIGRATION DELIBERATELY DOES NOT DO
 --
 --   - No crosswalk EVIDENCE association. Exactly-one-subject evidence is a
@@ -357,17 +363,41 @@ CREATE TRIGGER trg_equipment_type_external_classification_global_scope
     EXECUTE FUNCTION crosswalk_global_scope_check();
 
 -- ============================================================
--- Trigger 5/5 — Supersession validity (M5R.3 §Q, §W.3.5)
+-- Trigger 5/5 — Supersession validity (M5R.3 §Q, §W.3.5; refined by M5R.3C-R1)
 --
--- Supersession is a new row plus a back-link, never an in-place rewrite. The
--- successor must exist (also a FK), must not be the row itself (also a CHECK),
--- and must not form a cycle. Mirrors the existing supersession guard idiom in
--- migration 009.
+-- Supersession is a new row plus a back-link, never an in-place rewrite.
+--
+-- Setting the pointer decides which governed knowledge is CURRENT, so a governed
+-- predecessor may not be deactivated by ungoverned or unrelated knowledge. When
+-- the row being superseded is APPROVED, its successor must therefore also be
+-- APPROVED, and must concern the SAME Atiman equipment type. The successor may
+-- legitimately carry another edition, another external classification, another
+-- relationship, another outcome or another applicability — those are precisely
+-- the reasons a proposition is superseded (M5R.3 §J: a new edition produces a
+-- new row for the same type). Requiring the successor to differ in those fields
+-- would be wrong; requiring the same SUBJECT and the same GOVERNANCE is the
+-- invariant that matters.
+--
+-- Consequences of the refinement:
+--   * approved -> draft / under_review / rejected successor is impossible;
+--   * approved -> successor about a different equipment type is impossible;
+--   * because the delete guard permits only DRAFT rows to be deleted, an
+--     APPROVED successor can never be deleted, so the ON DELETE SET NULL
+--     pointer can never fire for it and a governed predecessor can never be
+--     silently reactivated that way;
+--   * an approved row cannot be superseded by a literally identical proposition,
+--     because two identical active approved propositions cannot both exist
+--     (the partial unique indexes) and ordering cannot resolve that deadlock.
+--     Superseding with an identical proposition carries no meaning in any case.
+--
+-- Self-reference (also a CHECK) and cycles remain refused.
 -- ============================================================
 CREATE OR REPLACE FUNCTION crosswalk_supersession_check()
 RETURNS TRIGGER AS $$
 DECLARE
     next_id INTEGER;
+    successor_review_state VARCHAR(20);
+    successor_equipment_type_id INTEGER;
     visited INTEGER[];
 BEGIN
     IF NEW.superseded_by_crosswalk_id IS NULL THEN
@@ -379,12 +409,30 @@ BEGIN
             USING ERRCODE = 'check_violation';
     END IF;
 
-    IF NOT EXISTS (
-        SELECT 1 FROM equipment_type_external_classification
-        WHERE id = NEW.superseded_by_crosswalk_id
-    ) THEN
+    SELECT review_state, equipment_type_id
+    INTO successor_review_state, successor_equipment_type_id
+    FROM equipment_type_external_classification
+    WHERE id = NEW.superseded_by_crosswalk_id;
+
+    -- review_state is NOT NULL, so a NULL here means the successor does not exist.
+    IF successor_review_state IS NULL THEN
         RAISE EXCEPTION 'superseded_by_crosswalk_id must reference an existing crosswalk row'
             USING ERRCODE = 'foreign_key_violation';
+    END IF;
+
+    -- Only a GOVERNED predecessor confers the governance meaning "no longer
+    -- current", so only then must the successor itself be governed, and about
+    -- the same subject.
+    IF NEW.review_state = 'approved' THEN
+        IF successor_review_state <> 'approved' THEN
+            RAISE EXCEPTION 'approved crosswalk % may only be superseded by an approved successor; successor % is %', NEW.id, NEW.superseded_by_crosswalk_id, successor_review_state
+                USING ERRCODE = 'check_violation';
+        END IF;
+
+        IF successor_equipment_type_id IS DISTINCT FROM NEW.equipment_type_id THEN
+            RAISE EXCEPTION 'approved crosswalk % may only be superseded by a successor for the same equipment type; successor % concerns equipment type %', NEW.id, NEW.superseded_by_crosswalk_id, successor_equipment_type_id
+                USING ERRCODE = 'check_violation';
+        END IF;
     END IF;
 
     -- Cycle detection: follow the successor chain from the proposed successor.

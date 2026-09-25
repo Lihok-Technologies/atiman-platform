@@ -92,6 +92,9 @@ const isImmutableRefusal = (e) => /is immutable except its supersession pointer/
 const isDeleteRefusal = (e) => /cannot be deleted; only draft proposals are deletable/.test(e.message || '');
 const isCycleRefusal = (e) => /would create a cycle/.test(e.message || '');
 const isSelfSupersessionRefusal = (e) => /cannot supersede itself/.test(e.message || '');
+// M5R.3C-R1 supersession governance.
+const isUngovernedSuccessorRefusal = (e) => /may only be superseded by an approved successor/.test(e.message || '');
+const isForeignSubjectSuccessorRefusal = (e) => /may only be superseded by a successor for the same equipment type/.test(e.message || '');
 
 async function ensureFixture() {
   await withConn(async (conn) => {
@@ -811,46 +814,49 @@ describe('Governed External Classification Crosswalk (ATM-001 M5R.3C)', { skip: 
     });
 
     it('31. supersession preserves history and keeps exactly one active truth', async () => {
-      const { versionId, classificationId } = await globalEditionWithClassification();
+      // Legitimate supersession (M5R.3 section J): a new EDITION produces a new
+      // row for the same Atiman type. Under M5R.3C-R1 an approved predecessor may
+      // only point at an APPROVED successor, so the successor is governed first
+      // and the back-link is set second — the reverse order is impossible by
+      // design, because an ungoverned row must never deactivate governed truth.
       const typeId = await createEquipmentType();
+      const sourceId = await createAuthority();
+      const ed2016 = await addEdition(sourceId, '2016');
+      const ed2024 = await addEdition(sourceId, '2024');
+      const ed2030 = await addEdition(sourceId, '2030');
 
-      // A is governed truth.
       const a = await addCrosswalk({
-        equipmentTypeId: typeId, versionId, classificationId, outcome: 'DIRECT_EQUIVALENT'
+        equipmentTypeId: typeId, versionId: ed2016,
+        classificationId: await addClassification(ed2016), outcome: 'DIRECT_EQUIVALENT'
       });
       await approve(a);
 
-      // A replacement of the SAME proposition cannot be approved while A is still
-      // active (the partial unique index forbids two active approved truths), so
-      // the back-link is set FIRST — which is the single change an approved row
-      // permits — and only then is the successor approved.
       const b = await addCrosswalk({
-        equipmentTypeId: typeId, versionId, classificationId, outcome: 'DIRECT_EQUIVALENT'
+        equipmentTypeId: typeId, versionId: ed2024,
+        classificationId: await addClassification(ed2024), outcome: 'DIRECT_EQUIVALENT'
       });
+      await approve(b);
       await withConn((conn) => query(conn,
         `UPDATE ${TABLE} SET superseded_by_crosswalk_id = ? WHERE id = ?`, [b, a]));
-      await approve(b);
 
-      // The chain continues: B is itself superseded by C.
       const c = await addCrosswalk({
-        equipmentTypeId: typeId, versionId, classificationId, outcome: 'DIRECT_EQUIVALENT'
+        equipmentTypeId: typeId, versionId: ed2030,
+        classificationId: await addClassification(ed2030), outcome: 'DIRECT_EQUIVALENT'
       });
+      await approve(c);
       await withConn((conn) => query(conn,
         `UPDATE ${TABLE} SET superseded_by_crosswalk_id = ? WHERE id = ?`, [c, b]));
-      await approve(c);
 
       const retained = await withConn((conn) => query(conn, `
         SELECT COUNT(*)::int AS n FROM ${TABLE}
-        WHERE equipment_type_id = ? AND external_classification_id = ? AND review_state = 'approved'`,
-      [typeId, classificationId]));
+        WHERE equipment_type_id = ? AND review_state = 'approved'`, [typeId]));
       assert.strictEqual(retained[0].n, 3,
         'every governed row is retained: supersession never deletes history');
 
       const active = await withConn((conn) => query(conn, `
         SELECT id FROM ${TABLE}
-        WHERE equipment_type_id = ? AND external_classification_id = ?
-          AND review_state = 'approved' AND superseded_by_crosswalk_id IS NULL`,
-      [typeId, classificationId]));
+        WHERE equipment_type_id = ? AND review_state = 'approved'
+          AND superseded_by_crosswalk_id IS NULL`, [typeId]));
       assert.strictEqual(active.length, 1, 'exactly one active governed proposition remains');
       assert.strictEqual(Number(active[0].id), c, 'the newest row is the current truth');
 
@@ -1082,6 +1088,277 @@ describe('Governed External Classification Crosswalk (ATM-001 M5R.3C)', { skip: 
         'an AI suggestion is a proposal, never governed truth by insertion');
       assert.strictEqual(rows[0].approved_by_user_id, null,
         'AI must never populate the approver');
+    });
+  });
+
+  // ==========================================================
+  // J. SUPERSESSION GOVERNANCE (ATM-001 M5R.3C-R1)
+  //
+  // Setting the supersession pointer decides which governed knowledge is
+  // CURRENT. An approved crosswalk may therefore only be superseded by an
+  // APPROVED successor about the SAME Atiman equipment type. A governed
+  // conclusion must not be deactivated by ungoverned or unrelated knowledge.
+  // ==========================================================
+  describe('J. an approved crosswalk may only be superseded by governed knowledge about the same subject', () => {
+    /** An approved predecessor plus a draft successor for the same equipment type. */
+    async function approvedPredecessorWithDraftSuccessor() {
+      const typeId = await createEquipmentType();
+      const sourceId = await createAuthority();
+      const ed2016 = await addEdition(sourceId, '2016');
+      const ed2024 = await addEdition(sourceId, '2024');
+      const predecessor = await addCrosswalk({
+        equipmentTypeId: typeId, versionId: ed2016,
+        classificationId: await addClassification(ed2016), outcome: 'DIRECT_EQUIVALENT'
+      });
+      await approve(predecessor);
+      const successor = await addCrosswalk({
+        equipmentTypeId: typeId, versionId: ed2024,
+        classificationId: await addClassification(ed2024), outcome: 'DIRECT_EQUIVALENT'
+      });
+      return { typeId, sourceId, ed2016, ed2024, predecessor, successor };
+    }
+
+    const point = (conn, predecessor, successor) => query(conn,
+      `UPDATE ${TABLE} SET superseded_by_crosswalk_id = ? WHERE id = ?`, [successor, predecessor]);
+
+    it('41. an approved predecessor refuses a draft, under_review or rejected successor', async () => {
+      for (const state of ['draft', 'under_review', 'rejected']) {
+        const typeId = await createEquipmentType();
+        const sourceId = await createAuthority();
+        const edA = await addEdition(sourceId, '2016');
+        const edB = await addEdition(sourceId, '2024');
+        const predecessor = await addCrosswalk({
+          equipmentTypeId: typeId, versionId: edA,
+          classificationId: await addClassification(edA), outcome: 'DIRECT_EQUIVALENT'
+        });
+        await approve(predecessor);
+        const successor = await addCrosswalk({
+          equipmentTypeId: typeId, versionId: edB,
+          classificationId: await addClassification(edB), outcome: 'DIRECT_EQUIVALENT',
+          reviewState: state
+        });
+
+        await inRollback(async (conn) => {
+          await assert.rejects(
+            () => point(conn, predecessor, successor),
+            (e) => isUngovernedSuccessorRefusal(e),
+            `a ${state} successor must not deactivate approved knowledge`);
+        });
+
+        // The predecessor is still the current truth.
+        const rows = await withConn((conn) => query(conn,
+          `SELECT superseded_by_crosswalk_id, review_state FROM ${TABLE} WHERE id = ?`, [predecessor]));
+        assert.strictEqual(rows[0].review_state, 'approved');
+        assert.strictEqual(rows[0].superseded_by_crosswalk_id, null,
+          `the approved predecessor stays ACTIVE after a ${state} successor was refused`);
+      }
+    });
+
+    it('42. an approved predecessor refuses an approved successor from another equipment type', async () => {
+      const { versionId, classificationId } = await globalEditionWithClassification();
+      const typeId = await createEquipmentType();
+      const otherTypeId = await createEquipmentType();
+
+      const predecessor = await addCrosswalk({
+        equipmentTypeId: typeId, versionId, classificationId, outcome: 'DIRECT_EQUIVALENT'
+      });
+      await approve(predecessor);
+      const foreign = await addCrosswalk({
+        equipmentTypeId: otherTypeId, versionId, classificationId, outcome: 'RELATED_TO'
+      });
+      await approve(foreign);
+
+      await inRollback(async (conn) => {
+        await assert.rejects(
+          () => point(conn, predecessor, foreign),
+          (e) => isForeignSubjectSuccessorRefusal(e),
+          'an unrelated subject must not deactivate this type governed conclusion');
+      });
+
+      const rows = await withConn((conn) => query(conn,
+        `SELECT superseded_by_crosswalk_id FROM ${TABLE} WHERE id = ?`, [predecessor]));
+      assert.strictEqual(rows[0].superseded_by_crosswalk_id, null,
+        'the approved predecessor stays ACTIVE after the foreign successor was refused');
+    });
+
+    it('43. an approved predecessor accepts an approved successor for the same type on a DIFFERENT edition', async () => {
+      const { typeId, predecessor, successor, ed2024 } = await approvedPredecessorWithDraftSuccessor();
+      await approve(successor);
+      await withConn((conn) => point(conn, predecessor, successor));
+
+      const rows = await withConn((conn) => query(conn, `
+        SELECT ec.id, ec.review_state, ec.superseded_by_crosswalk_id, ec.knowledge_source_version_id
+        FROM ${TABLE} ec WHERE ec.id IN (?, ?) ORDER BY ec.id`, [predecessor, successor]));
+      const byId = Object.fromEntries(rows.map((r) => [Number(r.id), r]));
+      assert.strictEqual(byId[predecessor].review_state, 'approved');
+      assert.strictEqual(Number(byId[predecessor].superseded_by_crosswalk_id), successor,
+        'a DIFFERENT edition is exactly what supersession is for (M5R.3 section J)');
+      assert.strictEqual(Number(byId[successor].knowledge_source_version_id), ed2024);
+      assert.strictEqual(byId[successor].superseded_by_crosswalk_id, null,
+        'the successor is the current truth');
+    });
+
+    it('44. an approved predecessor accepts an approved successor asserting a DIFFERENT legitimate outcome', async () => {
+      const { versionId, classificationId } = await globalEditionWithClassification();
+      const typeId = await createEquipmentType();
+      const predecessor = await addCrosswalk({
+        equipmentTypeId: typeId, versionId, classificationId, outcome: 'DIRECT_EQUIVALENT'
+      });
+      await approve(predecessor);
+      // Same type, same edition, same concept — a different RELATIONSHIP is a
+      // different proposition and therefore a different uniqueness key, so it can
+      // be governed alongside the predecessor before the predecessor is retired.
+      const successor = await addCrosswalk({
+        equipmentTypeId: typeId, versionId, classificationId, outcome: 'RELATED_TO'
+      });
+      await approve(successor);
+      await withConn((conn) => point(conn, predecessor, successor));
+
+      const active = await withConn((conn) => query(conn, `
+        SELECT id FROM ${TABLE}
+        WHERE equipment_type_id = ? AND review_state = 'approved'
+          AND superseded_by_crosswalk_id IS NULL`, [typeId]));
+      assert.strictEqual(active.length, 1);
+      assert.strictEqual(Number(active[0].id), successor,
+        'the revised relationship is now the current governed truth');
+    });
+
+    it('45. self-supersession and cycles remain refused, including between approved rows', async () => {
+      const { versionId, classificationId } = await globalEditionWithClassification();
+      const typeId = await createEquipmentType();
+      const a = await addCrosswalk({
+        equipmentTypeId: typeId, versionId, classificationId, outcome: 'DIRECT_EQUIVALENT'
+      });
+      await approve(a);
+
+      await inRollback(async (conn) => {
+        await assert.rejects(
+          () => point(conn, a, a),
+          (e) => isSelfSupersessionRefusal(e) || isCycleRefusal(e) || isDomainRefusal(e),
+          'a row may not supersede itself');
+      });
+
+      // B is a different proposition, so it can be governed while A is active.
+      const b = await addCrosswalk({
+        equipmentTypeId: typeId, versionId, classificationId, outcome: 'RELATED_TO'
+      });
+      await approve(b);
+      await withConn((conn) => point(conn, a, b));
+
+      await inRollback(async (conn) => {
+        await assert.rejects(
+          () => point(conn, b, a),
+          (e) => isCycleRefusal(e),
+          'a supersession cycle must be impossible even between approved rows');
+      });
+    });
+
+    it('46. an approved successor cannot be deleted, so ON DELETE SET NULL can never reactivate a predecessor', async () => {
+      const { typeId, predecessor, successor } = await approvedPredecessorWithDraftSuccessor();
+      await approve(successor);
+      await withConn((conn) => point(conn, predecessor, successor));
+
+      await inRollback(async (conn) => {
+        await assert.rejects(
+          () => query(conn, `DELETE FROM ${TABLE} WHERE id = ?`, [successor]),
+          (e) => isDeleteRefusal(e),
+          'the delete guard permits only draft rows, so a governed successor survives');
+      });
+
+      const rows = await withConn((conn) => query(conn, `
+        SELECT id, superseded_by_crosswalk_id, review_state FROM ${TABLE}
+        WHERE id IN (?, ?) ORDER BY id`, [predecessor, successor]));
+      assert.strictEqual(rows.length, 2, 'both governed rows still exist');
+      assert.strictEqual(Number(rows[0].superseded_by_crosswalk_id), successor,
+        'the pointer was NOT cleared, so the predecessor did not silently reactivate');
+      assert.strictEqual(rows[0].review_state, 'approved');
+
+      const active = await withConn((conn) => query(conn, `
+        SELECT id FROM ${TABLE}
+        WHERE equipment_type_id = ? AND review_state = 'approved'
+          AND superseded_by_crosswalk_id IS NULL`, [typeId]));
+      assert.strictEqual(active.length, 1);
+      assert.strictEqual(Number(active[0].id), successor,
+        'exactly one active truth, unchanged by the refused delete');
+    });
+
+    it('47. the refinement is scoped to GOVERNED predecessors: two drafts may still link freely', async () => {
+      // The rule exists so that ungoverned knowledge cannot deactivate GOVERNED
+      // knowledge. A draft pointer has no governance effect — only approved rows
+      // with a NULL pointer are current — so drafts remain chainable while a
+      // proposal is being worked out.
+      const typeId = await createEquipmentType();
+      const sourceId = await createAuthority();
+      const edA = await addEdition(sourceId, '2016');
+      const edB = await addEdition(sourceId, '2024');
+      const first = await addCrosswalk({
+        equipmentTypeId: typeId, versionId: edA, outcome: 'NO_DIRECT_MAPPING'
+      });
+      const second = await addCrosswalk({
+        equipmentTypeId: typeId, versionId: edB, outcome: 'NO_DIRECT_MAPPING'
+      });
+      await withConn((conn) => point(conn, first, second));
+
+      const rows = await withConn((conn) => query(conn,
+        `SELECT superseded_by_crosswalk_id FROM ${TABLE} WHERE id = ?`, [first]));
+      assert.strictEqual(Number(rows[0].superseded_by_crosswalk_id), second,
+        'a draft proposal may reference a draft successor');
+    });
+
+    it('48. an approved predecessor refuses a successor that does not exist', async () => {
+      const { predecessor } = await approvedPredecessorWithDraftSuccessor();
+      await inRollback(async (conn) => {
+        await assert.rejects(
+          () => point(conn, predecessor, 2147483000),
+          (e) => isForeignKeyViolation(e) || /must reference an existing crosswalk row/.test(e.message || ''));
+      });
+    });
+
+    it('49. uniqueness and supersession together forbid retiring a row into an IDENTICAL proposition', async () => {
+      // A deliberate consequence of the refinement, proven from both directions.
+      // Two identical active approved propositions cannot coexist (the partial
+      // unique index), and an approved row may only point at an APPROVED
+      // successor — so a literally identical replacement can neither be governed
+      // alongside its predecessor nor retire it. Superseding with an identical
+      // proposition asserts nothing new, so this is the correct outcome rather
+      // than a gap; a genuine change alters the edition, concept, relationship
+      // or outcome and is therefore a different key (tests 43, 44).
+      const { versionId, classificationId } = await globalEditionWithClassification();
+      const typeId = await createEquipmentType();
+      const predecessor = await addCrosswalk({
+        equipmentTypeId: typeId, versionId, classificationId, outcome: 'DIRECT_EQUIVALENT'
+      });
+      await approve(predecessor);
+
+      const identical = await addCrosswalk({
+        equipmentTypeId: typeId, versionId, classificationId, outcome: 'DIRECT_EQUIVALENT'
+      });
+
+      // Direction 1: the identical row cannot become governed while the
+      // predecessor is active.
+      await inRollback(async (conn) => {
+        await assert.rejects(
+          () => query(conn, `UPDATE ${TABLE} SET review_state='approved',
+            reviewed_by_user_id=?, reviewed_at=CURRENT_TIMESTAMP,
+            approved_by_user_id=?, approved_at=CURRENT_TIMESTAMP WHERE id=?`,
+          [USER, OTHER_USER, identical]),
+          (e) => isUniqueViolation(e),
+          'two identical active approved propositions are unrepresentable');
+      });
+
+      // Direction 2: while it is ungoverned, it may not retire the predecessor.
+      await inRollback(async (conn) => {
+        await assert.rejects(
+          () => point(conn, predecessor, identical),
+          (e) => isUngovernedSuccessorRefusal(e),
+          'an ungoverned identical row may not retire governed truth');
+      });
+
+      const rows = await withConn((conn) => query(conn,
+        `SELECT superseded_by_crosswalk_id, review_state FROM ${TABLE} WHERE id = ?`, [predecessor]));
+      assert.strictEqual(rows[0].review_state, 'approved');
+      assert.strictEqual(rows[0].superseded_by_crosswalk_id, null,
+        'the predecessor is untouched and remains the current truth');
     });
   });
 });
