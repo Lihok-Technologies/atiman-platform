@@ -83,6 +83,13 @@ let packSeq = 0;
  * Migration 009 requires a superseded pack version to name a published successor
  * in the same pack, so that state is constructed properly rather than asserted
  * into existence.
+ *
+ * Migration 015 (ATM-001 M4) requires a GOVERNED pack version — published,
+ * superseded or retired — to carry complete durable governance attribution, and
+ * requires its approver to differ from its publisher. Attribution is therefore
+ * attached to governed states only: a draft or under_review version carries
+ * none, because recording an approval for a version that was never approved
+ * would be false attribution rather than a fixture convenience.
  */
 async function createPackVersion(lifecycleState = 'draft') {
   packSeq += 1;
@@ -91,20 +98,30 @@ async function createPackVersion(lifecycleState = 'draft') {
       `INSERT INTO knowledge_packs (pack_code, pack_name) VALUES (?, ?) RETURNING id`,
       [`M2-PACK-${Date.now()}-${packSeq}`, 'M2 Test Pack']);
 
+    const governed = ['published', 'superseded', 'retired'].includes(lifecycleState);
+    const attributionColumns = governed
+      ? ', reviewer_user_id, reviewed_at, approver_user_id, approved_at, published_by_user_id'
+      : '';
+    const attributionValues = governed
+      ? `, ${REVIEWER}, NOW(), ${APPROVER}, NOW(), ${PUBLISHER}`
+      : '';
+
     if (lifecycleState === 'superseded') {
       const [successor] = await query(conn,
-        `INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at)
-         VALUES (?, '2.0.0', 'published', NOW()) RETURNING id`, [pack.id]);
+        `INSERT INTO knowledge_pack_versions
+           (knowledge_pack_id, version_number, lifecycle_state, published_at${attributionColumns})
+         VALUES (?, '2.0.0', 'published', NOW()${attributionValues}) RETURNING id`, [pack.id]);
       const [version] = await query(conn,
         `INSERT INTO knowledge_pack_versions
-           (knowledge_pack_id, version_number, lifecycle_state, published_at, superseded_by_version_id)
-         VALUES (?, '1.0.0', 'superseded', NOW(), ?) RETURNING id`, [pack.id, successor.id]);
+           (knowledge_pack_id, version_number, lifecycle_state, published_at, superseded_by_version_id${attributionColumns})
+         VALUES (?, '1.0.0', 'superseded', NOW(), ?${attributionValues}) RETURNING id`, [pack.id, successor.id]);
       return version.id;
     }
 
     const [version] = await query(conn,
-      `INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at)
-       VALUES (?, '1.0.0', ?, ?) RETURNING id`,
+      `INSERT INTO knowledge_pack_versions
+         (knowledge_pack_id, version_number, lifecycle_state, published_at${attributionColumns})
+       VALUES (?, '1.0.0', ?, ?${attributionValues}) RETURNING id`,
       [pack.id, lifecycleState,
         ['published', 'retired'].includes(lifecycleState) ? new Date() : null]);
     return version.id;
@@ -248,8 +265,13 @@ describe('Knowledge Pack Membership', { skip: DB_TEST_SKIP_REASON }, () => {
       const membershipId = await addMember(packVersionId, versionId);
 
       await withConn((conn) => query(conn,
-        `UPDATE knowledge_pack_versions SET lifecycle_state = 'published', published_at = NOW() WHERE id = ?`,
-        [packVersionId]));
+        `UPDATE knowledge_pack_versions
+            SET lifecycle_state = 'published', published_at = NOW(),
+                reviewer_user_id = ?, reviewed_at = NOW(),
+                approver_user_id = ?, approved_at = NOW(),
+                published_by_user_id = ?
+          WHERE id = ?`,
+        [REVIEWER, APPROVER, PUBLISHER, packVersionId]));
 
       await assert.rejects(
         () => removeMember(membershipId),
@@ -460,8 +482,13 @@ describe('Knowledge Pack Membership', { skip: DB_TEST_SKIP_REASON }, () => {
       const { templateId, versionId } = await createPublishedTemplateVersion();
       await addMember(packVersionId, versionId);
       await withConn((conn) => query(conn,
-        `UPDATE knowledge_pack_versions SET lifecycle_state = 'published', published_at = NOW() WHERE id = ?`,
-        [packVersionId]));
+        `UPDATE knowledge_pack_versions
+            SET lifecycle_state = 'published', published_at = NOW(),
+                reviewer_user_id = ?, reviewed_at = NOW(),
+                approver_user_id = ?, approved_at = NOW(),
+                published_by_user_id = ?
+          WHERE id = ?`,
+        [REVIEWER, APPROVER, PUBLISHER, packVersionId]));
 
       const before = await withConn((conn) => query(conn,
         `SELECT m.task_template_version_id, v.template_name, v.lifecycle_state_at_publish

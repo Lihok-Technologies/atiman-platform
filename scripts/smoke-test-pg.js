@@ -67,7 +67,9 @@ const REQUIRED_COLUMNS = [
   ['task_template_versions', 'reviewer_user_id'],
   ['task_template_versions', 'approver_user_id'],
   ['task_template_versions', 'approved_content_sha'],
-  ['task_template_versions', 'safety_review_state']
+  ['task_template_versions', 'safety_review_state'],
+  // migration 015 — durable publisher attribution on released pack versions
+  ['knowledge_pack_versions', 'published_by_user_id']
 ];
 
 /**
@@ -89,6 +91,18 @@ const REQUIRED_CONSTRAINTS = [
     name: 'chk_task_template_versions_approver_not_publisher',
     description: 'the approver must not be the publisher',
     mustInclude: 'approver_user_id <> published_by_user_id'
+  },
+  // migration 015 (ATM-001 M4) — a released pack version is held to the same
+  // governance standard as the governed knowledge it composes.
+  {
+    name: 'chk_knowledge_pack_versions_requires_governance',
+    description: 'a released pack version cannot exist ungoverned',
+    mustInclude: 'published_by_user_id IS NOT NULL'
+  },
+  {
+    name: 'chk_knowledge_pack_versions_approver_not_publisher',
+    description: 'a pack version approver must not be its publisher',
+    mustInclude: 'approver_user_id <> published_by_user_id'
   }
 ];
 
@@ -103,17 +117,30 @@ const REQUIRED_CONSTRAINTS = [
 const REQUIRED_FUNCTIONS = [
   {
     name: 'knowledge_pack_membership_guard',
-    description: 'knowledge pack membership immutability guard'
+    description: 'knowledge pack membership immutability guard',
+    // migration 015 PART 2D: the guard must lock the parent pack version row so
+    // that a membership mutation can never commit across the publication
+    // boundary. Without this, a released pack could gain composition that the
+    // publication gate never validated.
+    mustInclude: 'FOR SHARE'
   }
 ];
 
-// migration 013 convergence: the publisher of governed knowledge must not be
+// migration 013 / migration 015 convergence: the publisher of governed knowledge
+// — a task template version or a released knowledge pack version — must not be
 // deletable in a way that erases that attribution.
-const PUBLISHER_FK = {
-  name: 'fk_task_template_versions_published_by',
-  confdeltype: 'r', // RESTRICT
-  description: 'ON DELETE RESTRICT'
-};
+const PUBLISHER_FKS = [
+  {
+    name: 'fk_task_template_versions_published_by',
+    confdeltype: 'r', // RESTRICT
+    description: 'ON DELETE RESTRICT'
+  },
+  {
+    name: 'fk_knowledge_pack_versions_published_by',
+    confdeltype: 'r', // RESTRICT
+    description: 'ON DELETE RESTRICT'
+  }
+];
 
 const DELETE_ACTIONS = { a: 'NO ACTION', r: 'RESTRICT', n: 'SET NULL', c: 'CASCADE', d: 'SET DEFAULT' };
 
@@ -186,15 +213,22 @@ async function smokeTest() {
     }
 
     // --- required guard functions -------------------------------------------
+    // Asserted by DEFINITION, for the same reason as the constraints above: a
+    // membership guard that had been replaced by an earlier revision without the
+    // parent-row lock would satisfy a name-only check while the concurrency
+    // invariant (migration 015 PART 2D) was not actually enforced.
     const routines = await client.query(`
-      SELECT p.proname FROM pg_proc p
+      SELECT p.proname, pg_get_functiondef(p.oid) AS definition FROM pg_proc p
       JOIN pg_namespace n ON n.oid = p.pronamespace
-      WHERE n.nspname = 'public'
+      WHERE n.nspname = 'public' AND p.prokind = 'f'
     `);
-    const presentRoutines = new Set(routines.rows.map((row) => row.proname));
+    const routineDefs = new Map(routines.rows.map((row) => [row.proname, row.definition || '']));
     for (const fn of REQUIRED_FUNCTIONS) {
-      if (!presentRoutines.has(fn.name)) {
+      if (!routineDefs.has(fn.name)) {
         failures.push(`missing function: ${fn.name} (${fn.description})`);
+      } else if (fn.mustInclude && !routineDefs.get(fn.name).includes(fn.mustInclude)) {
+        failures.push(`${fn.name} does not enforce ${fn.description}`
+          + ` (definition lacks: ${fn.mustInclude})`);
       }
     }
 
@@ -211,15 +245,17 @@ async function smokeTest() {
     }
 
     // --- publisher FK convergence (delete action) ---------------------------
-    const fk = await client.query(`
-      SELECT confdeltype::text AS del FROM pg_constraint
-      WHERE conname = $1 AND connamespace = 'public'::regnamespace
-    `, [PUBLISHER_FK.name]);
-    if (fk.rows.length === 0) {
-      failures.push(`missing constraint: ${PUBLISHER_FK.name}`);
-    } else if (fk.rows[0].del !== PUBLISHER_FK.confdeltype) {
-      failures.push(`${PUBLISHER_FK.name} delete action is `
-        + `${DELETE_ACTIONS[fk.rows[0].del] || fk.rows[0].del}, expected ${PUBLISHER_FK.description}`);
+    for (const publisherFk of PUBLISHER_FKS) {
+      const fk = await client.query(`
+        SELECT confdeltype::text AS del FROM pg_constraint
+        WHERE conname = $1 AND connamespace = 'public'::regnamespace
+      `, [publisherFk.name]);
+      if (fk.rows.length === 0) {
+        failures.push(`missing constraint: ${publisherFk.name}`);
+      } else if (fk.rows[0].del !== publisherFk.confdeltype) {
+        failures.push(`${publisherFk.name} delete action is `
+          + `${DELETE_ACTIONS[fk.rows[0].del] || fk.rows[0].del}, expected ${publisherFk.description}`);
+      }
     }
 
     // --- informational counts ----------------------------------------------
@@ -247,7 +283,7 @@ async function smokeTest() {
     console.log(`Schema readiness: ${REQUIRED_TABLES.length} required tables, `
       + `${REQUIRED_COLUMNS.length} required columns, ${REQUIRED_CONSTRAINTS.length} required constraints, `
       + `${REQUIRED_FUNCTIONS.length} required guard function, membership guard triggers, `
-      + `publisher FK ${PUBLISHER_FK.description} — all present.`);
+      + `publisher FKs (${PUBLISHER_FKS.map((f) => f.name).join(', ')}) — all present.`);
 
     client.release();
     client = null;

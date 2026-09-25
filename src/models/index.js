@@ -21,6 +21,8 @@ module.exports = {
   ...require('./subunit.model'),
   // Task Templates
   ...require('./task-template.model'),
+  // Knowledge Packs (ATM-001 M4): pack identity and governed pack versions
+  ...require('./knowledge-pack.model'),
   // ODM Findings with SAP Catalog Support
   Finding: require('./finding.model'),
   // SAP S/4HANA PM Catalogs (A, B, C, 5)
