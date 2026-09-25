@@ -3393,11 +3393,47 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           await cleanupConn.query(`SET LOCAL session_replication_role = 'replica'`);
 
           // Frozen provenance and version children.
+          //
+          // Both frozen-evidence subject kinds must be deleted EXPLICITLY. This
+          // connection has session_replication_role='replica', which disables
+          // the ON DELETE CASCADE from task_template_step_versions, so a
+          // step-subject frozen row (task_template_version_id IS NULL, per
+          // chk_knowledge_template_version_evidence_exactly_one_subject) would
+          // survive the step-version delete below and lose its working-evidence
+          // lineage when the working evidence is deleted. That orphan violates
+          // fk_knowledge_template_version_evidence_copied_from, which migration
+          // 011 re-creates with DROP + ADD, so the next migration run fails
+          // while validating the constraint. Deleting both subject kinds here
+          // keeps the cleanup independent of cascade behaviour.
           await cleanupConn.query(`
             DELETE FROM knowledge_template_version_evidence e
             USING task_template_versions tv
-            WHERE tv.id = e.task_template_version_id AND tv.task_template_id = $1
+            WHERE tv.task_template_id = $1
+              AND (
+                e.task_template_version_id = tv.id
+                OR e.task_template_step_version_id IN (
+                  SELECT sv.id FROM task_template_step_versions sv
+                  WHERE sv.task_template_version_id = tv.id
+                )
+              )
           `, [template.id]);
+
+          // The teardown must leave no frozen provenance behind. Without this
+          // assertion the incomplete cleanup above was silent: the fixture
+          // template and its versions were gone, but orphaned frozen evidence
+          // remained and only surfaced as a migration failure on a later run.
+          const [residualFrozen] = await cleanupConn.query(`
+            SELECT COUNT(*)::int AS n
+            FROM knowledge_template_version_evidence e
+            WHERE e.task_template_version_id IN (
+                    SELECT id FROM task_template_versions WHERE task_template_id = $1)
+               OR e.task_template_step_version_id IN (
+                    SELECT sv.id FROM task_template_step_versions sv
+                    JOIN task_template_versions tv ON tv.id = sv.task_template_version_id
+                    WHERE tv.task_template_id = $1)
+          `, [template.id]);
+          assert.strictEqual(residualFrozen.n, 0,
+            'teardown must remove every frozen provenance row for the fixture template');
           await cleanupConn.query(`DELETE FROM task_template_safety_control_versions WHERE task_template_version_id IN (SELECT id FROM task_template_versions WHERE task_template_id = $1)`, [template.id]);
           await cleanupConn.query(`DELETE FROM task_template_step_versions WHERE task_template_version_id IN (SELECT id FROM task_template_versions WHERE task_template_id = $1)`, [template.id]);
           await cleanupConn.query(`DELETE FROM task_template_versions WHERE task_template_id = $1`, [template.id]);
