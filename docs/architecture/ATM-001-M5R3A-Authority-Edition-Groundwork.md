@@ -4,6 +4,12 @@
 **Not the crosswalk implementation.** No crosswalk table, external-classification entity, trigger, index,
 API or mapping is created by this record. The M5R.3 architecture remains **APPROVED — NOT IMPLEMENTED**.
 
+**Governance decision recorded (§3.2): global external authority / source registration IS a
+system/OWNER-governed knowledge-administration operation, NOT ordinary tenant authoring.** The existing
+`createSource()` refusal to create an application-level global source is **intentional and preserved —
+not a defect**. This record creates **no new permission or capability** and changes **no authorization
+code**; no tenant-callable global-authority creation API exists or is implied.
+
 | | |
 |---|---|
 | Baseline | `origin/main` = `f82f9686ec2ab7a79276cb1bc5be6beb1fd3f1fa` (ATM-001 M5R.3 merged) |
@@ -50,23 +56,52 @@ written, and the "no second authority registry" constraint is satisfiable with z
 fully representable as governed provenance — with bibliographic metadata only, and with edition history
 protected by triggers that predate this mission.
 
-## 3. Identified gap — and why it is NOT implemented here
+## 3. Authority registration — the governance decision, recorded (not implemented)
 
-**Gap:** the **application layer deliberately cannot create a global source.**
-`KnowledgeSource.createSource(input, { organizationId })` throws
-`SOURCE_ORGANIZATION_REQUIRED` when `organizationId` is absent. This is **not an oversight** — M3
-documents the boundary explicitly: *"shared reference provenance is a system/OWNER act, not a tenant
-act."* A test already asserts this refusal.
+### 3.1 What the application does today — verified, and intentional
 
-**Therefore the genuinely missing piece is not code — it is an authorization decision:** *who* may
-perform the system/OWNER act of registering a global external authority. M5R.3A must not pre-empt that,
-because the approved architecture states that **no new authorization capabilities are created in V1**
-(M5R.3 §AC, closed by M5R.3R). Adding a tenant-callable global-creation path would breach M3's boundary;
-adding an unreachable model method would be dead code awaiting a decision.
+`KnowledgeSource.createSource(input, { organizationId, userId })` throws `ProvenanceConflictError` with
+code `SOURCE_ORGANIZATION_REQUIRED` when `organizationId` is absent, so the **application layer
+deliberately cannot create a global source**. `findSourceById(id, organizationId)` still reads
+`(organization_id IS NULL OR organization_id = ?)`, so tenants **read** global authority while being
+unable to **create** it. A test asserts this refusal.
 
-**Recorded for M5R.3B/3C:** global authority registration requires a bounded authorization decision
-(which capability, which actor) **before** the crosswalk can be populated. This is an input to the
-crosswalk implementation, not a defect in the existing model.
+This asymmetry is **not a defect, not an oversight and not an incomplete implementation.** M3 documents
+it explicitly: *"shared reference provenance is a system/OWNER act, not a tenant act."*
+
+### 3.2 The decision (OWNER, recorded in this mission)
+
+**GLOBAL EXTERNAL AUTHORITY / SOURCE REGISTRATION IS A SYSTEM/OWNER-GOVERNED KNOWLEDGE-ADMINISTRATION
+OPERATION. It is NOT ordinary tenant authoring.**
+
+The existing `createSource()` refusal to create an application-level global source is therefore **NOT a
+defect to repair in M5R.3A. Preserve it.**
+
+**M5R.3A creates no new permission or capability for it, and modifies no authorization code.** The
+M5R.3 §AC closure (restated by M5R.3R) stands: **no new authorization capability is created in V1**.
+
+### 3.3 The four-way distinction — these must not be conflated
+
+| | Layer | State after M5R.3A |
+|---|---|---|
+| **A** | **Data-model capability** — can the database represent a global source? | **YES — PROVEN.** `organization_id IS NULL` is representable, tenant-distinguishable and uniqueness-constrained (§2.1, §7) |
+| **B** | **Application authoring capability** — can a tenant create one through the application? | **NO — BY DESIGN, AND PRESERVED.** `createSource()` refuses; no tenant-callable global-creation path exists, and none is added |
+| **C** | **Governance decision** — who is authorized to perform that system act? | **DECIDED THIS MISSION (§3.2)** — a system/OWNER knowledge-administration act, categorically distinct from tenant authoring |
+| **D** | **Future implementation** — the executable OWNER mechanism | **NOT IMPLEMENTED. NOT IN THIS PR.** No service, route, capability, CLI or seed path is added by this slice |
+
+**No tenant-callable global-authority creation API exists, and this record does not imply one.** A is not
+B: the database's ability to represent a global authority is independent of the application's refusal to
+let a tenant create one. C is not D: recording the governance decision is not building the mechanism that
+executes it.
+
+### 3.4 Consequence for M5R.3B / M5R.3C
+
+**D is required before any crosswalk population**, because every crosswalk row carries
+`knowledge_source_version_id` NOT NULL (M5R.3 §H). Until D exists there is **no application mechanism at
+all** for registering a global authority; such rows can only come from a direct, governed system/OWNER
+database operation outside the tenant authoring path. A tenant acting through the application still
+cannot create one, and the crosswalk-level guard forbidding a **global crosswalk** from referencing a
+**tenant-scoped** source or evidence (M5R.3 §R.1) remains mandatory and is still owed by M5R.3C.
 
 ## 4. Provenance is not a mapping — proven, not asserted
 
@@ -101,7 +136,9 @@ provenance. No standards database, no mirrored ISO content.
 | A global source cannot silently become tenant-scoped once it has editions | **GUARANTEED NOW** (proven) |
 | Tenants can read global sources, but cannot create one via the application | **GUARANTEED NOW** (proven) |
 | A **global crosswalk** must never reference a **tenant-scoped** source or evidence | **REMAINS FOR M5R.3C** — mandatory, non-omittable trigger recorded in M5R.3 §R.1 |
-| Who may register a global authority | **REMAINS — authorization decision** (§3 above) |
+| The application refuses to create a global source even though the database can hold one | **GUARANTEED NOW** (proven) — and **INTENTIONAL, NOT A DEFECT** (§3.1) |
+| Who may register a global authority | **DECIDED — a system/OWNER-governed knowledge-administration act** (§3.2), not tenant authoring |
+| The executable OWNER registration mechanism | **NOT IMPLEMENTED — not in this PR** (§3.3 item **D**); must precede any crosswalk population |
 
 The existing model provides the **foundation**; the crosswalk-level guard belongs to the crosswalk
 implementation and is not claimed here.
@@ -123,8 +160,10 @@ Registered in the sanctioned integration suites and in the database-test-guard l
 No migration 016 · no modification to migrations 001–015 · no `external_classification` · no crosswalk
 or crosswalk-evidence tables, triggers or indexes · no mapping population · no mapping of any equipment
 Type to ISO · no taxonomy reconciliation (282 or 60) · no decomposition · no customer aliases · no
-false-provenance remediation · no publication semantics · no new authorization capability · no second
-standards registry · no standards text committed · no production access.
+false-provenance remediation · no publication semantics · no new authorization capability · no
+authorization-code change · no OWNER global-registration mechanism (the governance decision is recorded,
+the mechanism is not built) · no tenant-callable global-source creation · no second standards registry ·
+no standards text committed · no production access.
 
 ## 9. Implementation handoff
 
@@ -134,4 +173,4 @@ standards registry · no standards text committed · no production access.
 |---|---|---|
 | **M5R.3B** | `external_classification` keyed to `knowledge_source_version_id` + edition-coherence trigger | requires the authority/edition foundation proven here |
 | **M5R.3C** | Crosswalk + coherence/attribution CHECKs + immutability/supersession triggers + partial unique indexes + **mandatory global-source guard** | requires the global/tenant distinction proven here |
-| — | **Authorization decision:** who may register a global authority (§3) | **must precede any crosswalk population** |
+| — | **OWNER registration mechanism** executing the §3.2 decision (four-way item **D**) | governance decision **C** is recorded here; the executable mechanism is **NOT implemented** — **required before any crosswalk population** |
