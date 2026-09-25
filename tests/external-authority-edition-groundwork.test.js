@@ -112,6 +112,32 @@ async function inRollback(fn) {
 }
 
 const query = (conn, sql, params) => conn.query(sql, params);
+
+/**
+ * Run `fn` inside a REPEATABLE READ transaction.
+ *
+ * The sanctioned PostgreSQL runner executes its suites in parallel processes
+ * against one database, so any before/after comparison of a database-global
+ * count is racy unless both reads come from one stable snapshot. Inside this
+ * transaction a concurrent suite's committed inserts are invisible, while the
+ * writes made by `fn` itself remain visible — which is exactly what a
+ * "this action changed nothing global" proof needs.
+ */
+async function withStableSnapshot(fn) {
+  const conn = await getConnection();
+  try {
+    await conn.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+    const result = await fn(conn);
+    await conn.commit();
+    return result;
+  } catch (error) {
+    await conn.rollback();
+    throw error;
+  } finally {
+    conn.release();
+  }
+}
+
 const isUniqueViolation = (e) => /duplicate key|unique constraint/i.test(e.message || '');
 // The migration-011 guards reject via RAISE, so the emitted message — not the
 // SQLSTATE name — is what an assertion can match. Accept either.
@@ -397,32 +423,45 @@ describe('External Authority / Edition Groundwork (ATM-001 M5R.3A)', { skip: DB_
   // D. PROVENANCE IS NOT A MAPPING
   // ==========================================================
   describe('D. registering an authority creates NO crosswalk knowledge', () => {
-    it('13. no crosswalk relation exists in the schema', async () => {
-      // Baseline note (ATM-001 M5R.3B): this assertion originally also listed
-      // external_classification as absent, which was true of M5R.3A. A later,
-      // separate slice (M5R.3B, migration 016) legitimately adds
-      // external_classification — the identity of an external concept. That is
-      // NOT a crosswalk and NOT a mapping. The architectural claim this test
-      // makes is unchanged and still fully asserted: no mapping relation exists.
+    it('13. no crosswalk evidence relation exists in the schema', async () => {
+      // Baseline note (ATM-001 M5R.3B, then M5R.3C): this assertion originally
+      // listed external_classification and the crosswalk relation as absent,
+      // which was true through M5R.3A. Later, separate slices legitimately add
+      // them — external_classification in M5R.3B (migration 016) and the governed
+      // crosswalk in M5R.3C (migration 017). Neither is a mapping, and neither
+      // implies one. The claim that survives, and is still fully asserted here,
+      // is that registering an authority edition creates no crosswalk EVIDENCE:
+      // that relation belongs to M5R.3D and must not exist yet.
       const rows = await withConn((conn) => query(conn, `
         SELECT table_name FROM information_schema.tables
         WHERE table_schema = 'public'
-          AND table_name IN ('equipment_type_external_classification',
-                             'equipment_type_external_classification_evidence')
+          AND table_name IN ('equipment_type_external_classification_evidence')
       `));
       assert.strictEqual(rows.length, 0,
-        'no crosswalk relation exists; external classification identity does not imply any mapping');
+        'no crosswalk evidence relation exists; relationship evidence is M5R.3D and is not built');
     });
 
     it('13b. registering an authority edition mutates no equipment taxonomy', async () => {
-      const before = await withConn((conn) => query(conn,
-        'SELECT COUNT(*)::int AS n FROM equipment_types'));
-      const id = await createGlobalAuthority();
-      await addEdition(id, '2016');
-      const after = await withConn((conn) => query(conn,
-        'SELECT COUNT(*)::int AS n FROM equipment_types'));
+      // REPEATABLE READ is deliberate: the sanctioned runner executes its suites
+      // in parallel processes against ONE database, so a plain before/after
+      // global COUNT(*) would race with other suites creating their own taxonomy
+      // fixtures. A single snapshot makes the comparison mean what it claims.
+      const counts = (conn) => query(conn, 'SELECT COUNT(*)::int AS n FROM equipment_types');
+      const { before, after, authorityId } = await withStableSnapshot(async (conn) => {
+        const beforeRows = await counts(conn);
+        const rows = await query(conn,
+          `INSERT INTO knowledge_sources (source_code, source_category, default_title, organization_id)
+           VALUES (?, 'engineering_standard', 'M5R3A Global Authority', NULL) RETURNING id`,
+          [`M5R3A-AUTH-${UNIQ()}`]);
+        await query(conn,
+          `INSERT INTO knowledge_source_versions (knowledge_source_id, version_designation, title)
+           VALUES (?, '2016', 'M5R3A Edition')`, [rows[0].id]);
+        const afterRows = await counts(conn);
+        return { before: beforeRows, after: afterRows, authorityId: rows[0].id };
+      });
       assert.strictEqual(after[0].n, before[0].n,
         'provenance registration must not create or alter any equipment identity');
+      assert.ok(authorityId, 'the authority edition was genuinely registered');
     });
 
     it('13c. the legacy iso_* reference columns are not consulted', async () => {
