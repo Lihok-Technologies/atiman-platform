@@ -36,6 +36,7 @@ const DB_MUTATING_SUITES = [
   // databases just as surely as the suites above.
   'migration-runner.test.js',
   'knowledge-pack-membership.test.js',
+  'knowledge-provenance-authoring.test.js',
   'step6-access-control.test.js',
   'step6-coverage-e2e.test.js',
   'step6-performance.test.js',
@@ -51,7 +52,8 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'knowledge-versioning.test.js',
   'knowledge-publication-admission.test.js',
   'migration-runner.test.js',
-  'knowledge-pack-membership.test.js'
+  'knowledge-pack-membership.test.js',
+  'knowledge-provenance-authoring.test.js'
 ];
 
 const REPO_ROOT = path.resolve(__dirname, '..');
