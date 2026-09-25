@@ -415,8 +415,9 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       `);
 
       const [packVersion] = await conn.query(`
-        INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at)
-        VALUES ($1, '1.0.0', 'published', NOW())
+        INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at,
+           reviewer_user_id, reviewed_at, approver_user_id, approved_at, published_by_user_id)
+        VALUES ($1, '1.0.0', 'published', NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [pack.id]);
 
@@ -449,8 +450,9 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       `);
 
       const [packVersion] = await conn.query(`
-        INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at)
-        VALUES ($1, '1.0.0', 'published', NOW())
+        INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at,
+           reviewer_user_id, reviewed_at, approver_user_id, approved_at, published_by_user_id)
+        VALUES ($1, '1.0.0', 'published', NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [pack.id]);
 
@@ -540,8 +542,9 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
         RETURNING id
       `);
       const [packVersion] = await conn.query(`
-        INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at)
-        VALUES ($1, '1.0.0', 'published', NOW())
+        INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at,
+           reviewer_user_id, reviewed_at, approver_user_id, approved_at, published_by_user_id)
+        VALUES ($1, '1.0.0', 'published', NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [pack.id]);
 
@@ -612,14 +615,16 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       `);
 
       const [packVersionA] = await conn.query(`
-        INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at)
-        VALUES ($1, '1.0.0', 'published', NOW())
+        INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at,
+           reviewer_user_id, reviewed_at, approver_user_id, approved_at, published_by_user_id)
+        VALUES ($1, '1.0.0', 'published', NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [packA.id]);
 
       const [packVersionB] = await conn.query(`
-        INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at)
-        VALUES ($1, '1.0.0', 'published', NOW())
+        INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at,
+           reviewer_user_id, reviewed_at, approver_user_id, approved_at, published_by_user_id)
+        VALUES ($1, '1.0.0', 'published', NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [packB.id]);
 
@@ -640,8 +645,9 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
 
       // Superseding A with a second version from the SAME pack should succeed.
       const [packVersionA2] = await conn.query(`
-        INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at)
-        VALUES ($1, '2.0.0', 'published', NOW())
+        INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at,
+           reviewer_user_id, reviewed_at, approver_user_id, approved_at, published_by_user_id)
+        VALUES ($1, '2.0.0', 'published', NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [packA.id]);
 
@@ -1032,8 +1038,9 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
         RETURNING id
       `);
       const [packVersion] = await conn.query(`
-        INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at)
-        VALUES ($1, '1.0.0', 'published', NOW())
+        INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at,
+           reviewer_user_id, reviewed_at, approver_user_id, approved_at, published_by_user_id)
+        VALUES ($1, '1.0.0', 'published', NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [pack.id]);
 
@@ -1311,20 +1318,23 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       `);
 
       const [v1] = await conn.query(`
-        INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at)
-        VALUES ($1, '1.0.0', 'published', NOW())
+        INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at,
+           reviewer_user_id, reviewed_at, approver_user_id, approved_at, published_by_user_id)
+        VALUES ($1, '1.0.0', 'published', NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [pack.id]);
 
       const [v2] = await conn.query(`
-        INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at)
-        VALUES ($1, '2.0.0', 'published', NOW())
+        INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at,
+           reviewer_user_id, reviewed_at, approver_user_id, approved_at, published_by_user_id)
+        VALUES ($1, '2.0.0', 'published', NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [pack.id]);
 
       const [v3] = await conn.query(`
-        INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at)
-        VALUES ($1, '3.0.0', 'published', NOW())
+        INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at,
+           reviewer_user_id, reviewed_at, approver_user_id, approved_at, published_by_user_id)
+        VALUES ($1, '3.0.0', 'published', NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [pack.id]);
 
@@ -1369,14 +1379,16 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       `);
 
       const [v1] = await conn.query(`
-        INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at)
-        VALUES ($1, '1.0.0', 'published', NOW())
+        INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at,
+           reviewer_user_id, reviewed_at, approver_user_id, approved_at, published_by_user_id)
+        VALUES ($1, '1.0.0', 'published', NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [pack.id]);
 
       const [v2] = await conn.query(`
-        INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at)
-        VALUES ($1, '2.0.0', 'published', NOW())
+        INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at,
+           reviewer_user_id, reviewed_at, approver_user_id, approved_at, published_by_user_id)
+        VALUES ($1, '2.0.0', 'published', NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
         RETURNING id
       `, [pack.id]);
 

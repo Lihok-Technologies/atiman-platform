@@ -78,6 +78,9 @@ router.use('/sap-catalogs', require('./sap-catalog.routes'));
 // Knowledge Provenance authoring (ATM-001 M3)
 router.use('/knowledge-provenance', require('./knowledge-provenance.routes'));
 
+// Knowledge Pack authoring, composition and publication (ATM-001 M4)
+router.use('/knowledge-packs', require('./knowledge-pack.routes'));
+
 // Mobile Inspection Workflow (API)
 router.use('/m', require('./mobile-inspection.routes'));
 

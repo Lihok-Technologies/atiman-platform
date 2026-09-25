@@ -37,6 +37,8 @@ const DB_MUTATING_SUITES = [
   'migration-runner.test.js',
   'knowledge-pack-membership.test.js',
   'knowledge-provenance-authoring.test.js',
+  // ATM-001 M4: drives migration 015 and the governed pack publication path.
+  'knowledge-pack-publication-admission.test.js',
   'step6-access-control.test.js',
   'step6-coverage-e2e.test.js',
   'step6-performance.test.js',
@@ -53,7 +55,8 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'knowledge-publication-admission.test.js',
   'migration-runner.test.js',
   'knowledge-pack-membership.test.js',
-  'knowledge-provenance-authoring.test.js'
+  'knowledge-provenance-authoring.test.js',
+  'knowledge-pack-publication-admission.test.js'
 ];
 
 const REPO_ROOT = path.resolve(__dirname, '..');
