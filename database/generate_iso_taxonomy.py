@@ -1,10 +1,21 @@
 #!/usr/bin/env python3
 """
-ISO 14224 Master Equipment Taxonomy Generator for ODM-CMMS
-Generates complete seed dataset aligned to ISO 14224 standard
+ODM legacy equipment taxonomy DESIGN generator (ODM-CMMS era).
+
+Emits the ODM-authored equipment taxonomy design dataset. The structure is
+INFORMED BY ISO 14224 concepts, but this dataset is NOT an ISO 14224 extract:
+it contains no ISO-defined equipment-class codes and carries no ISO
+conformance claim. See
+docs/architecture/ATM-001-M5R2-Legacy-Taxonomy-Provenance.md.
+
+Output paths are resolved relative to THIS script, so the result does not
+depend on the caller's working directory. The generator writes:
+  - the authoritative design artifact, beside this script; and
+  - the seed copy consumed by the import tooling.
 """
 
 import json
+import os
 
 # Equipment Categories
 equipment_categories = [
@@ -909,14 +920,26 @@ taxonomy = {
     "odm_taxonomy_summary": odm_taxonomy_summary
 }
 
-# Write to file
-with open("iso14224_master_taxonomy.json", "w") as f:
-    json.dump(taxonomy, f, indent=2)
+# Resolve every output path from THIS script's own location. Bare relative paths
+# previously wrote the artifact into whichever directory the command was run
+# from, which produced unexplained duplicate copies with ambiguous ownership.
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.dirname(_SCRIPT_DIR)
+DESIGN_ARTIFACT = os.path.join(_SCRIPT_DIR, "odm_legacy_equipment_taxonomy_design.v1.json")
+SEED_COPY = os.path.join(_REPO_ROOT, "odm_seed", "master_data", "taxonomy.v1.json")
 
-print(f"Generated ISO 14224 Master Taxonomy:")
+# Write both outputs from the same in-memory dataset so the design artifact and
+# the seed copy can never silently drift apart.
+for _out_path in (DESIGN_ARTIFACT, SEED_COPY):
+    with open(_out_path, "w") as f:
+        json.dump(taxonomy, f, indent=2)
+
+print("Generated ODM legacy equipment taxonomy design (ISO 14224-informed; NOT an ISO extract):")
 print(f"  - Equipment Categories: {len(equipment_categories)}")
 print(f"  - Equipment Classes: {len(equipment_classes)}")
 print(f"  - Equipment Types: {len(equipment_types)}")
 print(f"  - Subunits: {len(all_subunits)}")
 print(f"  - Maintainable Items: {len(maintainable_items)}")
-print(f"\nOutput written to: iso14224_master_taxonomy.json")
+print(f"\nAuthoritative design artifact: {os.path.relpath(DESIGN_ARTIFACT, _REPO_ROOT)}")
+print(f"Seed copy (import input):      {os.path.relpath(SEED_COPY, _REPO_ROOT)}")
+

@@ -1,5 +1,7 @@
 /**
- * Import ISO 14224 Equipment Taxonomy and Task Templates
+ * Import the ODM legacy equipment taxonomy design (seed copy) and task templates.
+ * The taxonomy is ODM-authored and ISO 14224-informed; it is NOT an ISO extract.
+ * Path is resolved from __dirname, so it does not depend on the working directory.
  * Usage: node import-iso-data.js
  */
 
