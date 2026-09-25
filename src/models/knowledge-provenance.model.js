@@ -370,6 +370,40 @@ class KnowledgeTemplateEvidenceModel extends BaseModel {
     return rows[0] || null;
   }
 
+  /**
+   * Find a working evidence row that BELONGS to a specific working template,
+   * either directly or through one of that template's steps, within the caller's
+   * organization.
+   *
+   * This is the resource boundary the detach route expresses: the evidence id
+   * alone is not sufficient, and neither is the organization. Evidence that
+   * exists elsewhere in the same organization must not be addressable through a
+   * different template's path.
+   *
+   * Returns null for every failure mode — unknown evidence, evidence belonging to
+   * another template, or a template outside the caller's organization — so the
+   * caller cannot distinguish them.
+   */
+  async findWorkingEvidenceForTemplate(evidenceId, taskTemplateId, organizationId) {
+    const rows = await this.query(
+      `SELECT e.*
+         FROM knowledge_template_evidence e
+        WHERE e.id = ?
+          AND (
+            e.task_template_id = ?
+            OR e.task_template_step_id IN (
+                 SELECT id FROM task_template_steps WHERE task_template_id = ?
+               )
+          )
+          AND EXISTS (
+            SELECT 1 FROM task_templates t
+             WHERE t.id = ? AND t.organization_id = ?
+          )`,
+      [evidenceId, taskTemplateId, taskTemplateId, taskTemplateId, organizationId]
+    );
+    return rows[0] || null;
+  }
+
   /** List working evidence for a working template (template-level and step-level). */
   async listWorkingEvidenceForTemplate(taskTemplateId, organizationId) {
     const subject = await this.resolveWorkingSubject({ taskTemplateId });
@@ -397,17 +431,37 @@ class KnowledgeTemplateEvidenceModel extends BaseModel {
   /**
    * Detach WORKING evidence. Permitted only while the row is working evidence.
    *
+   * Requires all three to agree: the evidence id, the task template the route
+   * addresses, and the caller's organization scope. The evidence may be attached
+   * directly to that template or to one of its steps.
+   *
    * Frozen evidence lives in knowledge_template_version_evidence, which has no
    * access path from this model, so this method cannot reach it.
    */
-  async detachWorkingEvidence(evidenceId, organizationId) {
-    const existing = await this.findWorkingEvidenceById(evidenceId, organizationId);
+  async detachWorkingEvidence(evidenceId, taskTemplateId, organizationId) {
+    // The evidence must belong to the requested template (directly or through one
+    // of its steps) AND that template must be in the caller's organization. The
+    // lookup proves both; a mismatch is reported as not-found without disclosing
+    // where the evidence actually belongs.
+    const existing = await this.findWorkingEvidenceForTemplate(evidenceId, taskTemplateId, organizationId);
     if (!existing) {
       throw new ProvenanceNotFoundError('Working evidence not found');
     }
 
     try {
-      await this.query(`DELETE FROM knowledge_template_evidence WHERE id = ?`, [evidenceId]);
+      // The delete repeats the template binding rather than trusting the lookup:
+      // the model boundary stays authoritative even if a future caller skips it.
+      await this.query(
+        `DELETE FROM knowledge_template_evidence AS e
+          WHERE e.id = ?
+            AND (
+              e.task_template_id = ?
+              OR e.task_template_step_id IN (
+                   SELECT id FROM task_template_steps WHERE task_template_id = ?
+                 )
+            )`,
+        [evidenceId, taskTemplateId, taskTemplateId]
+      );
     } catch (error) {
       // Migration 011 pins WORKING evidence once it has been copied into a
       // published version: fk_knowledge_template_version_evidence_copied_from is

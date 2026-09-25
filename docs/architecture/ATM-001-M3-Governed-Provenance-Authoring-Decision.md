@@ -94,6 +94,14 @@ point before publication is consumed by the M1 gate.
 | `knowledge_template_evidence` (working) | mutable while working | **Yes** — attach, list, detach |
 | `knowledge_template_version_evidence` (frozen) | INSERT only while the parent version is unsealed; UPDATE and DELETE always refused | **No** — no route, no controller action, and no executable reference in the model |
 
+Detach addresses evidence through its owning template. All three must agree —
+the evidence id, the template named by the route, and the caller's organization
+scope. The evidence may be attached directly to that template or to one of its
+steps. Evidence that exists elsewhere in the same organization is **not**
+addressable through a different template's path, and a mismatch is reported as
+not-found without disclosing where the evidence actually belongs. This binding
+is enforced in the model, so it holds independently of the controller.
+
 Detach is permitted **only while the working evidence has not been frozen**. The
 database enforces this more strictly than "frozen rows are immutable":
 `knowledge_template_version_evidence.copied_from_template_evidence_id` is

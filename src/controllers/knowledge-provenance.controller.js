@@ -127,8 +127,10 @@ const attachEvidence = async (req, res, next) => {
 
     const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {};
 
-    // The route fixes the template subject. A step may be targeted by supplying
-    // taskTemplateStepId, which the validator reconciles with the subject rule.
+    // The POST route is template-scoped: the template is taken from the path and
+    // step-level evidence cannot be authored through it. Supplying
+    // taskTemplateStepId in the body would set two subjects and be rejected by
+    // the exactly-one-subject rule, so step evidence is not exposed here.
     const evidence = await KnowledgeTemplateEvidence.attachEvidence(
       { taskTemplateId: templateId },
       body,
@@ -168,8 +170,10 @@ const detachEvidence = async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'Invalid evidence reference' });
     }
 
+    // Evidence must belong to THIS template (directly or via one of its steps)
+    // and to the caller's organization. Anything else is reported as not-found.
     const result = await KnowledgeTemplateEvidence.detachWorkingEvidence(
-      evidenceId, callerScope(req).organizationId
+      evidenceId, templateId, callerScope(req).organizationId
     );
     res.json({ success: true, data: result });
   } catch (error) {

@@ -535,6 +535,160 @@ describe('Knowledge Provenance Authoring (ATM-001 M3)', { skip: DB_TEST_SKIP_REA
         'the provenance model must contain no executable reference to frozen evidence');
     });
 
+    it('detaches template-level evidence through its correct templateId', async () => {
+      const templateId = await createWorkingTemplate();
+      const { versionId } = await authorSourceAndVersion();
+      const attached = await call('POST', `/api/knowledge-provenance/templates/${templateId}/evidence`, {
+        userId: ADMIN, body: { knowledgeSourceVersionId: versionId, sectionOrClause: 'S1' }
+      });
+      assert.strictEqual(attached.status, 201);
+
+      const res = await call('DELETE',
+        `/api/knowledge-provenance/templates/${templateId}/evidence/${attached.body.data.evidence.id}`,
+        { userId: ADMIN });
+      assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+      assert.strictEqual(res.body.data.detached, true);
+    });
+
+    it('detaches step-level evidence belonging to the requested template', async () => {
+      // Step evidence is not authorable through the template-scoped POST route,
+      // but the schema supports it and the listing includes it, so detach must
+      // honour it when addressed through the owning template.
+      const templateId = await createWorkingTemplate();
+      const { versionId } = await authorSourceAndVersion();
+
+      const stepEvidenceId = await withConn(async (conn) => {
+        const steps = await query(conn,
+          `SELECT id FROM task_template_steps WHERE task_template_id = ? ORDER BY step_no LIMIT 1`, [templateId]);
+        const inserted = await query(conn,
+          `INSERT INTO knowledge_template_evidence
+             (task_template_step_id, knowledge_source_version_id, section_or_clause)
+           VALUES (?, ?, 'Step clause') RETURNING id`, [steps[0].id, versionId]);
+        return inserted[0].id;
+      });
+
+      const listed = await call('GET', `/api/knowledge-provenance/templates/${templateId}/evidence`, { userId: ADMIN });
+      assert.ok(listed.body.data.evidence.some((e) => Number(e.id) === Number(stepEvidenceId)),
+        'step evidence must appear in the template listing');
+
+      const res = await call('DELETE',
+        `/api/knowledge-provenance/templates/${templateId}/evidence/${stepEvidenceId}`, { userId: ADMIN });
+      assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+
+      const gone = await withConn((conn) => query(conn,
+        `SELECT COUNT(*)::int AS n FROM knowledge_template_evidence WHERE id = ?`, [stepEvidenceId]));
+      assert.strictEqual(gone[0].n, 0);
+    });
+
+    it('refuses to detach another template\'s evidence through the wrong templateId (same organization)', async () => {
+      // The route expresses a resource relationship. Evidence belonging to
+      // template B must not be addressable through template A's path, even
+      // inside the same organization, and the response must not disclose where
+      // the evidence actually belongs.
+      const templateA = await createWorkingTemplate();
+      const templateB = await createWorkingTemplate();
+      const { versionId } = await authorSourceAndVersion();
+
+      const attached = await call('POST', `/api/knowledge-provenance/templates/${templateB}/evidence`, {
+        userId: ADMIN, body: { knowledgeSourceVersionId: versionId, sectionOrClause: 'Belongs to B' }
+      });
+      assert.strictEqual(attached.status, 201);
+      const evidenceOfB = attached.body.data.evidence.id;
+
+      const wrong = await call('DELETE',
+        `/api/knowledge-provenance/templates/${templateA}/evidence/${evidenceOfB}`, { userId: ADMIN });
+      assert.strictEqual(wrong.status, 404,
+        `expected 404 for a cross-template address, got ${wrong.status}: ${JSON.stringify(wrong.body)}`);
+
+      // The evidence is still attached to B and detachable through its own path.
+      const stillListed = await call('GET', `/api/knowledge-provenance/templates/${templateB}/evidence`, { userId: ADMIN });
+      assert.ok(stillListed.body.data.evidence.some((e) => Number(e.id) === Number(evidenceOfB)),
+        'evidence must remain attached to its real template');
+
+      const correct = await call('DELETE',
+        `/api/knowledge-provenance/templates/${templateB}/evidence/${evidenceOfB}`, { userId: ADMIN });
+      assert.strictEqual(correct.status, 200, 'detach through the correct template must still work');
+    });
+
+    it('refuses a step-level evidence detach addressed through a different template', async () => {
+      const templateA = await createWorkingTemplate();
+      const templateB = await createWorkingTemplate();
+      const { versionId } = await authorSourceAndVersion();
+
+      const stepEvidenceId = await withConn(async (conn) => {
+        const steps = await query(conn,
+          `SELECT id FROM task_template_steps WHERE task_template_id = ? ORDER BY step_no LIMIT 1`, [templateB]);
+        const inserted = await query(conn,
+          `INSERT INTO knowledge_template_evidence
+             (task_template_step_id, knowledge_source_version_id, section_or_clause)
+           VALUES (?, ?, 'Step clause of B') RETURNING id`, [steps[0].id, versionId]);
+        return inserted[0].id;
+      });
+
+      const wrong = await call('DELETE',
+        `/api/knowledge-provenance/templates/${templateA}/evidence/${stepEvidenceId}`, { userId: ADMIN });
+      assert.strictEqual(wrong.status, 404);
+
+      const survived = await withConn((conn) => query(conn,
+        `SELECT COUNT(*)::int AS n FROM knowledge_template_evidence WHERE id = ?`, [stepEvidenceId]));
+      assert.strictEqual(survived[0].n, 1);
+    });
+
+    it('cross-tenant detach remains rejected through the correct templateId path', async () => {
+      const templateId = await createWorkingTemplate(ORG);
+      const { versionId } = await authorSourceAndVersion();
+      const attached = await call('POST', `/api/knowledge-provenance/templates/${templateId}/evidence`, {
+        userId: ADMIN, body: { knowledgeSourceVersionId: versionId, sectionOrClause: 'S1' }
+      });
+      const evidenceId = attached.body.data.evidence.id;
+
+      const res = await call('DELETE',
+        `/api/knowledge-provenance/templates/${templateId}/evidence/${evidenceId}`, { userId: FOREIGN_ADMIN });
+      assert.strictEqual(res.status, 404, 'a foreign tenant must not reach another tenant\'s evidence');
+
+      const survived = await withConn((conn) => query(conn,
+        `SELECT COUNT(*)::int AS n FROM knowledge_template_evidence WHERE id = ?`, [evidenceId]));
+      assert.strictEqual(survived[0].n, 1);
+    });
+
+    it('frozen evidence addressed through its correct template still returns 409 EVIDENCE_FROZEN', async () => {
+      const templateId = await createWorkingTemplate();
+      const { versionId } = await authorSourceAndVersion();
+      const attached = await call('POST', `/api/knowledge-provenance/templates/${templateId}/evidence`, {
+        userId: ADMIN, body: { knowledgeSourceVersionId: versionId, sectionOrClause: 'S1' }
+      });
+      const evidenceId = attached.body.data.evidence.id;
+
+      await TaskTemplate.recordSafetyReview(templateId, SUPERVISOR, ORG, 'reviewed_no_control_required');
+      await TaskTemplate.submitForReview(templateId, SUPERVISOR, ORG);
+      await TaskTemplate.approveTemplate(templateId, SUPERVISOR, ORG);
+      await TaskTemplate.publishVersion(templateId, ADMIN, { publishedByOrganizationId: ORG });
+
+      const res = await call('DELETE',
+        `/api/knowledge-provenance/templates/${templateId}/evidence/${evidenceId}`, { userId: ADMIN });
+      assert.strictEqual(res.status, 409, `expected 409, got ${res.status}: ${JSON.stringify(res.body)}`);
+      assert.strictEqual(res.body.code, 'EVIDENCE_FROZEN');
+    });
+
+    it('the model refuses a detach whose template does not own the evidence', async () => {
+      // The boundary must live in the model, not only in the controller.
+      const templateA = await createWorkingTemplate();
+      const templateB = await createWorkingTemplate();
+      const { versionId } = await authorSourceAndVersion();
+      const attached = await call('POST', `/api/knowledge-provenance/templates/${templateB}/evidence`, {
+        userId: ADMIN, body: { knowledgeSourceVersionId: versionId, sectionOrClause: 'S1' }
+      });
+      const evidenceId = attached.body.data.evidence.id;
+
+      await assert.rejects(
+        () => KnowledgeTemplateEvidence.detachWorkingEvidence(evidenceId, templateA, ORG),
+        /Working evidence not found/
+      );
+      const survived = await withConn((conn) => query(conn,
+        `SELECT COUNT(*)::int AS n FROM knowledge_template_evidence WHERE id = ?`, [evidenceId]));
+      assert.strictEqual(survived[0].n, 1);
+    });
+
     it('rejects detaching evidence that does not exist', async () => {
       const templateId = await createWorkingTemplate();
       const res = await call('DELETE', `/api/knowledge-provenance/templates/${templateId}/evidence/999999999`, { userId: ADMIN });
