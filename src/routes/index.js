@@ -81,6 +81,9 @@ router.use('/knowledge-provenance', require('./knowledge-provenance.routes'));
 // Knowledge Pack authoring, composition and publication (ATM-001 M4)
 router.use('/knowledge-packs', require('./knowledge-pack.routes'));
 
+// Governed External Classification Crosswalk (ATM-001 M5R.3E)
+router.use('/knowledge-crosswalks', require('./knowledge-crosswalk.routes'));
+
 // Mobile Inspection Workflow (API)
 router.use('/m', require('./mobile-inspection.routes'));
 
