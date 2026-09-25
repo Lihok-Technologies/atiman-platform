@@ -398,15 +398,20 @@ describe('External Authority / Edition Groundwork (ATM-001 M5R.3A)', { skip: DB_
   // ==========================================================
   describe('D. registering an authority creates NO crosswalk knowledge', () => {
     it('13. no crosswalk relation exists in the schema', async () => {
+      // Baseline note (ATM-001 M5R.3B): this assertion originally also listed
+      // external_classification as absent, which was true of M5R.3A. A later,
+      // separate slice (M5R.3B, migration 016) legitimately adds
+      // external_classification — the identity of an external concept. That is
+      // NOT a crosswalk and NOT a mapping. The architectural claim this test
+      // makes is unchanged and still fully asserted: no mapping relation exists.
       const rows = await withConn((conn) => query(conn, `
         SELECT table_name FROM information_schema.tables
         WHERE table_schema = 'public'
-          AND table_name IN ('external_classification',
-                             'equipment_type_external_classification',
+          AND table_name IN ('equipment_type_external_classification',
                              'equipment_type_external_classification_evidence')
       `));
       assert.strictEqual(rows.length, 0,
-        'M5R.3A implements no crosswalk relation; the approved architecture is not yet built');
+        'no crosswalk relation exists; external classification identity does not imply any mapping');
     });
 
     it('13b. registering an authority edition mutates no equipment taxonomy', async () => {

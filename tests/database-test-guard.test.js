@@ -41,6 +41,8 @@ const DB_MUTATING_SUITES = [
   'knowledge-pack-publication-admission.test.js',
   // ATM-001 M5R.3A: external authority/edition groundwork.
   'external-authority-edition-groundwork.test.js',
+  // ATM-001 M5R.3B: external classification foundation (migration 016).
+  'external-classification-foundation.test.js',
   'step6-access-control.test.js',
   'step6-coverage-e2e.test.js',
   'step6-performance.test.js',
@@ -59,7 +61,8 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'knowledge-pack-membership.test.js',
   'knowledge-provenance-authoring.test.js',
   'knowledge-pack-publication-admission.test.js',
-  'external-authority-edition-groundwork.test.js'
+  'external-authority-edition-groundwork.test.js',
+  'external-classification-foundation.test.js'
 ];
 
 const REPO_ROOT = path.resolve(__dirname, '..');
