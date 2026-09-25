@@ -75,6 +75,9 @@ router.use('/api-keys', require('./api-key.routes'));
 // SAP S/4HANA PM Catalogs (A, B, C, 5)
 router.use('/sap-catalogs', require('./sap-catalog.routes'));
 
+// Knowledge Provenance authoring (ATM-001 M3)
+router.use('/knowledge-provenance', require('./knowledge-provenance.routes'));
+
 // Mobile Inspection Workflow (API)
 router.use('/m', require('./mobile-inspection.routes'));
 
