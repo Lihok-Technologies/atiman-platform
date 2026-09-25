@@ -1,11 +1,23 @@
 #!/usr/bin/env python3
-"""Validate ISO 14224 Master Taxonomy"""
-import json
+"""Validate the ODM legacy equipment taxonomy DESIGN artifact.
 
-with open('iso14224_master_taxonomy.json', 'r') as f:
+The artifact is ODM-authored and ISO 14224-informed; it is NOT an ISO 14224
+extract and carries no ISO conformance claim. The path is resolved relative to
+this script so validation always targets the same file, regardless of the
+caller's working directory.
+"""
+import json
+import os
+
+ARTIFACT_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    'odm_legacy_equipment_taxonomy_design.v1.json',
+)
+
+with open(ARTIFACT_PATH, 'r') as f:
     data = json.load(f)
 
-print('=== ISO 14224 MASTER TAXONOMY VALIDATION ===')
+print('=== ODM LEGACY EQUIPMENT TAXONOMY DESIGN VALIDATION ===')
 print()
 print('RECORD COUNTS:')
 print(f'  Equipment Categories: {len(data["equipment_categories"])}')

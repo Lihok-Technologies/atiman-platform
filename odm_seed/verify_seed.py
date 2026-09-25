@@ -3,7 +3,10 @@
 import json
 import os
 
-file_path = 'master_data/taxonomy.v1.json'
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Resolved from this script's location so the check targets the same seed
+# artifact regardless of the caller's working directory.
+file_path = os.path.join(_SCRIPT_DIR, 'master_data', 'taxonomy.v1.json')
 
 print('=' * 60)
 print('ODM SEED DATASET BASELINE - FINAL CONFIRMATION')

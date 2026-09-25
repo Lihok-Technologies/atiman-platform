@@ -11,6 +11,7 @@
 |---|---|
 | M5R.1 | Record first drafted: decision, evidence, rejected options, open items. |
 | **M5R.2** | §7 crosswalk principles (`review status`, nullable `external_classification`) recorded as **APPROVED** by OWNER. §6.2 reframed: the customer-isolation **requirement is mandatory**, only its **implementation** is deferred — this is a deferred gap, **not** accepted contamination. §11 expanded with generator-based authorship proof and the reasons the rename/consolidation was deferred. §13 gained explicit **NON-DECISIONS**. §15 research-artifact disposition **executed**. §17 added: Project Source absent; out-of-scope documentation debt recorded. |
+| **M5R.2A** | Legacy-taxonomy hygiene: artifact renamed to `database/odm_legacy_equipment_taxonomy_design.v1.json`, root byproduct removed, legacy tool paths made script-relative, false-provenance wording removed at source. §11.2 marked historical; §11.3 records the executed correction. **No architecture change; taxonomy content byte-identical.** |
 
 ---
 
@@ -306,7 +307,7 @@ identity may map to several standards, or to none.
 
 | | Live seed | Design artifact |
 |---|---|---|
-| Source | `scripts/bootstrap-knowledge/*.jsonl` | `iso14224_master_taxonomy.json` ≡ `database/iso14224_master_taxonomy.json` ≡ `odm_seed/master_data/taxonomy.v1.json` |
+| Source | `scripts/bootstrap-knowledge/*.jsonl` | `database/odm_legacy_equipment_taxonomy_design.v1.json` (authoritative) + `odm_seed/master_data/taxonomy.v1.json` (generated seed copy) — formerly three byte-identical copies named `iso14224_master_taxonomy.json`; consolidated by M5R.2A, see §11.3 |
 | Counts | 65 categories / 311 classes / 282 types / 647 industry rows | 10 / 42 / 60 types / 288 subunits / 376 maintainable items |
 | Seeded? | **Yes** | **No** — no loader references it |
 | Representation | `CURRENT_IMPLEMENTATION` | `LEGACY_BEHAVIOR` (design artifact) |
@@ -354,39 +355,47 @@ Its own header reads:
 "Aligned to" is the generator's own description. The artifact is therefore **ODM-CMMS-authored and
 ISO-*inspired***, not an ISO 14224 extract. This corroborates the content checks independently of them.
 
-### 11.2 Why the rename and consolidation were NOT executed
+### 11.2 Why the rename and consolidation were NOT executed in M5R.2
 
-Dependency analysis established that the correction is **not provably safe**, which is the condition
-the mission sets for performing it. The three copies have *different* roles:
+> **Historical — resolved by ATM-001 M5R.2A (see §11.3).** This subsection records the analysis as it
+> stood at M5R.2 and is retained for the audit trail. The path references below describe the
+> *former* state.
 
-| Copy | Role established by analysis |
+Dependency analysis established that the correction was **not provably safe at M5R.2**, which is the
+condition the mission set for performing it. The three copies had *different* roles:
+
+| Copy (former) | Role established by analysis |
 |---|---|
 | `iso14224_master_taxonomy.json` (root) | **Generated output** of `database/generate_iso_taxonomy.py`; read by `database/validate_taxonomy.py` |
-| `database/iso14224_master_taxonomy.json` | **Not referenced by any path-explicit reference** — but both Python tools use **bare relative filenames**, so this copy is the one they read when invoked from `database/`. Copy ownership is therefore **CWD-dependent and ambiguous** |
+| `database/iso14224_master_taxonomy.json` | **Not referenced by any path-explicit reference** — but both Python tools used **bare relative filenames**, so this copy was the one they read when invoked from `database/`. Copy ownership was therefore **CWD-dependent and ambiguous** |
 | `odm_seed/master_data/taxonomy.v1.json` | Read by `odm_seed/verify_seed.py` **and by `import-iso-data.js` (an import path)** |
 
-Consequences:
-- Renaming the root copy would change a **generator's output contract** while leaving the ambiguous
+Consequences at that time:
+- Renaming the root copy would have changed a **generator's output contract** while leaving the ambiguous
   `database/` copy in place — producing an inconsistent repository and entrenching one interpretation
-  of an ambiguity that itself needs resolving.
-- Consolidating to one copy is **not safe**: depending on the working directory, either copy may be the
+  of an ambiguity that itself needed resolving.
+- Consolidating to one copy was **not safe**: depending on the working directory, either copy could be the
   live input, so removing one could silently break a legacy tool.
-- Renaming the `odm_seed` copy would touch an **import path**, which the mission scopes out.
+- Renaming the `odm_seed` copy would have touched an **import path**, which M5R.2 scoped out.
 
 Verified **not** affected (so no product risk either way): no runtime (`src/`) reference, no bootstrap
 (`scripts/bootstrap-knowledge/`) reference, no test reference, no CI/deployment reference, and no
 `package.json` script.
 
-### 11.3 Disposition
+### 11.3 Disposition — correction executed by ATM-001 M5R.2A
+
+M5R.2A removed the blocker by first making the legacy tooling **path-deterministic**, which is what made
+consolidation provably safe. No architecture changed; taxonomy content is byte-identical.
 
 | Item | Status |
 |---|---|
 | Provenance finding | **VERIFIED and recorded** (this section, plus `ATM-001-M5R2-Legacy-Taxonomy-Provenance.md`) |
-| Filename correction | **DEFERRED** — blocked by the generator-contract and CWD-ambiguity findings above; requires an OWNER decision on correcting the legacy tooling |
-| Duplicate consolidation | **DEFERRED** — consolidation cannot be proven safe while references are CWD-relative |
-| Taxonomy data values | **Unchanged** — structural content remains useful as legacy candidate taxonomy |
+| Filename correction | **EXECUTED (M5R.2A)** — authoritative artifact is now `database/odm_legacy_equipment_taxonomy_design.v1.json`; the root `iso14224_master_taxonomy.json` byproduct was removed |
+| Duplicate consolidation | **EXECUTED (M5R.2A)** — three byte-identical copies reduced to one authoritative design artifact plus one explicitly generated seed copy |
+| Path determinism | **EXECUTED (M5R.2A)** — generator and consumers resolve paths from script location, not caller CWD |
+| Taxonomy data values | **Unchanged** — same `sha256 cf7eece1…`, 213,984 bytes, identical record counts |
 | Migration / seeding impact | **None** — not seeded; no database object depends on it |
-| ISO implication | **Neutralised by documentation**: the durable provenance record states the artifact is ODM-authored, not an ISO extract, contains no ISO-defined codes, and is superseded as architecture by this decision |
+| ISO implication | **Removed at source**: no active artifact filename asserts ISO extraction, and the tools' provenance wording states the dataset is ODM-authored and ISO 14224-*informed*, not an ISO extract |
 
 ---
 
@@ -511,5 +520,5 @@ fall outside this record's scope:
 |---|---|---|
 | 1 | The **live** bootstrap corpus carries ISO 14224-flavoured reference labels that assert standard lineage which cannot be verified, because ISO 14224 Annex A/B are not publicly accessible: `activity_codes.iso_maintenance_reference` = `ISO14224-I` (4), `-PM` (7), `-CM` (4), `-PdM` (2), `-MOD` (2); `cause_codes.iso_failure_cause_reference` = `ISO14224-T1`…`T7` (16 rows) | Correcting these means changing **live seeded data** — a seed-semantics change, explicitly out of scope |
 | 2 | Legacy MySQL migrations under `database/migrations/` (e.g. `006_iso_sap_reliability_structure.sql`) scatter `ISO14224-*` references and an "ISO 14224 + SAP" framing | Legacy migration chain; never read by the PostgreSQL runner; changing it would rewrite migration history |
-| 3 | Root-level legacy utilities (`import-iso-data.js`, `verify-iso-data.js`, `add-inspection-items.js`) carry "ISO 14224" framing in headers and filenames | Touching them changes legacy tooling behaviour |
+| 3 | Root-level legacy utilities (`import-iso-data.js`, `verify-iso-data.js`, `add-inspection-items.js`) carry "ISO 14224" framing in headers and filenames. M5R.2A corrected the misleading provenance **wording** in `import-iso-data.js` only; the remaining files and the utility **filenames** are untouched | Touching them changes legacy tooling behaviour |
 | 4 | Stale ODM-CMMS product framing persists across legacy docs (`ISO_IMPLEMENTATION_SUMMARY.md`, `database/EAM_MIGRATION_SUMMARY.md`, `AUDIT-REPORT.md`, `SCHEMA_MANIFEST.md`) | General documentation cleanup is out of scope |
