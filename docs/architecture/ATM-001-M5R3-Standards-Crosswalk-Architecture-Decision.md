@@ -1,7 +1,9 @@
 # ATM-001 M5R.3 — Standards Crosswalk Architecture Decision
 
-**Status: PROPOSED — AWAITING OWNER / CHIEF ARCHITECT APPROVAL.**
-**Not implemented.** No schema, migration, model, service, API or data change accompanies this record.
+**Status: APPROVED — Accepted by OWNER / Chief Architect (Option C), incorporating the ATM-001 M5R.3R review refinements.**
+**NOT IMPLEMENTED.** No schema, migration, model, service, API or data change accompanies this record.
+**APPROVED ARCHITECTURE ≠ IMPLEMENTED ARCHITECTURE.** The schema and API material below remains an approved
+design specification only; no crosswalk table, trigger, index, route or mapping exists.
 
 | | |
 |---|---|
@@ -9,6 +11,13 @@
 | Predecessors | M5R (ISO 14224 role corrected), M5R.1 (canonical identity), M5R.2 (crosswalk principles approved), M5R.2A (legacy provenance hygiene) |
 | Migration chain | 001–015 unchanged; **no 016 proposed for execution here** |
 | Question answered | *For this Atiman-owned equipment identity, what external classifications relate to it — according to which authority/edition, through what relationship, for what applicability, on what evidence, with what governance status?* |
+
+**Revision history**
+
+| Revision | Change |
+|---|---|
+| M5R.3 | Record first drafted: Option C selected; §H.0 three-state row model; §H.1 separate governance status and mapping outcome; four-value relationship vocabulary with `NO_DIRECT_MAPPING` as an outcome and `SECTOR_SPECIFIC_EQUIVALENT` dropped; reuse of `knowledge_sources`/`knowledge_source_versions`; two BLOCKER VUDA corrections (mandatory `knowledge_source_version_id`; mandatory global-source guard). Status: PROPOSED. |
+| **M5R.3R** | OWNER review closure. **Approved Option C** with exact refinements: §H.0 promoted to a **NORMATIVE** row-existence/null invariant (three-state model; mapped outcomes require a classification; `NO_DIRECT_MAPPING` requires a NULL classification; `knowledge_source_version_id` mandatory on every row; **no placeholder/ambiguous draft rows**); §H.3 added (draft and rejected `NO_DIRECT_MAPPING` are permissible proposals but never governed truth); §W coherence constraint restated; the four previously open questions **closed** (§AI); `FALSE_PROVENANCE_REMEDIATION_REQUIRED` recorded and strengthened (§AB.1); §AH Project Source wording corrected so it no longer implies no authoritative Project Source exists. **Status: APPROVED — not implemented.** |
 
 ---
 
@@ -289,6 +298,43 @@ NEW  equipment_type_external_classification_evidence
        confidence_level · supporting_role · added_by_user_id · added_at
 ```
 
+### H.0 NORMATIVE — row existence and null semantics (M5R.3R, OWNER-approved)
+
+This invariant is **normative**. It governs every row of the crosswalk relation.
+
+```
+knowledge_source_version_id  IS NOT NULL     -- ALWAYS, on every crosswalk row
+mapping_outcome IN ('DIRECT_EQUIVALENT','RELATED_TO','BROADER_THAN','NARROWER_THAN')
+    ⇒  external_classification_id IS NOT NULL        -- the related concept is explicit
+mapping_outcome = 'NO_DIRECT_MAPPING'
+    ⇒  external_classification_id IS NULL            -- never a fake classification
+```
+
+**The clean three-state model — these three states must never collapse into one another:**
+
+| # | State | Representation | Meaning |
+|---|---|---|---|
+| **1** | **NO ROW** | no crosswalk row exists for (equipment type, authority source version) | **Not investigated.** No governed crosswalk knowledge exists. This is *not* `NO_DIRECT_MAPPING`. |
+| **2** | **ROW + external classification** | `external_classification_id IS NOT NULL`, `mapping_outcome` ∈ the four relationship values | A concrete proposition: *"Atiman Type X has relationship R to external concept Y."* |
+| **3** | **ROW + NO_DIRECT_MAPPING + NULL classification** | `mapping_outcome='NO_DIRECT_MAPPING'`, `external_classification_id IS NULL`, `knowledge_source_version_id` set | *"Type X was evaluated against authority edition Z and no defensible direct mapping exists."* **A positive, evidenced conclusion.** |
+
+`review_state` (`draft` / `under_review` / `approved` / `rejected`) communicates **governance state
+independently** of which of the three states a row is in. No placeholder row is ever created to signal
+that research has not happened — **"not investigated" is represented by the absence of a row, never by
+a row containing nulls.**
+
+**No ambiguous empty draft.** A persisted crosswalk row must represent a **concrete proposition or
+conclusion** — either (A) *"Type X has relationship R to Classification Y"* or (B) *"Type X was
+evaluated against Authority/Edition Z and the proposed/concluded outcome is `NO_DIRECT_MAPPING`."*
+A persisted draft whose classification is null **and** whose outcome is not `NO_DIRECT_MAPPING` is
+**invalid**: "someone is currently researching this" belongs in research workflow, **not** in canonical
+crosswalk knowledge.
+
+**Consequence for proposals:** a *candidate* mapping is still a proposal **to a specific external
+classification**, so it must carry `external_classification_id`. A draft `NO_DIRECT_MAPPING` is
+**permissible** (see §H.3) — it is a concrete proposition about an authority/edition — but it is **not**
+governed truth until approved.
+
 ### H.1 The two decisive design decisions
 
 **(1) Review state and mapping outcome are SEPARATE dimensions.**
@@ -339,16 +385,29 @@ the ontology inflation §7 warns against.
 `NO_DIRECT_MAPPING` is **not** in this list: it is an *outcome*, not a relationship. That reclassification
 is the second refinement to the M5R.1 draft.
 
-### H.3 Null semantics — the three states must never collapse
+### H.3 Draft and rejected NO_DIRECT_MAPPING — permissible proposals, never governed truth
 
-| State | Representation |
+A **draft** `NO_DIRECT_MAPPING` row is **permitted**: it expresses a concrete proposition about a
+specific authority/edition, namely *"this investigation found no defensible direct mapping."* It
+carries `knowledge_source_version_id` (required) and `external_classification_id IS NULL` (required by
+§H.0).
+
+It is, however, **not a governed conclusion** until `review_state='approved'`. The read model must
+therefore never surface an unapproved `NO_DIRECT_MAPPING` as a finding. This is exactly why `review_state`
+and `mapping_outcome` are separate dimensions (§H.1): the outcome alone cannot tell an auditor whether a
+conclusion is governed.
+
+A **rejected** `NO_DIRECT_MAPPING` proposal is likewise **retained** (§Q): *"this candidate was
+considered and refused"* is itself governed knowledge, and discarding it would allow the same proposal
+to be re-litigated without any record that it was already declined.
+
+Three distinct questions, never conflated:
+
+| Question | Answered by |
 |---|---|
-| **Never reviewed** | **no crosswalk row exists** for (type, authority edition) |
-| **Reviewed → no direct mapping** | row with `mapping_outcome='NO_DIRECT_MAPPING'`, `external_classification_id IS NULL`, `knowledge_source_version_id` set, `review_state='approved'` |
-| **Absence / not applicable** | no row; or a row still in `draft`/`under_review` — never `approved` |
-
-`external_classification_id IS NULL` on its own carries **no** governed meaning; meaning comes from
-`mapping_outcome` + `review_state`. An unapproved row can never be read as a conclusion.
+| Was this authority edition investigated at all? | **row existence** (§H.0 state 1 vs 2/3) |
+| What was found? | `mapping_outcome` (+ `external_classification_id`) |
+| Is that finding governed? | `review_state` |
 
 ## I. External authority model
 
@@ -391,6 +450,13 @@ Why an entity rather than repeated text (Option A): a classification is *defined
 referenced by many Atiman types; it carries **its own evidence** (that the concept exists and means
 what we say); and it must be constrained by a real uniqueness rule. This is the minimum that satisfies
 requirements 8, 13 and 17 without duplicating the authority registry.
+
+**APPROVED FOR V1 by OWNER (§AI item 4): `EXTERNAL HIERARCHY STRUCTURAL MODELLING DEFERRED`.** Atiman
+retains enough identity/path/context to *understand* an external classification — `classification_path`
+is an optional informative string, not a modelled hierarchy. Atiman must **not** become a mirrored
+standards database, and must not reproduce licensed classification tables. If a future integration
+requires structural navigation of a specific external hierarchy, that is a separate architectural
+decision.
 
 ## L. Crosswalk relationship model
 
@@ -458,6 +524,10 @@ Mirrors the idioms already proven in migrations 009 and 015:
 
 ## R. Applicability model
 
+**APPROVED FOR V1 by OWNER (§AI item 3): structured applicability is INDUSTRY ONLY.** No structured
+jurisdiction, lifecycle phase, manufacturer, model, service, customer, site or process dimension is
+added without concrete future requirements.
+
 Minimum dimensions justified by the evidence:
 
 | Dimension | Representation | Why |
@@ -500,8 +570,12 @@ required**. AI must never populate `approved_by_user_id`.
 
 ## U. Publication model
 
-**Decision: crosswalks do NOT get a separate `published` state, and do NOT participate in Knowledge
-Pack membership.**
+**Decision (APPROVED FOR V1 by OWNER — §AI item 2): crosswalks do NOT get a separate `published`
+state, and do NOT participate in Knowledge Pack membership.**
+
+Recorded as: **`NO SEPARATE CROSSWALK PUBLICATION STATE FOR V1`.** `approved` is the terminal governed
+usable state, subject to later supersession. If a future enterprise export/API requirement establishes a
+genuine need for separate publication, that is designed separately — not speculated now.
 
 Reasoning:
 
@@ -556,8 +630,8 @@ CREATE TABLE external_classification (                       -- concept within O
 CREATE TABLE equipment_type_external_classification (          -- the governed relationship
     id                        INTEGER GENERATED BY DEFAULT AS IDENTITY NOT NULL,
     equipment_type_id         INTEGER NOT NULL,
-    knowledge_source_version_id INTEGER NOT NULL,              -- authority/edition INVESTIGATED
-    external_classification_id INTEGER DEFAULT NULL,           -- NULL only for NO_DIRECT_MAPPING
+    knowledge_source_version_id INTEGER NOT NULL,              -- MANDATORY on every row (§H.0)
+    external_classification_id INTEGER DEFAULT NULL,           -- NULL ONLY for NO_DIRECT_MAPPING (§H.0)
     relationship              VARCHAR(30) DEFAULT NULL
         CONSTRAINT chk_..._relationship CHECK (relationship IN
             ('DIRECT_EQUIVALENT','RELATED_TO','BROADER_THAN','NARROWER_THAN')),
@@ -587,6 +661,14 @@ CREATE TABLE equipment_type_external_classification (          -- the governed r
     PRIMARY KEY (id),
 
     -- Outcome/relationship/classification coherence (the §21 solution)
+    -- NORMATIVE coherence constraint (§H.0, OWNER-approved M5R.3R).
+    -- A future implementation MUST make these combinations unrepresentable:
+    --   * a mapped outcome (DIRECT_EQUIVALENT / RELATED_TO / BROADER_THAN / NARROWER_THAN)
+    --     without an external classification      -> INVALID
+    --   * NO_DIRECT_MAPPING carrying an external classification -> INVALID
+    --   * any crosswalk row without a knowledge_source_version_id -> INVALID
+    --   * a persisted row that is neither a proposition about a classification
+    --     nor an explicit NO_DIRECT_MAPPING conclusion -> INVALID (no placeholder rows)
     CONSTRAINT chk_..._outcome_coherent CHECK (
         (mapping_outcome =  'NO_DIRECT_MAPPING'
              AND external_classification_id IS NULL AND relationship IS NULL)
@@ -762,7 +844,31 @@ per edition) — likewise small. The design deliberately avoids optimising for m
 the crosswalk as trusted mappings. At most they are *candidates* requiring independent verification
 against an accessible edition.
 
+### AB.1 `FALSE_PROVENANCE_REMEDIATION_REQUIRED` (recorded; remediation is a separate bounded mission)
+
+`activity_codes.iso_maintenance_reference` and `cause_codes.iso_failure_cause_reference` are **CURRENT
+Atiman schema fields carrying unverified / false-provenance semantics**. They are *not* legacy-only
+artefacts: they are live, indexed columns whose values carry `ISO14224-*` labels that cannot be
+substantiated against an accessible edition.
+
+**Required before those fields are allowed to contribute to any future governed maintenance or
+reliability knowledge:**
+
+| Constraint | Status |
+|---|---|
+| Their existing values must **not** be treated as approved crosswalk knowledge | **Recorded** |
+| They must **not** be migrated into the crosswalk as trusted mappings | **Recorded** |
+| They must **not** be repaired, migrated or modified under this record | **Recorded** — no migration, no data change |
+| Remediation (re-source, re-label, or retire the columns) requires its own bounded mission | **Recorded** |
+
+This debt is **strengthened** by M5R.3R: the crosswalk architecture is the eventual legitimate home for
+this information, but the crosswalk must be **populated from evidence**, never from these unverified
+labels. **Nothing about these fields was changed by this record.**
+
 ## AC. Authorization model
+
+**APPROVED FOR V1: reuse existing Knowledge governance capabilities; no crosswalk-specific permissions
+are created.** (Closed by M5R.3R — see §AI item 1.)
 
 **Reuse, no new capabilities** (requirement: avoid a permission zoo):
 
@@ -775,10 +881,11 @@ against an accessible edition.
 | Approve | `KNOWLEDGE.APPROVE` | admin + supervisor |
 | Supersede an approved mapping | `KNOWLEDGE.APPROVE` | it is a governed conclusion |
 
-**Identified authorization question (flagged, not decided):** proposing a mapping requires
-`TASKS.UPDATE`, which is **admin-only**. If OWNER intends practising engineers (supervisors) to propose
-candidate mappings, that requires broadening a capability — an authorization decision, not an
-architecture defect. M3 has the identical shape today, so this is consistent rather than novel.
+**Authorization question — CLOSED by M5R.3R (§AI item 1):** reuse existing capabilities for V1. Note
+for the record that proposing a mapping therefore requires `TASKS.UPDATE`, which is **admin-only**;
+M3 provenance authoring has the identical shape, so this is consistent rather than novel. If
+implementation later proves these capabilities cannot truthfully represent the required separation of
+duties, that is a **separate bounded authorization decision** — not a reason to pre-create permissions.
 
 ## AD. First VUDA (findings + corrections)
 
@@ -831,6 +938,34 @@ K in particular), not merely documented — per §39 Phase 15.
 2. Whether crosswalks should ever be externally publishable — a **product** decision (§U). The
    architecture does not preclude it; it simply does not force it.
 
+### AE.1 Focused VUDA after the M5R.3R refinements
+
+Re-run independently against the *amended* specification, deliberately challenging the OWNER decision
+rather than confirming it.
+
+| # | Challenge | Verdict |
+|---|---|---|
+| A | Can "never investigated" still accidentally create a row? | **No** — §H.0 forbids placeholder rows, and no `UNKNOWN`/`N/A`/`NONE` construction appears anywhere in the spec |
+| B | Can NULL classification still mean multiple incompatible things? | **No** — inside a row it is permitted **only** with `NO_DIRECT_MAPPING` |
+| C | Can a mapped outcome exist without a classification? | **No** — coherence constraint requires it |
+| D | Can `NO_DIRECT_MAPPING` exist without naming the authority/edition investigated? | **No** — `knowledge_source_version_id` is mandatory on every row |
+| E | Can a draft/rejected NDM be mistaken for approved NDM? | **No** — `review_state` is an independent dimension; §H.3 forbids surfacing an unapproved NDM as a finding |
+| F | Can external-concept evidence silently prove the Atiman relationship? | **No** — exactly-one-subject evidence |
+| G | Can an external edition change rewrite history? | **No** — classification keyed to edition; cross-edition reference rejected; immutable after approval |
+| H | Can an organization-scoped source contaminate global crosswalk knowledge? | **Prevented by design** — §R.1 guard is mandatory and non-omittable |
+| I | Can AI output become approved knowledge without accountable human review? | **No** — human `approved_by_user_id` required |
+| J | Can customer terminology enter the global crosswalk? | **No** — §S keeps it in a separate scoped layer |
+| K | Did the OWNER refinements cause unnecessary new tables/states/permissions? | **No** — the refinements **reduced** scope: no publication state, industry-only applicability, no new permissions |
+| L | Did simplification destroy provenance/governance/history? | **No** — all retained |
+| M | Does removing separate publication preserve governed usability? | **Yes** — `approved` plus immutability, evidence and supersession is sufficient for V1 |
+| N | Does industry-only structured applicability remain viable for V1? | **Yes** — no evidence to the contrary |
+| O | Could the legacy `iso_*_reference` columns be treated as trusted crosswalk input? | **No** — §AB/§AB.1 explicitly exclude them pending remediation |
+
+**Second pass (§26) — row existence · null semantics · mapped-outcome coherence · NDM authority/edition ·
+governance/outcome separation · evidence separation · global-source isolation · AI authority:**
+**all re-verified PASS. Residual BLOCKER/MAJOR count: ZERO.** Placeholder audit (`TODO`/`TBD`/`NNN-`):
+**zero**. On that basis the status was advanced to APPROVED; nothing was marked implemented.
+
 ## AF. Architecture acceptance tests (§41) — all 25
 
 Recorded in full in `docs/research/m5r3/architecture-case-matrix.jsonl`. Summary: **25 of 25
@@ -864,10 +999,13 @@ representable without lying**; the four cases that specifically stress the desig
 
 **`PROJECT_SOURCE_OR_DOCUMENTATION_SYNC_ITEM` (recorded, not actioned):**
 
-1. **`PROJECT_SOURCE_SYNCHRONIZATION_REQUIRED`** (carried from M5R.2) — the authoritative project-level
-   Atiman Project Source exists outside this repository and may carry older repository/taxonomy/
-   Knowledge-Foundation terminology requiring controlled synchronization with the approved ADRs. No
-   repository-resident copy exists, so no conflict could be evaluated from repository evidence.
+1. **`PROJECT_SOURCE_SYNCHRONIZATION_REQUIRED`** (carried from M5R.2) — **the authoritative
+   project-level Atiman Project Source exists at project-governance level.** Repository absence does
+   **not** mean no Project Source exists. The only verifiable statement available to this work is
+   narrower: **no repository-resident copy could be inspected**, so no conflict could be evaluated from
+   repository evidence. The Project Source may carry older repository/taxonomy/Knowledge-Foundation
+   terminology requiring controlled synchronization with the approved ADRs. Reconstructing, adding or
+   synchronizing the Project Source is **out of scope** and remains separate governance work.
 2. Documentation that still presents `iso_maintenance_reference` / `iso_failure_cause_reference` as
    ISO lineage (legacy docs, MySQL migrations) conflicts with the verified ISO 14224 scope. Recorded in
    M5R.2 §17 as out-of-scope debt; restated here because the crosswalk architecture is the eventual
@@ -875,18 +1013,18 @@ representable without lying**; the four cases that specifically stress the desig
 
 No broad governance documentation was silently rewritten.
 
-## AI. Open questions (genuine)
+## AI. Previously open questions — all CLOSED by M5R.3R
 
-1. **Authorization**: should candidate crosswalk proposals be permitted for supervisors, or remain
-   admin-only (`TASKS.UPDATE`) as in M3?
-2. **Publication**: is there any future requirement for crosswalks to be externally consumable as part
-   of a published pack? Current decision: no.
-3. **Applicability granularity**: is industry the only structured applicability dimension Atiman needs,
-   or must jurisdiction/lifecycle phase be modelled structurally?
-4. **External classification granularity**: should Atiman record *hierarchical paths* for external
-   codes (modelled as an optional text path today) or a full external hierarchy later?
+| # | Question | OWNER decision |
+|---|---|---|
+| 1 | **Authorization** — should candidate proposals be permitted for supervisors, or remain admin-only? | **CLOSED — APPROVED FOR V1:** reuse existing Knowledge governance capabilities only (`KNOWLEDGE.VIEW`, `KNOWLEDGE.REVIEW`, `KNOWLEDGE.APPROVE`, and the existing authoring/update capability used by M3 provenance authoring). **No crosswalk-specific permissions are created in V1.** If implementation later proves these cannot truthfully represent the required separation of duties, that is a **separate bounded authorization decision** — not something to pre-empt with a permission zoo. |
+| 2 | **Publication** — must crosswalks be externally consumable as part of a published pack? | **CLOSED — NO SEPARATE CROSSWALK PUBLICATION STATE FOR V1.** Crosswalks are governed classification/provenance knowledge, not executable maintenance content, and do not participate in Knowledge Pack publication. `approved` is the terminal governed usable state, subject to later supersession. If future enterprise export/API requirements establish a genuine need, design it separately — do not speculate now (§U, §V). |
+| 3 | **Applicability granularity** — must jurisdiction/lifecycle phase be structured? | **CLOSED — STRUCTURED APPLICABILITY FOR V1 IS INDUSTRY ONLY.** No structured jurisdiction, lifecycle phase, manufacturer, model, service, customer, site or process dimensions are added without concrete future requirements. Residual context, if genuinely needed early, uses the minimal mechanism already proposed rather than a new structural dimension (§R). |
+| 4 | **External classification granularity** — full external hierarchy? | **CLOSED — EXTERNAL HIERARCHY STRUCTURAL MODELLING DEFERRED.** Atiman retains enough identity/path/context to *understand* an external classification, but must not become a mirrored standards database. If a future integration requires structural navigation of a specific external hierarchy, that is a separate architectural decision (§K). |
 
-None blocks convergence; each is a product decision, not an architecture defect.
+**No open architecture questions remain.** The three items carried in `evidence-gaps.jsonl` as
+`OPEN_QUESTION` are now resolved; the residual risks listed there are implementation **policy**
+requirements and access limitations, not architecture defects.
 
 ## AJ. Proposed implementation plan (smallest future slices)
 
