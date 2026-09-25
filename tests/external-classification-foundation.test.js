@@ -80,6 +80,31 @@ async function inRollback(fn) {
 }
 
 const query = (conn, sql, params) => conn.query(sql, params);
+
+/**
+ * Run `fn` inside a REPEATABLE READ transaction.
+ *
+ * The sanctioned PostgreSQL runner executes its suites in parallel processes
+ * against one database, so a before/after comparison of a database-global count
+ * is racy unless both reads come from one stable snapshot. Inside this
+ * transaction concurrent suites' committed inserts are invisible, while the
+ * writes made by `fn` itself remain visible.
+ */
+async function withStableSnapshot(fn) {
+  const conn = await getConnection();
+  try {
+    await conn.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+    const result = await fn(conn);
+    await conn.commit();
+    return result;
+  } catch (error) {
+    await conn.rollback();
+    throw error;
+  } finally {
+    conn.release();
+  }
+}
+
 const isUniqueViolation = (e) => e.code === '23505' || /duplicate key|unique constraint/i.test(e.message || '');
 const isNotNullViolation = (e) => e.code === '23502' || /not-null|violates not-null/i.test(e.message || '');
 const isForeignKeyViolation = (e) => e.code === '23503' || /foreign key|violates foreign key/i.test(e.message || '');
@@ -213,14 +238,20 @@ describe('External Classification Foundation (ATM-001 M5R.3B)', { skip: DB_TEST_
     });
 
     it('5. no crosswalk or mapping relation was created by this migration', async () => {
+      // Baseline note (ATM-001 M5R.3C): this assertion originally listed the
+      // crosswalk relation too, which was absent through M5R.3B. A later,
+      // separate slice (M5R.3C, migration 017) legitimately creates
+      // equipment_type_external_classification. What M5R.3B claims, and what is
+      // still fully asserted here, is that the external concept carries no
+      // mapping or crosswalk governance of its own, and that no crosswalk
+      // EVIDENCE relation exists (that is M5R.3D).
       const rows = await withConn((conn) => query(conn, `
         SELECT table_name FROM information_schema.tables
         WHERE table_schema = 'public'
-          AND table_name IN ('equipment_type_external_classification',
-                             'equipment_type_external_classification_evidence')
+          AND table_name IN ('equipment_type_external_classification_evidence')
       `));
       assert.strictEqual(rows.length, 0,
-        'M5R.3B builds the external concept only; the governed crosswalk remains M5R.3C');
+        'no crosswalk evidence relation exists; relationship evidence belongs to M5R.3D');
 
       const mappingColumns = await withConn((conn) => query(conn, `
         SELECT column_name FROM information_schema.columns
@@ -480,18 +511,32 @@ describe('External Classification Foundation (ATM-001 M5R.3B)', { skip: DB_TEST_
   // ==========================================================
   describe('F. M5R.3B claims nothing beyond external concept identity', () => {
     it('18. creating a classification mutates no equipment taxonomy', async () => {
-      const before = await withConn((conn) => query(conn, `
+      // REPEATABLE READ is deliberate: the sanctioned runner executes its suites
+      // in parallel processes against ONE database, so a plain before/after
+      // global COUNT(*) would race with other suites creating their own taxonomy
+      // fixtures. Both reads therefore come from a single stable snapshot, while
+      // the classification creation below is still made by this transaction.
+      const counts = (conn) => query(conn, `
         SELECT (SELECT COUNT(*)::int FROM equipment_types) AS types,
                (SELECT COUNT(*)::int FROM equipment_classes) AS classes,
-               (SELECT COUNT(*)::int FROM equipment_categories) AS categories`));
+               (SELECT COUNT(*)::int FROM equipment_categories) AS categories`);
 
-      const versionId = await addEdition(await createAuthority(), '2016');
-      await addClassification(versionId, SYNTHETIC_CODE());
-
-      const after = await withConn((conn) => query(conn, `
-        SELECT (SELECT COUNT(*)::int FROM equipment_types) AS types,
-               (SELECT COUNT(*)::int FROM equipment_classes) AS classes,
-               (SELECT COUNT(*)::int FROM equipment_categories) AS categories`));
+      const { before, after } = await withStableSnapshot(async (conn) => {
+        const beforeRows = await counts(conn);
+        const source = await query(conn,
+          `INSERT INTO knowledge_sources (source_code, source_category, default_title, organization_id)
+           VALUES (?, 'engineering_standard', 'M5R3B Synthetic Authority', NULL) RETURNING id`,
+          [`M5R3B-AUTH-${UNIQ()}`]);
+        const version = await query(conn,
+          `INSERT INTO knowledge_source_versions (knowledge_source_id, version_designation, title)
+           VALUES (?, '2016', 'M5R3B Synthetic Edition') RETURNING id`, [source[0].id]);
+        await query(conn,
+          `INSERT INTO external_classification
+             (knowledge_source_version_id, classification_code, classification_label)
+           VALUES (?, ?, 'Synthetic Pump Classification')`, [version[0].id, SYNTHETIC_CODE()]);
+        const afterRows = await counts(conn);
+        return { before: beforeRows, after: afterRows };
+      });
 
       assert.deepStrictEqual(after[0], before[0],
         'Atiman canonical identity (Category -> Class -> Type) is unchanged by external concept identity');

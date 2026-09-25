@@ -33,7 +33,9 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   // ATM-001 M5R.3A: external authority/edition groundwork (no schema change).
   'tests/external-authority-edition-groundwork.test.js',
   // ATM-001 M5R.3B: external classification foundation (migration 016).
-  'tests/external-classification-foundation.test.js'
+  'tests/external-classification-foundation.test.js',
+  // ATM-001 M5R.3C: governed crosswalk (migration 017).
+  'tests/external-classification-crosswalk.test.js'
 ];
 
 const result = spawnSync(process.execPath, ['--test', ...SANCTIONED_POSTGRES_INTEGRATION_SUITES], {
