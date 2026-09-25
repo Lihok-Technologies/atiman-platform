@@ -29,7 +29,9 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   // ATM-001 M3: governed provenance authoring.
   'tests/knowledge-provenance-authoring.test.js',
   // ATM-001 M4: knowledge pack publication admission and migration 015.
-  'tests/knowledge-pack-publication-admission.test.js'
+  'tests/knowledge-pack-publication-admission.test.js',
+  // ATM-001 M5R.3A: external authority/edition groundwork (no schema change).
+  'tests/external-authority-edition-groundwork.test.js'
 ];
 
 const result = spawnSync(process.execPath, ['--test', ...SANCTIONED_POSTGRES_INTEGRATION_SUITES], {
