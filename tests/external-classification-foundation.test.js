@@ -237,21 +237,22 @@ describe('External Classification Foundation (ATM-001 M5R.3B)', { skip: DB_TEST_
       assert.ok(/BEFORE UPDATE/.test(rows[0].d), 'the coherence guard must run BEFORE UPDATE');
     });
 
-    it('5. no crosswalk or mapping relation was created by this migration', async () => {
-      // Baseline note (ATM-001 M5R.3C): this assertion originally listed the
-      // crosswalk relation too, which was absent through M5R.3B. A later,
-      // separate slice (M5R.3C, migration 017) legitimately creates
-      // equipment_type_external_classification. What M5R.3B claims, and what is
-      // still fully asserted here, is that the external concept carries no
-      // mapping or crosswalk governance of its own, and that no crosswalk
-      // EVIDENCE relation exists (that is M5R.3D).
-      const rows = await withConn((conn) => query(conn, `
-        SELECT table_name FROM information_schema.tables
-        WHERE table_schema = 'public'
-          AND table_name IN ('equipment_type_external_classification_evidence')
-      `));
-      assert.strictEqual(rows.length, 0,
-        'no crosswalk evidence relation exists; relationship evidence belongs to M5R.3D');
+    it('5. creating an external classification creates no crosswalk knowledge', async () => {
+      // Baseline note (ATM-001 M5R.3C -> M5R.3D): this assertion was originally a
+      // SCHEMA-EXISTENCE proxy — "the crosswalk relation does not exist yet" —
+      // which later slices legitimately invalidated by building the governed
+      // crosswalk (017) and crosswalk evidence (018). A schema snapshot cannot
+      // express this suite's claim, which is behavioural: an external concept is
+      // NOT a mapping. That claim is now asserted directly, scoped to the concept
+      // created here, alongside the structural claim this test always made.
+      const versionId = await addEdition(await createAuthority(), '2016');
+      const classificationId = await addClassification(versionId, SYNTHETIC_CODE());
+
+      const crosswalkRows = await withConn((conn) => query(conn, `
+        SELECT COUNT(*)::int AS n FROM equipment_type_external_classification
+        WHERE external_classification_id = ?`, [classificationId]));
+      assert.strictEqual(crosswalkRows[0].n, 0,
+        'creating an external concept is not a mapping and implies none');
 
       const mappingColumns = await withConn((conn) => query(conn, `
         SELECT column_name FROM information_schema.columns

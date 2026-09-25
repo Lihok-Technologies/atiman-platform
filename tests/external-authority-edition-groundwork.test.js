@@ -423,22 +423,25 @@ describe('External Authority / Edition Groundwork (ATM-001 M5R.3A)', { skip: DB_
   // D. PROVENANCE IS NOT A MAPPING
   // ==========================================================
   describe('D. registering an authority creates NO crosswalk knowledge', () => {
-    it('13. no crosswalk evidence relation exists in the schema', async () => {
-      // Baseline note (ATM-001 M5R.3B, then M5R.3C): this assertion originally
-      // listed external_classification and the crosswalk relation as absent,
-      // which was true through M5R.3A. Later, separate slices legitimately add
-      // them — external_classification in M5R.3B (migration 016) and the governed
-      // crosswalk in M5R.3C (migration 017). Neither is a mapping, and neither
-      // implies one. The claim that survives, and is still fully asserted here,
-      // is that registering an authority edition creates no crosswalk EVIDENCE:
-      // that relation belongs to M5R.3D and must not exist yet.
-      const rows = await withConn((conn) => query(conn, `
-        SELECT table_name FROM information_schema.tables
-        WHERE table_schema = 'public'
-          AND table_name IN ('equipment_type_external_classification_evidence')
-      `));
-      assert.strictEqual(rows.length, 0,
-        'no crosswalk evidence relation exists; relationship evidence is M5R.3D and is not built');
+    it('13. registering an authority edition creates no crosswalk knowledge', async () => {
+      // Baseline note (ATM-001 M5R.3B -> M5R.3C -> M5R.3D): this assertion was
+      // originally a SCHEMA-EXISTENCE proxy — "the crosswalk relation does not
+      // exist yet" — which each successive slice legitimately invalidated as it
+      // built the architecture: external_classification in M5R.3B (016), the
+      // governed crosswalk in M5R.3C (017), crosswalk evidence in M5R.3D (018).
+      // A schema snapshot cannot express this suite's claim, which is
+      // behavioural. It is therefore asserted directly now, scoped to the
+      // authority edition registered by this very test, so it stays true no
+      // matter how much of the crosswalk architecture is later built.
+      const sourceId = await createGlobalAuthority();
+      const versionId = await addEdition(sourceId, '2016');
+
+      const crosswalkRows = await withConn((conn) => query(conn, `
+        SELECT COUNT(*)::int AS n FROM equipment_type_external_classification
+        WHERE knowledge_source_version_id = ?`, [versionId]));
+      assert.strictEqual(crosswalkRows[0].n, 0,
+        'registering an authority edition is provenance, never a mapping');
+      assert.ok(sourceId);
     });
 
     it('13b. registering an authority edition mutates no equipment taxonomy', async () => {

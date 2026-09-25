@@ -45,6 +45,8 @@ const DB_MUTATING_SUITES = [
   'external-classification-foundation.test.js',
   // ATM-001 M5R.3C: governed crosswalk (migration 017).
   'external-classification-crosswalk.test.js',
+  // ATM-001 M5R.3D: crosswalk evidence foundation (migration 018).
+  'external-classification-crosswalk-evidence.test.js',
   'step6-access-control.test.js',
   'step6-coverage-e2e.test.js',
   'step6-performance.test.js',
@@ -65,7 +67,8 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'knowledge-pack-publication-admission.test.js',
   'external-authority-edition-groundwork.test.js',
   'external-classification-foundation.test.js',
-  'external-classification-crosswalk.test.js'
+  'external-classification-crosswalk.test.js',
+  'external-classification-crosswalk-evidence.test.js'
 ];
 
 const REPO_ROOT = path.resolve(__dirname, '..');
