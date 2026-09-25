@@ -37,7 +37,9 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   // ATM-001 M5R.3C: governed crosswalk (migration 017).
   'tests/external-classification-crosswalk.test.js',
   // ATM-001 M5R.3D: crosswalk evidence foundation (migration 018).
-  'tests/external-classification-crosswalk-evidence.test.js'
+  'tests/external-classification-crosswalk-evidence.test.js',
+  // ATM-001 M5R.3E: governed crosswalk application layer (no migration).
+  'tests/knowledge-crosswalk-application.test.js'
 ];
 
 const result = spawnSync(process.execPath, ['--test', ...SANCTIONED_POSTGRES_INTEGRATION_SUITES], {

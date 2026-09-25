@@ -848,24 +848,38 @@ describe('Crosswalk Evidence Foundation (ATM-001 M5R.3D)', { skip: DB_TEST_SKIP_
       assert.strictEqual(rows[0].n, 0, 'no licensed clause, annex reference or excerpt is stored');
     });
 
-    it('36. no service, model, controller, route or UI was added by M5R.3D', async () => {
+    it('36. the evidence relation is reachable only from the crosswalk application modules', async () => {
+      // Baseline note (ATM-001 M5R.3E): this assertion was originally a TEMPORAL
+      // SNAPSHOT — "no application code references the evidence relation" — which
+      // was true of M5R.3D alone and was legitimately invalidated when M5R.3E
+      // built the governed application layer over it. The durable property worth
+      // protecting is narrower and still fully asserted: nothing OUTSIDE that
+      // approved layer may reach into the evidence relation, and no view ever
+      // does. That M5R.3D itself stayed persistence-only is proven by test 5
+      // above, which asserts migration 018 is structure only.
       const root = path.join(__dirname, '..');
-      for (const dir of ['src/services', 'src/models', 'src/controllers', 'src/routes', 'views']) {
+      const referencing = [];
+      for (const dir of ['src', 'views']) {
         const full = path.join(root, dir);
         if (!fs.existsSync(full)) continue;
-        const hits = [];
         const walk = (d) => {
           for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
             const p = path.join(d, entry.name);
             if (entry.isDirectory()) walk(p);
             else if (/\.(js|ejs)$/.test(entry.name)
               && /external_classification_evidence|equipment_type_external_classification_evidence/.test(
-                fs.readFileSync(p, 'utf8'))) hits.push(p);
+                fs.readFileSync(p, 'utf8'))) referencing.push(path.relative(root, p));
           }
         };
         walk(full);
-        assert.deepStrictEqual(hits, [],
-          `${dir} must not reference the evidence relation in M5R.3D`);
+      }
+
+      assert.ok(referencing.length > 0, 'the M5R.3E application layer does reach the relation');
+      for (const file of referencing) {
+        assert.ok(/knowledge-crosswalk/.test(file),
+          `${file} references the evidence relation outside the approved crosswalk application modules`);
+        assert.ok(!/\.ejs$/.test(file),
+          `${file} is a UI artefact; M5R.3E adds no UI`);
       }
     });
   });

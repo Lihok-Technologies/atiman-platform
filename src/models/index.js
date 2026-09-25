@@ -23,6 +23,8 @@ module.exports = {
   ...require('./task-template.model'),
   // Knowledge Packs (ATM-001 M4): pack identity and governed pack versions
   ...require('./knowledge-pack.model'),
+  // Governed external classification crosswalk and its evidence (ATM-001 M5R.3E)
+  ...require('./knowledge-crosswalk.model'),
   // ODM Findings with SAP Catalog Support
   Finding: require('./finding.model'),
   // SAP S/4HANA PM Catalogs (A, B, C, 5)
