@@ -15,6 +15,14 @@ the whole challenge population and **reverses 32 dispositions** across 6 of the 
 categories. Corpus provenance and the 282-row accounting are unchanged and remain
 reproducible.
 
+**Revision R1.1 — challenge ledger integrity correction.** Chief Architect
+inspection found R1's published challenge accounting internally inconsistent
+(a stated population of 129 against 37 CHANGED + 102 UPHELD = 139) and two
+mandatory challenges with blank machine-readable verdicts. The ledger is now
+reconstructed from evidence (see §3.2): the deduplicated challenge population is
+**141**, with **37 CHANGED** and **104 UPHELD**. **No R1 engineering decision was
+changed by R1.1** — the correction is accounting and record only.
+
 | | |
 |---|---|
 | Baseline | `origin/main` = `13f68bad311e7740e1a53247bf79f7275d9218a0` |
@@ -23,7 +31,7 @@ reproducible.
 | Companion sha256 | `2ee6fb48b8bbe8a3e9efe83d72e41aabd7843d5fb2d3334ea7a112794a736e9e` |
 | Candidate corpus sha256 | `c1a310585e9ba4af8bdee232b8b328bbda3dd1687d83f867629c8152991f1b77` |
 | Method | M5R.1 §10, deterministic and non-destructive |
-| Challenge population | **129 rows** re-reviewed; every one carries a recorded verdict |
+| Challenge population | **141 rows** (deduplicated union, §3.2); every one carries a recorded verdict |
 
 ---
 
@@ -115,16 +123,59 @@ used to keep the line consistent rather than case-by-case:
 R1's finding is that M5R.4A applied **P1 too widely** — several characteristics
 that are P2 were treated as P1.
 
-### 3.2 Challenge population
+### 3.2 Challenge population — the R1.1 ledger
 
-Programmatically selected (§3 of the R1 mission): every row whose rationale used a
-collapse word (`attribute`, `medium`, `voltage`, `duty`, `service`, `geometry`,
-`construction`, `stage`, `cooling`, `enclosure`, `design`, `application`,
-`variant`, `component`, `assembly`, `role`, `scale`, `form factor`, `protection`,
-`method`, `arrangement`, `technology`, `system`) **plus** every row holding
-`NOT_EQUIPMENT_TYPE`, `MERGE_DUPLICATE`, `SYNONYM_OR_ALIAS` or
-`TOO_BROAD_CONTAINER`. Union: **129 rows (45.7% of the corpus)**. All 129 carry a
-recorded `challenge_review` verdict in the companion data.
+R1 published this as "129 rows". That was **wrong**, and the error is worth
+recording precisely because it is easy to repeat. Three distinct populations were
+being conflated:
+
+| # | Population | Definition | Size |
+|---|---|---|---|
+| 1 | **Programmatic set** | rows matching the stated rule — rationale contains a collapse word OR disposition is one of `NOT_EQUIPMENT_TYPE`, `MERGE_DUPLICATE`, `SYNONYM_OR_ALIAS`, `TOO_BROAD_CONTAINER` | **137** |
+| 2 | **Mandatory set** | the 16 rows named by the Chief Architect in the R1 mission | **16** |
+| 3 | **Additional deliberately reviewed** | rows given a verdict during R1 that the rule does not select and the mandate does not name | **2** |
+| | **Deduplicated union (the challenge population)** | 1 ∪ 2 ∪ 3 | **141** |
+
+**The programmatic set must be evaluated against the PRE-R1 state.** R1's
+rationales and dispositions were themselves rewritten by R1, so applying the rule
+to the post-R1 file drops rows that R1 had already reversed — the reversed row no
+longer contains the collapse word that caused it to be selected, and its
+disposition has left the four high-risk values. Applied to the post-R1 state the
+rule yields only 129; applied to the pre-R1 state (commit `1381906`, the reviewed
+M5R.4A candidate) it yields the correct **137**.
+
+The eight rows that silently disappeared from the rule after R1 rewrote them —
+each of which R1 had reversed to `KEEP_EXISTING` and re-worded:
+
+| # | Candidate | Pre-R1 disposition | Post-R1 |
+|---|---|---|---|
+| 24 | Triple Offset | `NOT_EQUIPMENT_TYPE` | `KEEP_EXISTING` |
+| 29 | Gauge Pressure | `ADD_TYPE` | `ADD_TYPE` (rationale re-worded) |
+| 48 | Safety PLC | `NOT_EQUIPMENT_TYPE` | `KEEP_EXISTING` |
+| 54 | Oil Free | `MERGE_DUPLICATE` | `KEEP_EXISTING` |
+| 58 | Microfiltration | `NOT_EQUIPMENT_TYPE` | `KEEP_EXISTING` |
+| 59 | Ultrafiltration | `NOT_EQUIPMENT_TYPE` | `KEEP_EXISTING` |
+| 141 | Subsea Tree | `SYNONYM_OR_ALIAS` | `KEEP_EXISTING` |
+| 274 | Vacuum Circuit Breaker | `MERGE_DUPLICATE` | `KEEP_EXISTING` |
+
+**The two additional deliberately reviewed rows** are `6 — Circulator Pump` and
+`158 — Turbo Generator`. Both hold `INSUFFICIENT_EVIDENCE`, so the rule does not
+select them and the mandate does not name them, yet R1 expressly reviewed them and
+recorded an `UPHELD` verdict. They are therefore part of the population.
+
+**Overlap.** 14 of the 16 mandatory rows are also inside the programmatic set. The
+two that are not — `106 — Production Separator` and `139 — Desander`, both
+`KEEP_EXISTING` with no collapse word in their rationales — are exactly the two
+whose R1 machine-readable verdicts were left blank. R1's own completeness check
+tested only the programmatic set, so it reported "all challenged rows carry a
+verdict" while those two mandatory challenges were empty. **R1.1 encodes both from
+the R1 report, where each was recorded `UPHELD`; no new engineering conclusion was
+drawn.**
+
+**Reconciliation:** the union is 141 rows, and 141 `challenge_review` fields are
+populated — 37 `CHANGED`, 104 `UPHELD`, no other verdict state, and no verdict
+carried by a row outside the union. 282 − 141 = 141 rows were outside the
+challenge population.
 
 ---
 
@@ -214,7 +265,7 @@ Beyond the mandatory set, the same error was found and corrected in **19 further
 
 ## 7. Challenged rows whose disposition stands
 
-**103 of the 129 challenged rows were upheld**, each with its governing-test reason
+**104 of the 141 challenged rows were upheld**, each with its governing-test reason
 recorded in the `challenge_review` field. The recurring reasons, with examples:
 
 | Reason | Rows | Why the collapse is correct |
@@ -588,7 +639,7 @@ reads it.
 | 103 | Mine Ventilation Fan | Blower › Mine Ventilation Fan | `RECLASSIFY` | Mine Ventilation Fan | MEDIUM | — |
 | 104 | Wellhead Assembly | Wellhead › Wellhead Assembly | `KEEP_EXISTING` | Wellhead Assembly | HIGH | — |
 | 105 | Christmas Tree | Wellhead › Christmas Tree | `KEEP_EXISTING` | Christmas Tree | HIGH | reviewed |
-| 106 | Production Separator | Separator › Production Separator | `KEEP_EXISTING` | Production Separator | HIGH | — |
+| 106 | Production Separator | Separator › Production Separator | `KEEP_EXISTING` | Production Separator | HIGH | reviewed |
 | 107 | Test Separator | Separator › Test Separator | `KEEP_EXISTING` | Test Separator | MEDIUM | changed |
 | 108 | Coalescer | Separator › Coalescer | `KEEP_EXISTING` | Coalescer | HIGH | — |
 | 109 | Heater Treater | Heater › Heater Treater | `KEEP_EXISTING` | Heater Treater | HIGH | — |
@@ -621,7 +672,7 @@ reads it.
 | 136 | Drawworks | Rig › Drawworks | `RECLASSIFY` | Drawworks | HIGH | changed |
 | 137 | Top Drive | Rig › Top Drive | `RECLASSIFY` | Top Drive | HIGH | changed |
 | 138 | Shale Shaker | Treatment › Shale Shaker | `KEEP_EXISTING` | Shale Shaker | HIGH | — |
-| 139 | Desander | Treatment › Desander | `KEEP_EXISTING` | Desander | HIGH | — |
+| 139 | Desander | Treatment › Desander | `KEEP_EXISTING` | Desander | HIGH | reviewed |
 | 140 | Desilter | Treatment › Desilter | `KEEP_EXISTING` | Desilter | MEDIUM | changed |
 | 141 | Subsea Tree | Subsea › Subsea Tree | `KEEP_EXISTING` | Subsea Tree | MEDIUM | changed |
 | 142 | Subsea Manifold | Subsea › Subsea Manifold | `KEEP_EXISTING` | Subsea Manifold | HIGH | — |
