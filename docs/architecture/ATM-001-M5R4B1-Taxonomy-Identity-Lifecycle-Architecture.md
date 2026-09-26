@@ -13,7 +13,8 @@
 | M5R.4B1 | First issue: Option D recommendation; B1-1/B1-2/B1-3 reported; three findings recorded as blocking M5R.4B2. |
 | **M5R.4B1-R1** | OWNER rulings applied. **B1-1 is substantially reversed:** the live taxonomy already contains a semantically correct parent for **59 of the 62** placement-bearing rows, and M5R.4A's 18 proposed categories were largely duplicate restatements of categories that already exist. **B1-2 and B1-3 are closed.** The 3 `INSUFFICIENT_EVIDENCE` rows are **not** retired (RULING 1), which revises the representation partition from **227 / 19 / 36** to **230 / 19 / 33**. Terminology population fixed at **65** terms with `ABBREVIATION` shown to be orthogonal to relationship kind. Option D **upheld, with one clarification**: unresolved governance is not a lifecycle state. Succeeded content is marked **[R1]**; the superseded reading is retained in §5.5 for the audit trail. See **§21** for the closure record. |
 | **M5R.4B1-R2** | **OWNER ratified the R1 decisions as recommended.** Status moved from *recommendation* to **ratified architecture**; the document is **frozen** as the final M5R.4B1 candidate. The ratified decision set is enumerated in **§21.14**, the final parent-structure accounting is machine-derived in **§21.15**, and the M5R.4B2 boundary is re-stated against the ratified counts in §17.1. **No implementation, no merge, no deployment.** |
-**Migrations at baseline:** 001–018. **Migration 019: ABSENT.**
+| **M5R.4B-019** | **Mechanism implemented as migration 019.** A bounded addendum in **§22** records the exact schema, the invariant-to-mechanism mapping, the validation performed and the content boundary. **§1–§21 are UNCHANGED by this addendum** — §22 records an implementation of the ratified architecture, and no element of Option D, the parent-placement table, the ratified counts or the M5R.4B2 boundary was altered. **No taxonomy content was applied; not merged; not deployed.** |
+**Migrations at baseline:** 001–019 (019 added by M5R.4B-019; see §22). **Migration 020: ABSENT.**
 **Scope of this record:** documentation and repository investigation only. No schema, migration, seed, code, test, API, UI, crosswalk, evidence or taxonomy change was made.
 **Supersedes:** nothing. **Reopens:** nothing. M5R.4A engineering dispositions are treated as **accepted and frozen**.
 
@@ -1527,3 +1528,142 @@ Recorded so the OWNER can see them; **none is solved, and none is silently absor
 | 18 | `asset-import.service.js` first-row ambiguity — a **prerequisite** of M5R.4B2, not of this mission | §4.3, §13.3, P6 |
 
 ---
+
+## 22. Implementation record — migration 019 (M5R.4B-019) **[IMPLEMENTATION ADDENDUM]**
+
+**This section is an addendum. It records an implementation of the ratified architecture above; it does not alter it.** Option D, the 62-row parent-placement table, the ratified counts (230 / 19 / 33, 30 additive identities, 65 terms, 1 Category, 5 Classes) and the §17.1 M5R.4B2 boundary are **unchanged**.
+
+**Status: implemented and locally validated. NOT MERGED. NOT DEPLOYED.**
+
+### 22.1 What it is, and what it deliberately is not
+
+`database/postgresql/019_taxonomy_identity_lifecycle.sql` creates the **mechanism** of Option D.
+
+**It applies no taxonomy content whatsoever.** It does not create `Mining Equipment`, the five ratified Classes, `Submersible Pump`, the 55 identity resolutions or the 65 terminology rows; it does not rename, reclassify, supersede or retire a single equipment type. **After migration 019 alone every existing equipment type is operationally equivalent to its pre-migration state**: all rows carry `identity_state = 'canonical'`, selection and discovery return exactly the rows they returned before, and the two new tables are empty.
+
+**Mechanism and content application remain separate governed steps.** Applying the ratified decisions is **M5R.4B2 — not started, not authorised.**
+
+### 22.2 Exact schema introduced
+
+| Object | Kind | Notes |
+|---|---|---|
+| `equipment_types.identity_state` | additive column | `VARCHAR(20) NOT NULL DEFAULT 'canonical'`; CHECK admits **only** `canonical` / `superseded` / `retired`. The DEFAULT is the backfill, so existing rows become canonical without a data migration. |
+| `chk_equipment_types_identity_state` | CHECK | refuses `pending`, `under_review`, `unresolved`, `ratified` — uncertainty and ratification are **not** lifecycle standings |
+| `idx_equipment_types_canonical` | partial index | `(class_id) WHERE identity_state = 'canonical'` — supports the ratified discovery/selection split (§15.15, I16) |
+| `equipment_type_identity_resolution` | base table | the governed Type-to-Type identity conclusion; endpoints are `from_type_id` / `to_type_id`, **never** `type_name` or `type_code` |
+| `equipment_type_term` | base table | governed historical/alternate vocabulary; stores both the as-written `term` and a `normalized_term` matching form |
+| 4 CHECK constraints | resolution | kind↔target coherence; no self-reference; **`INSUFFICIENT_EVIDENCE` is pending-only**; approved requires attribution **and** a rationale |
+| 4 CHECK constraints | term | kind vocabulary (`LEGACY_NAME`/`SYNONYM`/`MERGED_IDENTITY_TERM`); review-state vocabulary; normalised-form self-consistency; approved requires attribution and rationale |
+| 14 foreign keys | both tables | **every one named explicitly** — see §22.4 |
+| 2 partial unique indexes | both tables | active **approved** rows only, so competing proposals and full history stay representable |
+| 6 triggers + 7 functions | both tables | coherence/chain, standing coercion, type-standing guard, immutability ×2, delete guard ×2 |
+
+### 22.3 Invariant → mechanism
+
+| Invariant | Enforced by | Attack that would otherwise succeed |
+|---|---|---|
+| **I1** no self-resolution | `chk_..._no_self` + coherence trigger | VUDA B |
+| **I2** approved target must be canonical | coherence trigger | VUDA E |
+| **I3** chains forbidden, depth exactly 1 | coherence trigger — **incoming-edge check** plus chain walk | VUDA C |
+| **I4** no cycles | coherence trigger chain walk | VUDA C |
+| **I5** one active approved resolution per source | `uq_equipment_type_identity_resolution_active` | VUDA D |
+| **I6** approval coerces `superseded` / `retired` | standing trigger, **fires only on approval** | VUDA H |
+| **I6b** at COMMIT a non-canonical Type carries **exactly one** active approved resolution, agreeing with the standing's kind/target semantics | `DEFERRABLE INITIALLY DEFERRED` constraint trigger `trg_equipment_type_identity_resolution_lifecycle` | **BLOCKER-1** — supersession stranding a standing (§22.7) |
+| **I6c** supersession is append-only and well-formed: only an approved conclusion may be superseded, by a resolution about the **same** source type, never itself, never closing a cycle | `taxonomy_identity_resolution_supersession_check` trigger | **BLOCKER-1** (§22.7) |
+| **I7** canonical has no active resolution | `taxonomy_type_standing_guard` on `equipment_types` + I6b | contradictory standing |
+| **I8** approved requires attribution + rationale | `chk_..._approved_attributed` | VUDA A |
+| **I9** AI cannot approve | `approved_by_user_id` FK → `users(id)` + I8 | VUDA A |
+| **I10** approved rows undeletable | delete-guard triggers | governed-history loss |
+| **I11** governed history survives taxonomy delete | `ON DELETE RESTRICT` on all four type references | VUDA I |
+| **I14** external classification stays external | no FK path exists to `external_classification` | VUDA J |
+
+**RULING 1 is enforced structurally, not by convention.** `chk_equipment_type_identity_resolution_insufficient_pending` makes an *approved* `INSUFFICIENT_EVIDENCE` row **unrepresentable**, and the standing trigger coerces lifecycle only on approval. Because those are the only two ways a lifecycle transition can occur, **"we cannot conclude" can never become "retired"** — not even accidentally.
+
+### 22.4 Judgement calls made during implementation
+
+These are the points where the ratified architecture left the mechanism to be designed. None contradicts it.
+
+1. **The chain guard checks INCOMING edges, not only outgoing ones.** A first implementation walked only the proposed target's chain, which allowed `B→A` to be followed by `A→C`, silently leaving `B` pointing at a non-canonical `A`. The VUDA pass caught this (attack C). The guard now also refuses to resolve a type that is **already the canonical target of an approved resolution**. A legitimate rebase is still expressible: supersede `B→A` with a new `B→C`, then resolve `A` onward.
+2. **`INSUFFICIENT_EVIDENCE` is pending-only.** The ratified text says uncertainty is a governance state that must not coerce lifecycle; a CHECK is the only way to make the coercion path unreachable rather than merely unused.
+3. **Term uniqueness stays as ratified.** `uq_equipment_type_term_active` prevents the same *(term, canonical type)* pair twice but deliberately does **not** make a term globally unique. §15.5 of this record already establishes that residual as real and deferred, and a global index could not be deployed against the live corpus (`Pressure Filter`, `COMPACT`). **A test asserts this behaviour so it cannot later be mistaken for an oversight.**
+4. **`ABBREVIATION` is not a kind**, per §21.8: 11 legacy names and 2 merged-identity terms are abbreviation-form, so abbreviation is orthogonal to the relationship.
+5. **Every foreign key is named explicitly.** An inline self-reference on `superseded_by_resolution_id` would have produced the auto-generated name `equipment_type_identity_resolution_superseded_by_resolution_id_fkey` — **67 bytes, silently truncated by PostgreSQL**. This is the M5R.3C defect class, and a test asserts that no `_fkey`-suffixed name exists on the new tables.
+6. **Owner-scoped references use `SET NULL`, governed references use `RESTRICT`**, matching 011/017: losing a *user* must not destroy knowledge, but losing a *type* or *edition* must be refused.
+
+### 22.5 Validation performed
+
+| Check | Result |
+|---|---|
+| Clean application on an empty database | **19/19 applied**, `SUCCESS` |
+| Second application (runner re-applies every file) | no error; schema fingerprint **byte-identical**; data preserved |
+| Standing preserved across a re-run | a type already moved to `superseded` **stayed** `superseded` |
+| Schema readiness gate (`scripts/smoke-test-pg.js`) | **PASSED** — 81 base tables, 6 views, all required objects present |
+| New integration suite | **56/56 pass** (45 at first issue; 11 supersession-safety tests added by §22.7) |
+| Full sanctioned integration suite | **470/470 pass**, 101 suites, 0 fail, 0 skipped |
+| Non-database suite (`npm test`) | **117/117 pass**, 0 skipped |
+| Database test guard | **62/62 pass** (was 59 — exactly 3 new, one per registered mutating suite) |
+| Longest identifier introduced | **59 bytes** — `chk_equipment_type_identity_resolution_insufficient_pending` |
+
+**Two pre-existing expectations were updated, deliberately and with their intent preserved** — adding a table and a migration necessarily invalidates assertions that counted them:
+- `tests/migration-runner.test.js`: `EXPECTED_BASE_TABLES` 79 → **81** (the file's own comment requires this to be updated deliberately when the chain adds a table).
+- `tests/knowledge-crosswalk-application.test.js` tests 37–38 asserted *"migration 019 does not exist"*. Their enduring intent — **that 001–018 are unmodified and that M5R.3E introduced no schema of its own** — is now asserted directly and more strongly: the 18 accepted filenames are compared by name and order, and migration 019 is additionally proven **not to touch the crosswalk structures at all**.
+
+**Deviation disclosed:** local validation ran on **PostgreSQL 16.14** (a disposable instance on port 54329). Production is PostgreSQL 17.6. Every feature used — partial unique indexes, CHECK constraints, `plpgsql` triggers, `ON DELETE RESTRICT`, `CREATE OR REPLACE FUNCTION` — is long-established and behaves identically on both. No 17-only feature was used.
+
+### 22.6 What M5R.4B-019 did NOT do
+
+No taxonomy population · no Category/Class/Type created · no migration 020 · no M5R.4B2 · no `asset-import.service.js` change · no false-provenance remediation · no parent CASCADE hardening outside the new structures · no customer alias architecture · no decomposition architecture · no Equipment Family · no standards population · no merge · no deployment.
+
+**The two prerequisites of M5R.4B2 stand unchanged:** the `asset-import.service.js` ambiguity (§13.3, P6) and the eight §17.3 preconditions.
+
+### 22.7 BLOCKER-1 remediation — supersession could strand a lifecycle standing
+
+**Chief Architect finding, confirmed by reproduction before any production logic was changed.**
+
+**The defect.** A governed conclusion is *active* only while `review_state = 'approved' AND superseded_by_resolution_id IS NULL`. Whole-row immutability (§22.2) deliberately still permits an approved row to change its **supersession pointer** — and that change **deactivates** the row. Nothing reconciled `equipment_types.identity_state` when it did. Reproduced against the frozen candidate `5cc97ed7`:
+
+```
+1. approve A → B                      → A = superseded, 1 active approved resolution
+2. set that resolution's supersession pointer
+3. observed                           → A = superseded, 0 active approved resolutions
+```
+
+`taxonomy_type_standing_guard()` did not catch it, because that guard runs on updates to `equipment_types`, not when a resolution's pointer moves. **A standing was left with no active governed conclusion supporting it**, which the ratified lifecycle/resolution coherence forbids.
+
+**The repair — two mechanisms, both in the database, neither in application code:**
+
+1. **§6.1 supersession well-formedness** (BEFORE UPDATE): only an approved conclusion may be superseded; the successor must exist, concern the **same** `from_type_id`, not be the row itself, and not close a supersession cycle; and the pointer, once set, can **never be cleared**, because clearing it would silently un-supersede governed history.
+2. **§6.2 commit-time lifecycle coherence** — a `DEFERRABLE INITIALLY DEFERRED` **constraint trigger** (the idiom migration `009` uses for its seal). At COMMIT it asserts, for each affected Type: `canonical` ⇒ 0 active approved; `superseded` ⇒ **exactly one**, target-bearing; `retired` ⇒ **exactly one**, no target.
+
+**Why COMMIT is the correct boundary.** A governed *replacement* is inherently two steps — withdraw the predecessor, approve the successor — and the partial unique index `uq_equipment_type_identity_resolution_active` correctly forbids two active approved conclusions for one Type, so a successor **cannot** be pre-approved. Between the steps the Type legitimately has zero active conclusions. Deferring the assertion to COMMIT lets a rebase commit **atomically**, while a transaction that ends with an unsupported standing is refused outright.
+
+**Why it does not weaken the invariant.** Supersession well-formedness deliberately does **not** require the successor to be *approved* — it cannot, or every rebase would deadlock against the unique index. Whether the committed outcome is governed is decided by the deferred check instead, which is the correct place: a pointer to a draft, under-review or rejected row leaves the Type with no active approved conclusion and is **refused**. The lifecycle states are unchanged (three only), no uncertainty state was added, `INSUFFICIENT_EVIDENCE` still cannot coexist with approval, approved history stays immutable except for the pointer, and no application code participates.
+
+**Operational consequence.** A bare pointer change is not a rebase and is refused. The governed sequence is, in **one** transaction:
+
+```sql
+UPDATE equipment_type_identity_resolution SET superseded_by_resolution_id = :successor WHERE id = :predecessor;
+UPDATE equipment_type_identity_resolution SET review_state = 'approved', ... WHERE id = :successor;
+COMMIT;
+```
+
+**Supersession state transitions now proven** (suite tests 46–56):
+
+| # | Transition | Result |
+|---|---|---|
+| 46 | approved A→B, then a supersession leaving A with no active approved replacement | **REFUSED at commit** |
+| 47 | target-bearing conclusion replaced by another target-bearing conclusion | **succeeds**; exactly one active, standing `superseded` |
+| 48 | retirement conclusion replaced by another retirement conclusion | **succeeds**; standing `retired` |
+| 49 | replacement changes the conclusion kind (retired → superseded) | **succeeds**; standing follows the successor |
+| 50 | replacement that would close a supersession cycle | **refused** |
+| 51 | replacement concerning a **different** source type | **refused** |
+| 52 | **draft** replacement | **refused at commit** — never justifies non-canonical standing |
+| 53 | **under-review** replacement | **refused at commit** |
+| 54 | self-referential supersession pointer | **refused** |
+| 55 | clearing a supersession pointer | **refused** — append-only history |
+| 56 | global invariant sweep: every non-canonical Type has exactly one active approved resolution | **holds** |
+
+**Re-validation after the repair:** focused suite **56/56**; full sanctioned integration **470/470** across 101 suites; `npm test` **117/117**; database test guard **62/62**; clean apply **19/19**; second apply with **identical schema fingerprint** and standing preserved; identifier maximum **59 bytes** (unchanged, 0 over 63); deferred trigger confirmed installed as `deferrable=true, initially_deferred=true`; migration still **mechanism-only** (0 `INSERT`, 0 top-level DML).
+
+**Two test-side defects were found and corrected during the repair** (neither was a mechanism defect): a predicate written as `/supersed/i` could not match the word *supersession* — which is spelled with `-ssion`, not `-sion` — and the forbidden-name list in the content-boundary test contained a bare `Filter`, which collided with the SQL `FILTER (WHERE …)` clause that §6.2 legitimately introduces.
+

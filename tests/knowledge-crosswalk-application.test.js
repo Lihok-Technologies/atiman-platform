@@ -1043,19 +1043,47 @@ describe('Governed Crosswalk Application Layer (ATM-001 M5R.3E)', { skip: DB_TES
   // REGRESSION / BOUNDARY
   // ==========================================================
   describe('REGRESSION', () => {
-    it('37. migrations 001-018 are the accepted chain and were not modified', async () => {
+    it('37. the accepted migration chain 001-018 is intact, with 019 appended by M5R.4B', async () => {
       const dir = path.join(__dirname, '..', 'database', 'postgresql');
       const files = fs.readdirSync(dir).filter((n) => /^\d{3}_.*\.sql$/.test(n)).sort();
-      assert.strictEqual(files.length, 18, 'the chain is exactly 001-018');
-      assert.strictEqual(files[17], '018_external_classification_crosswalk_evidence.sql');
-      assert.ok(!files.some((n) => n.startsWith('019')), 'M5R.3E adds no migration');
+
+      // The eighteen migrations this layer was accepted against are still in
+      // place, in order, under their original names — nothing renamed, removed
+      // or renumbered. This is the enduring half of the original assertion.
+      assert.deepStrictEqual(files.slice(0, 18), [
+        '001_core.sql',
+        '002_equipment_taxonomy.sql',
+        '003_templates_maintenance.sql',
+        '004_work_management.sql',
+        '005_commercial_security.sql',
+        '006_customization_files.sql',
+        '007_indexes.sql',
+        '008_views.sql',
+        '009_knowledge_versioning.sql',
+        '010_knowledge_versioning_indexes.sql',
+        '011_knowledge_provenance.sql',
+        '012_task_template_safety_control_versioning.sql',
+        '013_knowledge_governance_admission.sql',
+        '014_knowledge_pack_membership.sql',
+        '015_knowledge_pack_publication_governance.sql',
+        '016_external_classification_foundation.sql',
+        '017_equipment_type_external_classification_crosswalk.sql',
+        '018_external_classification_crosswalk_evidence.sql'
+      ].sort(), 'the accepted chain 001-018 must be unmodified');
+
+      // ATM-001 M5R.4B later appended the governed taxonomy identity-lifecycle
+      // mechanism as 019. M5R.3E itself still added no migration, which is what
+      // the original assertion was protecting.
+      assert.strictEqual(files.length, 19, '019 is the only migration after the accepted chain');
+      assert.strictEqual(files[18], '019_taxonomy_identity_lifecycle.sql');
     });
 
-    it('38. migration 019 does not exist and no new schema was introduced', async () => {
+    it('38. M5R.3E introduced no schema of its own; 019 belongs to ATM-001 M5R.4B', async () => {
       const dir = path.join(__dirname, '..', 'database', 'postgresql');
-      assert.ok(!fs.readdirSync(dir).some((n) => /^019_/.test(n)));
+      const migrations = fs.readdirSync(dir).filter((n) => /^\d{3}_.*\.sql$/.test(n)).sort();
+      assert.ok(migrations.includes('019_taxonomy_identity_lifecycle.sql'));
 
-      // The two relations this layer uses are the accepted ones, unchanged.
+      // The relations THIS layer uses are the accepted ones, unchanged.
       const rows = await withConn((conn) => query(conn, `
         SELECT table_name FROM information_schema.tables
         WHERE table_schema = 'public'
@@ -1063,6 +1091,14 @@ describe('Governed Crosswalk Application Layer (ATM-001 M5R.3E)', { skip: DB_TES
                              'equipment_type_external_classification_evidence')
         ORDER BY table_name`));
       assert.strictEqual(rows.length, 2);
+
+      // M5R.3E added no schema of its own: migration 019 is the identity-lifecycle
+      // mechanism and it must not touch the crosswalk structures at all.
+      const m019 = fs.readFileSync(
+        path.join(dir, '019_taxonomy_identity_lifecycle.sql'), 'utf8')
+        .replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/--[^\n]*/g, ' ');
+      assert.doesNotMatch(m019, /equipment_type_external_classification/,
+        'migration 019 is a separate mechanism and must not alter the crosswalk');
     });
 
     it('39. the canonical equipment taxonomy is unchanged', async () => {
