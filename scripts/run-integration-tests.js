@@ -41,7 +41,9 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   // ATM-001 M5R.3E: governed crosswalk application layer (no migration).
   'tests/knowledge-crosswalk-application.test.js',
   // ATM-001 M5R.4B: governed taxonomy identity lifecycle mechanism (migration 019).
-  'tests/taxonomy-identity-lifecycle.test.js'
+  'tests/taxonomy-identity-lifecycle.test.js',
+  // ATM-001 M5R.4B2 prerequisite: canonical-only import resolution, ambiguity refused.
+  'tests/asset-import-resolver-safety.test.js'
 ];
 
 const result = spawnSync(process.execPath, ['--test', ...SANCTIONED_POSTGRES_INTEGRATION_SUITES], {

@@ -257,21 +257,61 @@ class AssetImportService {
   }
 
   /**
-   * Validate equipment type code exists in taxonomy
+   * Resolve an Equipment Type from a code supplied in an import row.
+   *
+   * The contract is canonical-only, and ambiguity is REFUSED rather than guessed:
+   *
+   *   exactly one canonical match -> resolve to that Type's immutable
+   *                                  equipment_types.id and continue
+   *   0 canonical matches         -> reject
+   *   >1 canonical matches        -> reject as ambiguous
+   *
+   * Two rules make this necessary.
+   *
+   * CANONICAL ONLY. `UNIQUE (class_id, type_code)` is unique per class, not
+   * globally, so one code can legitimately match several Equipment Types.
+   * Migration 019 additionally gives every Type a lifecycle standing, and a
+   * retired or superseded Type must never be bound to an asset as if it were
+   * current. Only `canonical` is selectable here.
+   *
+   * NO ARBITRARY WINNER. A code that matches more than one canonical Type is
+   * refused outright. It is never resolved by first row, arbitrary row, lowest
+   * or highest id, alphabetically first, or database return order — the
+   * operator is told the code is ambiguous so the source data can be corrected.
+   * Evidence Before Assumption.
+   *
+   * Deliberately NOT done here: redirecting a superseded/retired code through
+   * equipment_type_identity_resolution, terminology lookup, and alias
+   * resolution. Those are separate architectural concerns.
+   *
+   * `ORDER BY id` below exists ONLY to make the ambiguity message deterministic.
+   * It never selects a winner: more than one row always rejects.
    */
   async validateEquipmentType(typeCode) {
+    const submitted = String(typeCode === undefined || typeCode === null ? '' : typeCode).trim();
+
     const sql = `
-      SELECT id, type_code, type_name 
-      FROM equipment_types 
+      SELECT id, type_code, type_name
+      FROM equipment_types
       WHERE LOWER(type_code) = LOWER(?)
+        AND identity_state = 'canonical'
+      ORDER BY id
     `;
-    const [[type]] = await pool.query(sql, [typeCode.trim()]);
-    
-    if (!type) {
-      throw new Error(`Equipment type '${typeCode}' not found in ISO 14224 taxonomy`);
+    const [rows] = await pool.query(sql, [submitted]);
+
+    if (rows.length === 0) {
+      throw new Error(`Equipment type '${submitted}' was not found among canonical Atiman equipment types`);
     }
-    
-    return type;
+
+    if (rows.length > 1) {
+      const candidates = rows.map((row) => row.type_name).join(', ');
+      throw new Error(
+        `Equipment type code '${submitted}' is ambiguous: it matches ${rows.length} canonical Atiman `
+        + `equipment types (${candidates}). Correct the source data so the code identifies exactly one equipment type.`
+      );
+    }
+
+    return rows[0];
   }
 
   /**

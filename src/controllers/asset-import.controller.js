@@ -158,7 +158,7 @@ class AssetImportController {
         { name: 'organization_id', type: 'string', description: 'Organization code (e.g., ORG-001)' },
         { name: 'facility_name', type: 'string', description: 'Facility name (auto-created if new)' },
         { name: 'asset_name', type: 'string', description: 'Asset name (unique within facility)' },
-        { name: 'equipment_type_code', type: 'string', description: 'ISO 14224 equipment type code' }
+        { name: 'equipment_type_code', type: 'string', description: 'Atiman equipment type code' }
       ],
       optional_fields: [
         { name: 'asset_description', type: 'string', description: 'Asset description' },
@@ -175,7 +175,7 @@ class AssetImportController {
       ],
       validation_rules: [
         'organization_id must exist and be active',
-        'equipment_type_code must exist in ISO 14224 taxonomy',
+        'equipment_type_code must resolve to exactly one canonical Atiman equipment type',
         'asset_name must be unique within facility (case-insensitive)',
         'commission_date cannot be in the future',
         'criticality must be one of: low, medium, high, critical'
