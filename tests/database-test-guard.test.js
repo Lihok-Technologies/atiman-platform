@@ -53,6 +53,8 @@ const DB_MUTATING_SUITES = [
   'taxonomy-identity-lifecycle.test.js',
   // ATM-001 M5R.4B2 prerequisite: canonical-only import resolution, ambiguity refused.
   'asset-import-resolver-safety.test.js',
+  // ATM-001 M5R.4B2: governed taxonomy application (creates disposable databases).
+  'taxonomy-application.test.js',
   'step6-access-control.test.js',
   'step6-coverage-e2e.test.js',
   'step6-performance.test.js',
@@ -77,7 +79,8 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'external-classification-crosswalk-evidence.test.js',
   'knowledge-crosswalk-application.test.js',
   'taxonomy-identity-lifecycle.test.js',
-  'asset-import-resolver-safety.test.js'
+  'asset-import-resolver-safety.test.js',
+  'taxonomy-application.test.js'
 ];
 
 const REPO_ROOT = path.resolve(__dirname, '..');
