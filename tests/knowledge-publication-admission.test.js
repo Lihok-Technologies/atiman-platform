@@ -102,8 +102,7 @@ async function createDraftTemplate() {
     const [template] = await conn.query(
       `INSERT INTO task_templates (
          equipment_type_id, organization_id, template_code, template_name, maintenance_type, task_kind,
-         frequency_value, frequency_unit, estimated_duration_minutes, priority
-       ) VALUES (?, ?, ?, 'M1 Governed Template', 'preventive', 'inspection', 1, 'month', 30, 'medium')
+         frequency_value, frequency_unit, estimated_duration_minutes, priority, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, content_origin) VALUES (?, ?, ?, 'M1 Governed Template', 'preventive', 'inspection', NULL, NULL, 30, 'medium', (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', 'customer', 'authored')
        RETURNING id`,
       [EQUIPMENT_TYPE, ORG, `M1-${Date.now()}-${Math.floor(Math.random() * 1e6)}`]
     );
@@ -111,6 +110,16 @@ async function createDraftTemplate() {
       `INSERT INTO task_template_steps (task_template_id, step_no, step_type, instruction, is_required)
        VALUES (?, 1, 'instruction', 'Inspect the asset for abnormal condition', true)`,
       [template.id]
+    );
+    // M6.3 governed knowledge: a governed definition declares at least one
+    // Equipment Type of applicability, and publication copies that working
+    // declaration into the immutable version junction. Applicability is never
+    // inferred from the class or category, so the fixture states it explicitly.
+    await conn.query(
+      `INSERT INTO task_template_equipment_types
+         (task_template_id, equipment_type_id, is_primary, added_by_user_id)
+       VALUES (?, ?, true, ?)`,
+      [template.id, EQUIPMENT_TYPE, AUTHOR]
     );
     return template.id;
   });
@@ -236,9 +245,8 @@ async function insertGovernedVersionRaw(templateId, {
          published_by_user_id, published_at,
          reviewer_user_id, reviewed_at, approver_user_id, approved_at,
          safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at,
-         superseded_by_version_id
-       ) VALUES (?, ?, ?, 'Raw governed version', 'preventive', ?, FALSE,
-         ?, NOW(), ?, NOW(), ?, NOW(), 'reviewed_no_control_required', ?, NOW(), ?)
+         superseded_by_version_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id) VALUES (?, ?, ?, 'Raw governed version', 'preventive', ?, FALSE,
+         ?, NOW(), ?, NOW(), ?, NOW(), 'reviewed_no_control_required', ?, NOW(), ?, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1))
        RETURNING id`,
       [templateId, versionNumber, EQUIPMENT_TYPE, lifecycle,
         publisherUserId, REVIEWER, approverUserId, REVIEWER, supersededByVersionId]
@@ -254,6 +262,36 @@ async function insertGovernedVersionRaw(templateId, {
        ) VALUES (?, 1, ?, 'instruction', 'Raw fixture step version')`,
       [version.id, step.id]
     );
+
+    // Migration 020 requires a governed version to carry frozen evidence and at
+    // least one Equipment Type of applicability, and migration 011 refuses to
+    // attach frozen evidence to an already-sealed version. The direct-SQL fixture
+    // therefore declares both BEFORE sealing: the invariant under attack in these
+    // tests is publisher/approver attribution, so the unrelated governed
+    // prerequisites must be satisfied, not left missing.
+    const [source] = await conn.query(
+      `INSERT INTO knowledge_sources (source_code, source_category, default_title, organization_id)
+       VALUES (?, 'engineering_standard', 'M1 Raw Fixture Source', NULL) RETURNING id`,
+      [`M1-RAWSRC-${Math.floor(Math.random() * 1e9)}`]
+    );
+    const [sourceVersion] = await conn.query(
+      `INSERT INTO knowledge_source_versions (knowledge_source_id, version_designation, title)
+       VALUES (?, '1.0', 'M1 Raw Fixture Source Version') RETURNING id`,
+      [source.id]
+    );
+    await conn.query(
+      `INSERT INTO knowledge_template_version_evidence
+         (task_template_version_id, knowledge_source_version_id, section_or_clause, derivation_notes)
+       VALUES (?, ?, 'Section 4.2', 'Derived from the raw fixture standard')`,
+      [version.id, sourceVersion.id]
+    );
+    await conn.query(
+      `INSERT INTO task_template_version_equipment_types
+         (task_template_version_id, equipment_type_id, is_primary)
+       VALUES (?, ?, true)`,
+      [version.id, EQUIPMENT_TYPE]
+    );
+
     await conn.query(`UPDATE task_template_versions SET is_step_set_sealed = TRUE WHERE id = ?`, [version.id]);
 
     return version.id;

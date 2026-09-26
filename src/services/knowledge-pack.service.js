@@ -57,6 +57,18 @@ const MEMBER_TEMPLATE_LIFECYCLE_STATE = 'published';
 const MAX_PACK_CODE_LENGTH = 100;
 const MAX_VERSION_NUMBER_LENGTH = 50;
 
+/**
+ * The knowledge scopes a caller may explicitly assign to a Knowledge Pack.
+ *
+ * ATM-001 M6.3 makes pack ownership explicit. `marketplace` is represented in
+ * the schema for completeness but is NOT assignable here, exactly as migration
+ * 020's chk_knowledge_packs_marketplace_not_assignable forbids it: no
+ * marketplace scope semantics have been ratified, so accepting the word would
+ * assert a governance model that does not exist. No further scope type may be
+ * introduced without ratification.
+ */
+const ASSIGNABLE_PACK_SCOPES = Object.freeze(['shared', 'customer']);
+
 /** Malformed request: the caller sent something structurally invalid. */
 class PackValidationError extends Error {
   constructor(failures) {
@@ -117,12 +129,21 @@ function assertValid(failures) {
 
 /**
  * Validate the identity of a new Knowledge Pack.
+ *
+ * ATM-001 M6.3: a Pack's ownership scope is a semantic decision the caller must
+ * make explicitly. It is never inferred from the presence or absence of an
+ * organization, and the caller is never defaulted into `shared` — a pack created
+ * without a declared scope is rejected rather than silently classified, because
+ * a silent default would assert shared ownership the author never chose.
+ *
  * @returns {Array<Object>} failures (empty when valid)
  */
 function validatePackInput(input = {}) {
   const failures = [];
   const code = typeof input.packCode === 'string' ? input.packCode.trim() : '';
   const name = typeof input.packName === 'string' ? input.packName.trim() : '';
+  const scope = typeof input.knowledgeScope === 'string' ? input.knowledgeScope.trim() : '';
+  const organizationId = input.organizationId === undefined ? null : input.organizationId;
 
   if (!code) {
     failures.push(failure('PACK_CODE_REQUIRED', 'packCode is required'));
@@ -133,6 +154,31 @@ function validatePackInput(input = {}) {
 
   if (!name) {
     failures.push(failure('PACK_NAME_REQUIRED', 'packName is required'));
+  }
+
+  // ---- governed ownership scope (M6.3) -----------------------------------
+  if (!scope) {
+    failures.push(failure('KNOWLEDGE_SCOPE_REQUIRED',
+      'knowledgeScope is required: pack ownership is never defaulted to shared'));
+  } else if (!ASSIGNABLE_PACK_SCOPES.includes(scope)) {
+    failures.push(failure('KNOWLEDGE_SCOPE_NOT_ASSIGNABLE',
+      `knowledgeScope must be one of ${ASSIGNABLE_PACK_SCOPES.join(', ')}`,
+      { knowledgeScope: scope }));
+  } else if (scope === 'customer') {
+    // A customer pack is meaningless without the tenant it belongs to.
+    if (organizationId === null || organizationId === undefined) {
+      failures.push(failure('SCOPE_ORGANIZATION_REQUIRED',
+        'a customer-scoped knowledge pack requires the owning organizationId'));
+    } else if (!Number.isInteger(organizationId) || organizationId <= 0) {
+      failures.push(failure('SCOPE_ORGANIZATION_INVALID',
+        'organizationId must be a positive integer', { organizationId }));
+    }
+  } else if (organizationId !== null && organizationId !== undefined) {
+    // A shared pack belongs to no tenant: accepting an organization would record
+    // ownership the scope denies.
+    failures.push(failure('SCOPE_ORGANIZATION_NOT_ALLOWED',
+      'a shared-scoped knowledge pack must not carry an organizationId',
+      { organizationId }));
   }
 
   return failures;

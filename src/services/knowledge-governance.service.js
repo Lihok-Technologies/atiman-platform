@@ -133,6 +133,7 @@ function validatePublicationAdmission(input) {
     steps = [],
     safetyControls = [],
     evidence = [],
+    applicability = [],
     publisherUserId = null,
     validActivityCodeIds = null,
     validSourceVersionIds = null
@@ -150,6 +151,52 @@ function validatePublicationAdmission(input) {
   }
   if (steps.length === 0) {
     failures.push(failure('NO_STEPS', 'Cannot publish a template with no steps'));
+  }
+
+  // ---- A2. Governed knowledge (ATM-001 M6.3) ------------------------------
+  // Publication SNAPSHOTS an already-governed working definition. The runtime
+  // carries ratified values and never invents them: no knowledge type is inferred
+  // from task_kind, no task family from legacy fields, no scope from the presence
+  // or absence of an organization, no origin from a caller omission, no strategy
+  // from unrelated legacy semantics, and no trigger mechanism from frequency_value.
+  // Absent governed data fails publication rather than fabricating meaning.
+  if (!template.knowledge_type_id) {
+    failures.push(failure('KNOWLEDGE_TYPE_MISSING',
+      'The working definition has no explicit knowledge type'));
+  }
+  if (!template.task_family_id) {
+    failures.push(failure('TASK_FAMILY_MISSING',
+      'The working definition has no explicit task family'));
+  }
+  if (!template.maintenance_strategy) {
+    failures.push(failure('MAINTENANCE_STRATEGY_MISSING',
+      'The working definition has no ratified maintenance strategy'));
+  }
+  if (!template.trigger_mechanism) {
+    failures.push(failure('TRIGGER_MISSING',
+      'The working definition has no recommended maintenance trigger'));
+  }
+  if (template.trigger_mechanism
+      && template.trigger_mechanism !== 'no_fixed_interval'
+      && !template.trigger_basis_source_version_id) {
+    failures.push(failure('TRIGGER_BASIS_MISSING',
+      'An asserted trigger recommendation must cite its basis'));
+  }
+  if (!template.knowledge_scope) {
+    failures.push(failure('KNOWLEDGE_SCOPE_MISSING',
+      'The working definition has no explicit knowledge scope'));
+  }
+  if (template.knowledge_scope === 'customer' && !template.organization_id) {
+    failures.push(failure('SCOPE_ORGANIZATION_MISSING',
+      'Customer-scoped knowledge requires its organization binding'));
+  }
+  if (!template.content_origin) {
+    failures.push(failure('CONTENT_ORIGIN_MISSING',
+      'The working definition has no established content origin'));
+  }
+  if (applicability.length === 0) {
+    failures.push(failure('APPLICABILITY_MISSING',
+      'Publication requires at least one explicit Equipment Type applicability'));
   }
 
   const stepNos = new Set();

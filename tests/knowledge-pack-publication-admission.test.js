@@ -123,6 +123,54 @@ async function ensureFixture() {
 }
 
 /**
+ * Declare the M6.3 governed prerequisites that a real publication produces.
+ *
+ * Migration 020 (M6.3 governed knowledge) requires a task_template_version to
+ * record (a) at least one Equipment Type of applicability and (b) at least one
+ * frozen evidence row traceable to a knowledge source version, and it requires a
+ * governed template to declare an explicit ownership scope that agrees with its
+ * organization. These rows are what the production publication path writes, so a
+ * hand-built governed fixture must declare them too — without them the row is not
+ * a governed version at all. The deferred admission trigger judges the final
+ * state at COMMIT, so the order of these inserts does not matter.
+ */
+async function attachGovernedPrerequisites(conn, templateId, versionIds) {
+  const ids = Array.isArray(versionIds) ? versionIds : [versionIds];
+
+  // Applicability is an explicit Equipment Type identity: the working definition
+  // declares it and publication copies it into the immutable version junction.
+  await query(conn,
+    `INSERT INTO task_template_equipment_types (task_template_id, equipment_type_id, is_primary)
+     VALUES (?, ?, true)`,
+    [templateId, EQUIPMENT_TYPE]);
+  for (const versionId of ids) {
+    await query(conn,
+      `INSERT INTO task_template_version_equipment_types
+         (task_template_version_id, equipment_type_id, is_primary)
+       VALUES (?, ?, true)`,
+      [versionId, EQUIPMENT_TYPE]);
+  }
+
+  // A global (NULL organization) source supports any template, so one shared
+  // fixture source serves both the shared and the tenant-scoped members.
+  const [source] = await query(conn,
+    `INSERT INTO knowledge_sources (source_code, source_category, default_title, organization_id)
+     VALUES (?, 'engineering_standard', 'M4 Fixture Source', NULL) RETURNING id`,
+    [uniq('M4SRC')]);
+  const [sourceVersion] = await query(conn,
+    `INSERT INTO knowledge_source_versions (knowledge_source_id, version_designation, title)
+     VALUES (?, '1.0', 'M4 Fixture Source Version') RETURNING id`,
+    [source.id]);
+  for (const versionId of ids) {
+    await query(conn,
+      `INSERT INTO knowledge_template_version_evidence
+         (task_template_version_id, knowledge_source_version_id, section_or_clause, derivation_notes)
+       VALUES (?, ?, 'Section 4.2', 'Derived from the fixture engineering standard')`,
+      [versionId, sourceVersion.id]);
+  }
+}
+
+/**
  * A genuinely governed immutable task_template_version, built with raw SQL.
  *
  * The M1 governance constraint (migration 013) requires the full attribution for
@@ -132,11 +180,15 @@ async function ensureFixture() {
  * applicable knowledge (NULL) or a tenant's private knowledge.
  */
 async function createGovernedTemplateVersion({ organizationId = null, lifecycleState = 'published' } = {}) {
+  // Scope is never inferred, but it must agree with the organization it binds:
+  // a shared definition has no organization and a customer definition has one.
+  const knowledgeScope = organizationId === null ? 'shared' : 'customer';
+
   return withConn(async (conn) => {
     const [template] = await query(conn,
-      `INSERT INTO task_templates (equipment_type_id, organization_id, template_code, template_name, maintenance_type)
-       VALUES (?, ?, ?, 'M4 Governed Template', 'preventive') RETURNING id`,
-      [EQUIPMENT_TYPE, organizationId, uniq('M4T')]);
+      `INSERT INTO task_templates (equipment_type_id, organization_id, template_code, template_name, maintenance_type, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, content_origin)
+       VALUES (?, ?, ?, 'M4 Governed Template', 'preventive', (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', ?, 'authored') RETURNING id`,
+      [EQUIPMENT_TYPE, organizationId, uniq('M4T'), knowledgeScope]);
     const [step] = await query(conn,
       `INSERT INTO task_template_steps (task_template_id, step_no, step_type, instruction, is_required)
        VALUES (?, 1, 'instruction', 'Inspect the asset for abnormal condition', true) RETURNING id`,
@@ -146,9 +198,9 @@ async function createGovernedTemplateVersion({ organizationId = null, lifecycleS
       `INSERT INTO task_template_versions (
          task_template_id, version_number, equipment_type_id, template_name, maintenance_type,
          lifecycle_state_at_publish, reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-         safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+         safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id)
        VALUES (?, 1, ?, 'M4 Governed Template', 'preventive', ?, ?, NOW(), ?, NOW(),
-               'reviewed_no_control_required', ?, NOW(), ?) RETURNING id`,
+               'reviewed_no_control_required', ?, NOW(), ?, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1)) RETURNING id`,
       [template.id, EQUIPMENT_TYPE, lifecycleState, REVIEWER, APPROVER, REVIEWER, PUBLISHER]);
 
     await query(conn,
@@ -156,6 +208,10 @@ async function createGovernedTemplateVersion({ organizationId = null, lifecycleS
          (task_template_version_id, step_no, task_template_step_id, step_type, instruction)
        VALUES (?, 1, ?, 'instruction', 'Inspect the asset for abnormal condition')`,
       [version.id, step.id]);
+    // Frozen evidence is attached BEFORE the step set is sealed: migration 011
+    // refuses to attach provenance to an already-sealed version, because the seal
+    // is the point at which the version's provenance becomes final.
+    await attachGovernedPrerequisites(conn, template.id, version.id);
     await query(conn, `UPDATE task_template_versions SET is_step_set_sealed = TRUE WHERE id = ?`, [version.id]);
 
     return { templateId: template.id, versionId: version.id, stepId: step.id };
@@ -172,8 +228,8 @@ async function createGovernedTemplateVersion({ organizationId = null, lifecycleS
 async function createSupersededTemplateVersion() {
   return withConn(async (conn) => {
     const [template] = await query(conn,
-      `INSERT INTO task_templates (equipment_type_id, organization_id, template_code, template_name, maintenance_type)
-       VALUES (?, NULL, ?, 'M4 Superseded Template', 'preventive') RETURNING id`,
+      `INSERT INTO task_templates (equipment_type_id, organization_id, template_code, template_name, maintenance_type, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, content_origin)
+       VALUES (?, NULL, ?, 'M4 Superseded Template', 'preventive', (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', 'shared', 'authored') RETURNING id`,
       [EQUIPMENT_TYPE, uniq('M4S')]);
     const [step] = await query(conn,
       `INSERT INTO task_template_steps (task_template_id, step_no, step_type, instruction, is_required)
@@ -185,9 +241,9 @@ async function createSupersededTemplateVersion() {
         `INSERT INTO task_template_versions (
            task_template_id, version_number, equipment_type_id, template_name, maintenance_type,
            lifecycle_state_at_publish, reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-           safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+           safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id)
          VALUES (?, ?, ?, 'M4 Superseded Template', 'preventive', 'published', ?, NOW(), ?, NOW(),
-                 'reviewed_no_control_required', ?, NOW(), ?) RETURNING id`,
+                 'reviewed_no_control_required', ?, NOW(), ?, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1)) RETURNING id`,
         [template.id, versionNumber, EQUIPMENT_TYPE, REVIEWER, APPROVER, REVIEWER, PUBLISHER]);
       await query(conn,
         `INSERT INTO task_template_step_versions
@@ -199,6 +255,7 @@ async function createSupersededTemplateVersion() {
 
     const supersededVersionId = await makeVersion(1);
     const successorVersionId = await makeVersion(2);
+    await attachGovernedPrerequisites(conn, template.id, [supersededVersionId, successorVersionId]);
     await query(conn,
       'UPDATE task_template_versions SET is_step_set_sealed = TRUE WHERE id IN (?, ?)',
       [supersededVersionId, successorVersionId]);
@@ -212,9 +269,23 @@ async function createSupersededTemplateVersion() {
   });
 }
 
-/** A Pack identity with a fresh code. */
-async function createPack() {
-  return KnowledgePack.createPack({ packCode: uniq('M4PACK'), packName: 'M4 Test Pack' });
+/**
+ * A Pack identity with a fresh code.
+ *
+ * ATM-001 M6.3: pack ownership scope is explicit and never defaulted, so the
+ * fixture declares it. This suite exercises pack publication, attribution and
+ * membership mechanics, and every member it publishes is globally applicable
+ * knowledge (`createGovernedTemplateVersion({ organizationId: null })`); its own
+ * tenant-scope test is written against a SHARED pack. The evidenced intent is
+ * therefore `shared`, and no customer ownership is invented to satisfy anything.
+ */
+async function createPack(knowledgeScope = 'shared', organizationId = null) {
+  return KnowledgePack.createPack({
+    packCode: uniq('M4PACK'),
+    packName: 'M4 Test Pack',
+    knowledgeScope,
+    organizationId
+  });
 }
 
 /** A Pack version in draft. */
@@ -363,8 +434,8 @@ describe('Knowledge Pack Publication Admission (ATM-001 M4)', { skip: DB_TEST_SK
         }
       }
       return query(conn,
-        `INSERT INTO knowledge_pack_versions (${columns.join(', ')})
-         VALUES (${values.join(', ')}) RETURNING id`, params);
+        `INSERT INTO knowledge_pack_versions (${columns.join(', ')}, knowledge_scope)
+         VALUES (${values.join(', ')}, (SELECT knowledge_scope FROM knowledge_packs WHERE id = $1)) RETURNING id`, params);
     };
 
     it('refuses a published pack version with no governance attribution', async () => {
@@ -561,16 +632,20 @@ describe('Knowledge Pack Publication Admission (ATM-001 M4)', { skip: DB_TEST_SK
     });
 
     it('rejects a Pack with no pack code', async () => {
+      // The scope is declared so the only failure under test is the missing code.
       await assert.rejects(
-        () => KnowledgePack.createPack({ packCode: '', packName: 'No code' }),
+        () => KnowledgePack.createPack({ packCode: '', packName: 'No code', knowledgeScope: 'shared' }),
         (error) => error.code === 'PACK_VALIDATION_FAILED'
+          && error.failures.some((f) => f.rule === 'PACK_CODE_REQUIRED')
       );
     });
 
     it('rejects a duplicate pack code', async () => {
       const pack = await createPack();
       await assert.rejects(
-        () => KnowledgePack.createPack({ packCode: pack.pack_code, packName: 'Duplicate' }),
+        () => KnowledgePack.createPack({
+          packCode: pack.pack_code, packName: 'Duplicate', knowledgeScope: 'shared'
+        }),
         (error) => /duplicate key|PACK_CODE_ALREADY_EXISTS/i.test(`${error.code} ${error.message}`)
       );
     });
@@ -641,8 +716,8 @@ describe('Knowledge Pack Publication Admission (ATM-001 M4)', { skip: DB_TEST_SK
       // refusal then proves the version-only contract, not an id collision.
       const workingOnly = await withConn(async (conn) => {
         await query(conn,
-          `INSERT INTO task_templates (id, equipment_type_id, template_code, template_name, maintenance_type)
-           VALUES (?, ?, 'M4-WORKING-ONLY', 'M4 Working-Only Template', 'preventive')
+          `INSERT INTO task_templates (id, equipment_type_id, template_code, template_name, maintenance_type, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, content_origin)
+           VALUES (?, ?, 'M4-WORKING-ONLY', 'M4 Working-Only Template', 'preventive', (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', 'shared', 'authored')
            ON CONFLICT (id) DO NOTHING`,
           [WORKING_ONLY_TEMPLATE_ID, EQUIPMENT_TYPE]);
         const isTemplate = await query(conn,
@@ -895,23 +970,158 @@ describe('Knowledge Pack Publication Admission (ATM-001 M4)', { skip: DB_TEST_SK
   // SCOPE / AUTHORIZATION
   // ==========================================================
   describe('F. scope and authorization boundaries', () => {
-    it('is shared knowledge: a pack identity has no tenant scope', async () => {
+    // ATM-001 M6.3 SUPERSEDES the former M4 invariant that "knowledge_packs is
+    // shared knowledge and has no organization scope". The ratified M6.3 model
+    // makes pack ownership explicit and tenant-bindable, so that assertion is no
+    // longer architecturally valid and is replaced here by assertions that prove
+    // the M6.3 model instead. The remaining M4 invariants in this describe are
+    // untouched.
+    it('requires every pack to declare an explicit ownership scope', async () => {
+      // The scope columns exist because ownership is now represented, not implied.
       const columns = await withConn((conn) => query(conn, `
         SELECT column_name FROM information_schema.columns
-        WHERE table_name = 'knowledge_packs' AND column_name = 'organization_id'
+        WHERE table_name = 'knowledge_packs'
+          AND column_name IN ('knowledge_scope', 'organization_id')
+        ORDER BY column_name
       `));
-      assert.strictEqual(columns.length, 0,
-        'knowledge_packs is shared knowledge and has no organization scope');
+      assert.deepStrictEqual(columns.map((c) => c.column_name),
+        ['knowledge_scope', 'organization_id'],
+        'governed pack ownership requires an explicit scope and its organization binding');
+    });
+
+    it('creates a shared pack only when shared is declared explicitly', async () => {
+      const pack = await createPack('shared');
+
+      assert.strictEqual(pack.knowledge_scope, 'shared');
+      // Non-vacuity: the value was written, not defaulted by the database.
+      const [row] = await withConn((conn) => query(conn,
+        'SELECT knowledge_scope, organization_id FROM knowledge_packs WHERE id = ?', [pack.id]));
+      assert.strictEqual(row.knowledge_scope, 'shared');
+      assert.strictEqual(row.organization_id, null,
+        'a shared pack has no organization binding');
+    });
+
+    it('creates a customer pack with its owning organization', async () => {
+      const pack = await createPack('customer', TENANT_ORG);
+
+      assert.strictEqual(pack.knowledge_scope, 'customer');
+      assert.strictEqual(Number(pack.organization_id), TENANT_ORG,
+        'a customer pack names the organization that owns it');
+    });
+
+    it('refuses a customer pack with no organization', async () => {
+      await assert.rejects(
+        () => KnowledgePack.createPack({
+          packCode: uniq('M4PACK'), packName: 'Ownerless customer pack', knowledgeScope: 'customer'
+        }),
+        (error) => error.code === 'PACK_VALIDATION_FAILED'
+          && error.failures.some((f) => f.rule === 'SCOPE_ORGANIZATION_REQUIRED')
+      );
+    });
+
+    it('refuses a shared pack that carries an organization binding', async () => {
+      await assert.rejects(
+        () => KnowledgePack.createPack({
+          packCode: uniq('M4PACK'),
+          packName: 'Shared pack with owner',
+          knowledgeScope: 'shared',
+          organizationId: TENANT_ORG
+        }),
+        (error) => error.code === 'PACK_VALIDATION_FAILED'
+          && error.failures.some((f) => f.rule === 'SCOPE_ORGANIZATION_NOT_ALLOWED')
+      );
+    });
+
+    it('refuses a missing scope instead of defaulting it to shared', async () => {
+      await assert.rejects(
+        () => KnowledgePack.createPack({ packCode: uniq('M4PACK'), packName: 'Unscoped pack' }),
+        (error) => error.code === 'PACK_VALIDATION_FAILED'
+          && error.failures.some((f) => f.rule === 'KNOWLEDGE_SCOPE_REQUIRED')
+      );
+    });
+
+    it('refuses a scope type that is not assignable, including marketplace', async () => {
+      for (const scope of ['marketplace', 'global', '']) {
+        await assert.rejects(
+          () => KnowledgePack.createPack({
+            packCode: uniq('M4PACK'), packName: 'Unassignable scope', knowledgeScope: scope
+          }),
+          (error) => error.code === 'PACK_VALIDATION_FAILED'
+            && error.failures.some((f) => f.rule === 'KNOWLEDGE_SCOPE_REQUIRED'
+              || f.rule === 'KNOWLEDGE_SCOPE_NOT_ASSIGNABLE'),
+          `scope ${JSON.stringify(scope)} must not be assignable`
+        );
+      }
+    });
+
+    it('freezes the established pack scope into its versions', async () => {
+      for (const [scope, organizationId] of [['shared', null], ['customer', TENANT_ORG]]) {
+        const pack = await createPack(scope, organizationId);
+        const version = await createDraftVersion(pack.id);
+
+        assert.strictEqual(version.knowledge_scope, scope,
+          `a ${scope} pack version must snapshot the scope its pack declared`);
+        assert.strictEqual(version.lifecycle_state, 'draft');
+      }
+    });
+
+    it('refuses a pack version when the pack has no established scope', async () => {
+      // A pack row without a scope cannot arise through the API (scope is
+      // required), so it is constructed directly to prove the refusal is real.
+      const orphanPackId = await withConn(async (conn) => {
+        const [row] = await query(conn,
+          `INSERT INTO knowledge_packs (pack_code, pack_name) VALUES (?, 'Unscoped pack') RETURNING id`,
+          [uniq('M4ORPHAN')]);
+        return row.id;
+      });
+
+      await assert.rejects(
+        () => KnowledgePackVersion.createVersion(orphanPackId, { versionNumber: '1.0.0' },
+          { userId: REVIEWER }),
+        (error) => error.code === 'PACK_SCOPE_NOT_ESTABLISHED',
+        'a version must never be created by guessing its parent pack ownership'
+      );
     });
 
     it('refuses tenant-scoped knowledge as a member of a shared pack', async () => {
-      const pack = await createPack();
+      const pack = await createPack('shared');
       const version = await createDraftVersion(pack.id);
       const tenantVersion = await createGovernedTemplateVersion({ organizationId: TENANT_ORG });
       await assert.rejects(
         () => KnowledgePackVersion.addMember(pack.id, version.id, tenantVersion.versionId, REVIEWER),
         (error) => error.code === 'MEMBER_SCOPE_VIOLATION'
       );
+    });
+
+    it('still enforces member scope compatibility in the database when the service is bypassed', async () => {
+      // The service refuses a tenant member in a shared pack above. This proves
+      // the same rule holds at the storage layer, so a direct SQL write cannot
+      // compose a pack that violates its own declared ownership.
+      //
+      // Migration 020's membership trigger is a DEFERRABLE INITIALLY DEFERRED
+      // constraint trigger, so it judges the transaction's final state: the
+      // INSERT itself succeeds and the refusal arrives at COMMIT. The probe
+      // therefore commits through withConn() and asserts on that refusal rather
+      // than on the INSERT.
+      const pack = await createPack('shared');
+      const version = await createDraftVersion(pack.id);
+      const tenantVersion = await createGovernedTemplateVersion({ organizationId: TENANT_ORG });
+
+      await assert.rejects(
+        () => withConn((conn) => query(conn,
+          `INSERT INTO knowledge_pack_version_task_template_versions
+             (knowledge_pack_version_id, task_template_version_id, added_by_user_id)
+           VALUES (?, ?, ?)`,
+          [version.id, tenantVersion.versionId, REVIEWER])),
+        (error) => /shared pack version .* may not contain customer knowledge/i
+          .test(error.message || ''),
+        'migration 020 must refuse the incompatible member scope at COMMIT'
+      );
+
+      // Non-vacuity: the refused composition left nothing behind.
+      const members = await KnowledgePackVersion.listMembers(pack.id, version.id);
+      assert.strictEqual(members.length, 0,
+        'a refused member must not be committed');
     });
 
     it('grants pack authoring only to the existing authoring capabilities', () => {
@@ -1022,9 +1232,9 @@ describe('Knowledge Pack Publication Admission (ATM-001 M4)', { skip: DB_TEST_SK
             INSERT INTO task_template_versions (
               task_template_id, version_number, equipment_type_id, template_name, maintenance_type,
               lifecycle_state_at_publish, reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-              safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+              safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id)
             VALUES (?, 991, ?, 'M1 SoD Probe', 'preventive', 'published', ?, NOW(), ?, NOW(),
-                    'reviewed_no_control_required', ?, NOW(), ?)`,
+                    'reviewed_no_control_required', ?, NOW(), ?, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1))`,
           [governed.templateId, EQUIPMENT_TYPE, REVIEWER, PUBLISHER, REVIEWER, PUBLISHER]),
           (error) => /chk_task_template_versions_approver_not_publisher|check constraint/i.test(error.message || ''),
           'the M1 segregation-of-duties constraint must still reject approver == publisher'

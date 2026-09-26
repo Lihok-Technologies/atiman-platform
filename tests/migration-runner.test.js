@@ -33,12 +33,15 @@ const MIGRATIONS_DIR = path.join(REPO_ROOT, 'database', 'postgresql');
 // drift detector, so it must be updated deliberately whenever the chain adds or
 // removes a table — a mismatch here means the applied schema is not the schema
 // the repository describes.
-const EXPECTED_BASE_TABLES = 81;   // 75 through migration 013, +1 in 014 (pack membership),
+const EXPECTED_BASE_TABLES = 85;   // 75 through migration 013, +1 in 014 (pack membership),
                                    // +1 in 016 (external_classification, ATM-001 M5R.3B),
                                    // +1 in 017 (crosswalk, ATM-001 M5R.3C),
                                    // +1 in 018 (crosswalk evidence, ATM-001 M5R.3D),
                                    // +2 in 019 (identity resolution + governed terminology,
-                                   //           ATM-001 M5R.4B — mechanism only, no rows)
+                                   //           ATM-001 M5R.4B — mechanism only, no rows),
+                                   // +4 in 020 (knowledge_types, task_families, and the working
+                                   //           and frozen applicability junctions —
+                                   //           ATM-001 M6.3, mechanism only, no authored rows)
 const EXPECTED_VIEWS = 6;
 
 const DB_TEST_SKIP_REASON = isIntegrationTest()

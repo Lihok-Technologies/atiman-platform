@@ -166,11 +166,51 @@ async function createTestTemplate(conn) {
     RETURNING id
   `, [cls.id]);
   const [template] = await conn.query(`
-    INSERT INTO task_templates (equipment_type_id, template_code, template_name, maintenance_type)
-    VALUES ($1, 'TT' || floor(random() * 1000000000)::int::text, 'Test Template', 'corrective')
+    INSERT INTO task_templates (equipment_type_id, template_code, template_name, maintenance_type, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, content_origin)
+    VALUES ($1, 'TT' || floor(random() * 1000000000)::int::text, 'Test Template', 'corrective', (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'corrective', 'no_fixed_interval', 'shared', 'authored')
     RETURNING id, equipment_type_id
   `, [type.id]);
+  // ATM-001 M6.3: publication freezes the working applicability set and fails
+  // closed without it, so the fixture declares its single explicit anchor.
+  await conn.query(`
+    INSERT INTO task_template_equipment_types (task_template_id, equipment_type_id, is_primary)
+    VALUES ($1, $2, TRUE)
+  `, [template.id, type.id]);
   return { ...template, _categoryId: category.id, _classId: cls.id, _typeId: type.id };
+}
+
+/**
+ * ATM-001 M6.3 fixture helper.
+ *
+ * The deferred-invariant tests below assert that ONE specific deferred admission
+ * invariant fires (the step-set seal). Migration 020 added further deferred
+ * admission invariants, so a fixture that satisfies none of them would fail for a
+ * different reason and stop isolating the invariant it names. This grants the
+ * minimum synthetic prerequisites every OTHER invariant requires, so the named
+ * invariant remains the sole failure.
+ *
+ * This is fixture data, not engineering knowledge: it is intentionally empty of
+ * maintenance meaning and claims nothing about real practice.
+ */
+async function grantDeferredPrerequisites(conn, templateId, equipmentTypeId) {
+  const [src] = await conn.query(`
+    INSERT INTO knowledge_sources (source_code, source_category, default_title)
+    VALUES ('KV-FIXTURE-' || floor(random() * 1000000000)::text, 'engineering_authored', 'KV fixture source')
+    RETURNING id`);
+  const [ver] = await conn.query(`
+    INSERT INTO knowledge_source_versions (knowledge_source_id, version_designation, title)
+    VALUES ($1, 'v1', 'KV fixture source v1') RETURNING id`, [src.id]);
+  const [latest] = await conn.query(`
+    SELECT id FROM task_template_versions WHERE task_template_id = $1 ORDER BY id DESC LIMIT 1`,
+  [templateId]);
+  await conn.query(`
+    INSERT INTO knowledge_template_version_evidence
+      (task_template_version_id, knowledge_source_version_id, supporting_role)
+    VALUES ($1, $2, 'primary')`, [latest.id, ver.id]);
+  await conn.query(`
+    INSERT INTO task_template_version_equipment_types
+      (task_template_version_id, equipment_type_id, is_primary)
+    VALUES ($1, $2, TRUE)`, [latest.id, equipmentTypeId]);
 }
 
 const isAncestryError = (err) => {
@@ -304,12 +344,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id)
         VALUES ($1, 1, $2, 'Valid State', 'preventive', 'published',
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1))
         RETURNING id
       `, [template.id, template.equipment_type_id]);
       assert.ok(valid.id);
@@ -322,12 +362,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
             task_template_id, version_number, equipment_type_id,
             template_name, maintenance_type, lifecycle_state_at_publish,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id)
           VALUES ($1, 2, $2, 'Draft State', 'preventive', 'draft',
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1))
         `, [template.id, template.equipment_type_id]);
       } catch (err) {
         rejected = /check.*constraint|violates check constraint|new row.*violates/i.test(err.message || '');
@@ -347,15 +387,15 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
     const conn = await getConnection();
     try {
       const [packRow] = await conn.query(`
-        INSERT INTO knowledge_packs (pack_code, pack_name)
-        VALUES ('chain-test-pack', 'Chain Test Pack')
+        INSERT INTO knowledge_packs (pack_code, pack_name, knowledge_scope)
+        VALUES ('chain-test-pack', 'Chain Test Pack', 'shared')
         RETURNING id
       `);
       const packId = packRow.id;
 
       const [packVersionRow] = await conn.query(`
-        INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state)
-        VALUES ($1, '0.1.0', 'draft')
+        INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, knowledge_scope)
+        VALUES ($1, '0.1.0', 'draft', (SELECT knowledge_scope FROM knowledge_packs WHERE id = $1))
         RETURNING id
       `, [packId]);
       const packVersionId = packVersionRow.id;
@@ -375,12 +415,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id)
         VALUES ($1, 1, $2, 'Chain Test Template', 'preventive',
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1))
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -409,15 +449,15 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
     const conn = await getConnection();
     try {
       const [pack] = await conn.query(`
-        INSERT INTO knowledge_packs (pack_code, pack_name)
-        VALUES ('immutable-pack', 'Immutable Pack')
+        INSERT INTO knowledge_packs (pack_code, pack_name, knowledge_scope)
+        VALUES ('immutable-pack', 'Immutable Pack', 'shared')
         RETURNING id
       `);
 
       const [packVersion] = await conn.query(`
         INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at,
-           reviewer_user_id, reviewed_at, approver_user_id, approved_at, published_by_user_id)
-        VALUES ($1, '1.0.0', 'published', NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+           reviewer_user_id, reviewed_at, approver_user_id, approved_at, published_by_user_id, knowledge_scope)
+        VALUES ($1, '1.0.0', 'published', NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT knowledge_scope FROM knowledge_packs WHERE id = $1))
         RETURNING id
       `, [pack.id]);
 
@@ -444,15 +484,15 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
     const conn = await getConnection();
     try {
       const [pack] = await conn.query(`
-        INSERT INTO knowledge_packs (pack_code, pack_name)
-        VALUES ('delete-test-pack', 'Delete Test Pack')
+        INSERT INTO knowledge_packs (pack_code, pack_name, knowledge_scope)
+        VALUES ('delete-test-pack', 'Delete Test Pack', 'shared')
         RETURNING id
       `);
 
       const [packVersion] = await conn.query(`
         INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at,
-           reviewer_user_id, reviewed_at, approver_user_id, approved_at, published_by_user_id)
-        VALUES ($1, '1.0.0', 'published', NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+           reviewer_user_id, reviewed_at, approver_user_id, approved_at, published_by_user_id, knowledge_scope)
+        VALUES ($1, '1.0.0', 'published', NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT knowledge_scope FROM knowledge_packs WHERE id = $1))
         RETURNING id
       `, [pack.id]);
 
@@ -483,12 +523,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id)
         VALUES ($1, 1, $2, 'Transition Template v1', 'preventive', 'published',
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1))
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -497,12 +537,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id)
         VALUES ($1, 2, $2, 'Transition Template v2', 'preventive', 'published',
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1))
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -537,14 +577,14 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
     const conn = await getConnection();
     try {
       const [pack] = await conn.query(`
-        INSERT INTO knowledge_packs (pack_code, pack_name)
-        VALUES ('self-super-pack', 'Self Supersession Pack')
+        INSERT INTO knowledge_packs (pack_code, pack_name, knowledge_scope)
+        VALUES ('self-super-pack', 'Self Supersession Pack', 'shared')
         RETURNING id
       `);
       const [packVersion] = await conn.query(`
         INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at,
-           reviewer_user_id, reviewed_at, approver_user_id, approved_at, published_by_user_id)
-        VALUES ($1, '1.0.0', 'published', NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+           reviewer_user_id, reviewed_at, approver_user_id, approved_at, published_by_user_id, knowledge_scope)
+        VALUES ($1, '1.0.0', 'published', NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT knowledge_scope FROM knowledge_packs WHERE id = $1))
         RETURNING id
       `, [pack.id]);
 
@@ -568,12 +608,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id)
         VALUES ($1, 1, $2, 'Self Super Template', 'preventive', 'published',
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1))
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -604,27 +644,27 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
     const conn = await getConnection();
     try {
       const [packA] = await conn.query(`
-        INSERT INTO knowledge_packs (pack_code, pack_name)
-        VALUES ('same-pack-a', 'Pack A')
+        INSERT INTO knowledge_packs (pack_code, pack_name, knowledge_scope)
+        VALUES ('same-pack-a', 'Pack A', 'shared')
         RETURNING id
       `);
       const [packB] = await conn.query(`
-        INSERT INTO knowledge_packs (pack_code, pack_name)
-        VALUES ('same-pack-b', 'Pack B')
+        INSERT INTO knowledge_packs (pack_code, pack_name, knowledge_scope)
+        VALUES ('same-pack-b', 'Pack B', 'shared')
         RETURNING id
       `);
 
       const [packVersionA] = await conn.query(`
         INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at,
-           reviewer_user_id, reviewed_at, approver_user_id, approved_at, published_by_user_id)
-        VALUES ($1, '1.0.0', 'published', NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+           reviewer_user_id, reviewed_at, approver_user_id, approved_at, published_by_user_id, knowledge_scope)
+        VALUES ($1, '1.0.0', 'published', NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT knowledge_scope FROM knowledge_packs WHERE id = $1))
         RETURNING id
       `, [packA.id]);
 
       const [packVersionB] = await conn.query(`
         INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at,
-           reviewer_user_id, reviewed_at, approver_user_id, approved_at, published_by_user_id)
-        VALUES ($1, '1.0.0', 'published', NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+           reviewer_user_id, reviewed_at, approver_user_id, approved_at, published_by_user_id, knowledge_scope)
+        VALUES ($1, '1.0.0', 'published', NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT knowledge_scope FROM knowledge_packs WHERE id = $1))
         RETURNING id
       `, [packB.id]);
 
@@ -646,8 +686,8 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       // Superseding A with a second version from the SAME pack should succeed.
       const [packVersionA2] = await conn.query(`
         INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at,
-           reviewer_user_id, reviewed_at, approver_user_id, approved_at, published_by_user_id)
-        VALUES ($1, '2.0.0', 'published', NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+           reviewer_user_id, reviewed_at, approver_user_id, approved_at, published_by_user_id, knowledge_scope)
+        VALUES ($1, '2.0.0', 'published', NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT knowledge_scope FROM knowledge_packs WHERE id = $1))
         RETURNING id
       `, [packA.id]);
 
@@ -678,12 +718,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id)
         VALUES ($1, 1, $2, 'Template A v1', 'preventive', 'published',
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1))
         RETURNING id
       `, [templateA.id, templateA.equipment_type_id]);
 
@@ -692,12 +732,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id)
         VALUES ($1, 1, $2, 'Template B v1', 'preventive', 'published',
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1))
         RETURNING id
       `, [templateB.id, templateB.equipment_type_id]);
 
@@ -722,12 +762,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id)
         VALUES ($1, 2, $2, 'Template A v2', 'preventive', 'published',
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1))
         RETURNING id
       `, [templateA.id, templateA.equipment_type_id]);
 
@@ -755,12 +795,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id)
         VALUES ($1, 1, $2, 'Step Update Template', 'preventive', 'published',
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1))
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -803,12 +843,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id)
         VALUES ($1, 1, $2, 'Step Delete Template', 'preventive', 'published',
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1))
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -850,12 +890,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id)
         VALUES ($1, 1, $2, 'Sealed Step Set Template', 'preventive', 'published', FALSE,
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1))
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -934,12 +974,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id)
         VALUES ($1, 1, $2, 'Unsealed Step Set Template', 'preventive', 'published', FALSE,
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1))
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -982,12 +1022,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id)
         VALUES ($1, 1, $2, 'Successor Valid v1', 'preventive', 'published',
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1))
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -996,12 +1036,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id)
         VALUES ($1, 2, $2, 'Successor Retired', 'preventive', 'retired',
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1))
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -1033,14 +1073,14 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
     const conn = await getConnection();
     try {
       const [pack] = await conn.query(`
-        INSERT INTO knowledge_packs (pack_code, pack_name)
-        VALUES ('orphan-super-pack', 'Orphan Supersession Pack')
+        INSERT INTO knowledge_packs (pack_code, pack_name, knowledge_scope)
+        VALUES ('orphan-super-pack', 'Orphan Supersession Pack', 'shared')
         RETURNING id
       `);
       const [packVersion] = await conn.query(`
         INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at,
-           reviewer_user_id, reviewed_at, approver_user_id, approved_at, published_by_user_id)
-        VALUES ($1, '1.0.0', 'published', NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+           reviewer_user_id, reviewed_at, approver_user_id, approved_at, published_by_user_id, knowledge_scope)
+        VALUES ($1, '1.0.0', 'published', NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT knowledge_scope FROM knowledge_packs WHERE id = $1))
         RETURNING id
       `, [pack.id]);
 
@@ -1077,12 +1117,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id)
         VALUES ($1, 1, $2, 'Unseal Test Template', 'preventive', 'published', FALSE,
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1))
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -1132,12 +1172,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id)
         VALUES ($1, 1, $2, 'Zero Step Seal Template', 'preventive', 'published', FALSE,
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1))
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -1171,13 +1211,14 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id)
         VALUES ($1, 1, $2, 'Unsealed Commit Template', 'preventive', 'published', FALSE,
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1))
       `, [template.id, template.equipment_type_id]);
+      await grantDeferredPrerequisites(conn, template.id, template.equipment_type_id);
 
       let blocked = false;
       try {
@@ -1206,14 +1247,15 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id)
         VALUES ($1, 1, $2, 'Assemble Seal Commit Template', 'preventive', 'published', FALSE,
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1))
         RETURNING id
       `, [template.id, template.equipment_type_id]);
+      await grantDeferredPrerequisites(conn, template.id, template.equipment_type_id);
 
       const [step] = await conn.query(`
         INSERT INTO task_template_steps (task_template_id, step_no, step_type, instruction)
@@ -1259,12 +1301,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id)
         VALUES ($1, 1, $2, 'Post-Seal Insert Template', 'preventive', 'published', FALSE,
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1))
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -1312,29 +1354,29 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
     const conn = await getConnection();
     try {
       const [pack] = await conn.query(`
-        INSERT INTO knowledge_packs (pack_code, pack_name)
-        VALUES ('chain-pack', 'Chain Pack')
+        INSERT INTO knowledge_packs (pack_code, pack_name, knowledge_scope)
+        VALUES ('chain-pack', 'Chain Pack', 'shared')
         RETURNING id
       `);
 
       const [v1] = await conn.query(`
         INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at,
-           reviewer_user_id, reviewed_at, approver_user_id, approved_at, published_by_user_id)
-        VALUES ($1, '1.0.0', 'published', NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+           reviewer_user_id, reviewed_at, approver_user_id, approved_at, published_by_user_id, knowledge_scope)
+        VALUES ($1, '1.0.0', 'published', NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT knowledge_scope FROM knowledge_packs WHERE id = $1))
         RETURNING id
       `, [pack.id]);
 
       const [v2] = await conn.query(`
         INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at,
-           reviewer_user_id, reviewed_at, approver_user_id, approved_at, published_by_user_id)
-        VALUES ($1, '2.0.0', 'published', NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+           reviewer_user_id, reviewed_at, approver_user_id, approved_at, published_by_user_id, knowledge_scope)
+        VALUES ($1, '2.0.0', 'published', NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT knowledge_scope FROM knowledge_packs WHERE id = $1))
         RETURNING id
       `, [pack.id]);
 
       const [v3] = await conn.query(`
         INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at,
-           reviewer_user_id, reviewed_at, approver_user_id, approved_at, published_by_user_id)
-        VALUES ($1, '3.0.0', 'published', NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+           reviewer_user_id, reviewed_at, approver_user_id, approved_at, published_by_user_id, knowledge_scope)
+        VALUES ($1, '3.0.0', 'published', NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT knowledge_scope FROM knowledge_packs WHERE id = $1))
         RETURNING id
       `, [pack.id]);
 
@@ -1373,22 +1415,22 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
     const conn = await getConnection();
     try {
       const [pack] = await conn.query(`
-        INSERT INTO knowledge_packs (pack_code, pack_name)
-        VALUES ('backlink-pack', 'Backlink Pack')
+        INSERT INTO knowledge_packs (pack_code, pack_name, knowledge_scope)
+        VALUES ('backlink-pack', 'Backlink Pack', 'shared')
         RETURNING id
       `);
 
       const [v1] = await conn.query(`
         INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at,
-           reviewer_user_id, reviewed_at, approver_user_id, approved_at, published_by_user_id)
-        VALUES ($1, '1.0.0', 'published', NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+           reviewer_user_id, reviewed_at, approver_user_id, approved_at, published_by_user_id, knowledge_scope)
+        VALUES ($1, '1.0.0', 'published', NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT knowledge_scope FROM knowledge_packs WHERE id = $1))
         RETURNING id
       `, [pack.id]);
 
       const [v2] = await conn.query(`
         INSERT INTO knowledge_pack_versions (knowledge_pack_id, version_number, lifecycle_state, published_at,
-           reviewer_user_id, reviewed_at, approver_user_id, approved_at, published_by_user_id)
-        VALUES ($1, '2.0.0', 'published', NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+           reviewer_user_id, reviewed_at, approver_user_id, approved_at, published_by_user_id, knowledge_scope)
+        VALUES ($1, '2.0.0', 'published', NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT knowledge_scope FROM knowledge_packs WHERE id = $1))
         RETURNING id
       `, [pack.id]);
 
@@ -1431,12 +1473,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id)
         VALUES ($1, 1, $2, 'Chain v1', 'preventive', 'published', FALSE,
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1))
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -1445,12 +1487,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id)
         VALUES ($1, 2, $2, 'Chain v2', 'preventive', 'published', FALSE,
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1))
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -1459,12 +1501,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id)
         VALUES ($1, 3, $2, 'Chain v3', 'preventive', 'published', FALSE,
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1))
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -1509,12 +1551,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id)
         VALUES ($1, 1, $2, 'Backlink v1', 'preventive', 'published', FALSE,
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1))
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -1523,12 +1565,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id)
         VALUES ($1, 2, $2, 'Backlink v2', 'preventive', 'published', FALSE,
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1))
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -1571,13 +1613,14 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id)
         VALUES ($1, 1, $2, 'Unsealed Retired Template', 'preventive', 'retired', FALSE,
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1))
       `, [template.id, template.equipment_type_id]);
+      await grantDeferredPrerequisites(conn, template.id, template.equipment_type_id);
 
       let blocked = false;
       try {
@@ -1606,26 +1649,27 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id)
         VALUES ($1, 1, $2, 'Unsealed Superseded Template', 'preventive', 'published', FALSE,
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1))
         RETURNING id
       `, [template.id, template.equipment_type_id]);
+      await grantDeferredPrerequisites(conn, template.id, template.equipment_type_id);
 
       const [v2] = await conn.query(`
         INSERT INTO task_template_versions (
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id)
         VALUES ($1, 2, $2, 'Successor Template', 'preventive', 'published', FALSE,
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1))
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -1683,12 +1727,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id)
         VALUES ($1, 1, $2, 'Ancestry Template A', 'preventive', 'published', FALSE,
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1))
         RETURNING id
       `, [templateA.id, templateA.equipment_type_id]);
 
@@ -1989,12 +2033,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id)
         VALUES ($1, 1, $2, 'Frozen Evidence Template', 'preventive', 'published', FALSE,
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1))
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -2082,12 +2126,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id)
         VALUES ($1, 1, $2, 'Frozen Seal Template', 'preventive', 'published', FALSE,
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1))
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -2165,9 +2209,8 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
 
       const [template] = await conn.query(`
         INSERT INTO task_templates (
-          equipment_type_id, template_name, maintenance_type, task_kind, organization_id, created_by
-        )
-        VALUES ($1, 'Global Source Tenant Template', 'preventive', 'inspection', $2, NULL)
+          equipment_type_id, template_name, maintenance_type, task_kind, organization_id, created_by, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, content_origin)
+        VALUES ($1, 'Global Source Tenant Template', 'preventive', 'inspection', $2, NULL, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', CASE WHEN $2::integer IS NULL THEN 'shared' ELSE 'customer' END, 'authored')
         RETURNING id, organization_id, equipment_type_id
       `, [baseTemplate.equipment_type_id, org.id]);
 
@@ -2211,17 +2254,15 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
 
       const [templateA] = await conn.query(`
         INSERT INTO task_templates (
-          equipment_type_id, template_name, maintenance_type, task_kind, organization_id, created_by
-        )
-        VALUES ($1, 'Tenant A Template', 'preventive', 'inspection', $2, NULL)
+          equipment_type_id, template_name, maintenance_type, task_kind, organization_id, created_by, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, content_origin)
+        VALUES ($1, 'Tenant A Template', 'preventive', 'inspection', $2, NULL, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', CASE WHEN $2::integer IS NULL THEN 'shared' ELSE 'customer' END, 'authored')
         RETURNING id, organization_id, equipment_type_id
       `, [baseTemplate.equipment_type_id, orgA.id]);
 
       const [templateB] = await conn.query(`
         INSERT INTO task_templates (
-          equipment_type_id, template_name, maintenance_type, task_kind, organization_id, created_by
-        )
-        VALUES ($1, 'Tenant B Template', 'preventive', 'inspection', $2, NULL)
+          equipment_type_id, template_name, maintenance_type, task_kind, organization_id, created_by, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, content_origin)
+        VALUES ($1, 'Tenant B Template', 'preventive', 'inspection', $2, NULL, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', CASE WHEN $2::integer IS NULL THEN 'shared' ELSE 'customer' END, 'authored')
         RETURNING id, organization_id
       `, [baseTemplate.equipment_type_id, orgB.id]);
 
@@ -2267,9 +2308,8 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
 
       const [globalTemplate] = await conn.query(`
         INSERT INTO task_templates (
-          equipment_type_id, template_name, maintenance_type, task_kind, organization_id, created_by
-        )
-        VALUES ($1, 'Global Template For Tenant Source', 'preventive', 'inspection', NULL, NULL)
+          equipment_type_id, template_name, maintenance_type, task_kind, organization_id, created_by, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, content_origin)
+        VALUES ($1, 'Global Template For Tenant Source', 'preventive', 'inspection', NULL, NULL, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', 'shared', 'authored')
         RETURNING id, organization_id
       `, [baseTemplate.equipment_type_id]);
       assert.ok(globalTemplate, 'Need a global task_template');
@@ -2549,12 +2589,12 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id,
           template_name, maintenance_type, lifecycle_state_at_publish, is_step_set_sealed,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id)
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id)
         VALUES ($1, 1, $2, 'Lineage Template', 'preventive', 'published', FALSE,
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1))
         RETURNING id
       `, [template.id, template.equipment_type_id]);
 
@@ -2740,11 +2780,11 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id, template_name,
           maintenance_type, lifecycle_state_at_publish,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id) VALUES ($1, $2, $3, 'Safety Publish Test', 'corrective', 'published',
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id) VALUES ($1, $2, $3, 'Safety Publish Test', 'corrective', 'published',
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'corrective', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1))
         RETURNING id
       `, [template.id, versionNo, template.equipment_type_id]);
 
@@ -2820,11 +2860,11 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id, template_name,
           maintenance_type, lifecycle_state_at_publish,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id) VALUES ($1, $2, $3, 'Cross Safety Test', 'corrective', 'published',
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id) VALUES ($1, $2, $3, 'Cross Safety Test', 'corrective', 'published',
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'corrective', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1))
         RETURNING id
       `, [templateA.id, versionNo, templateA.equipment_type_id]);
 
@@ -2888,11 +2928,11 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
           task_template_id, version_number, equipment_type_id, template_name,
           maintenance_type, lifecycle_state_at_publish,
             reviewer_user_id, reviewed_at, approver_user_id, approved_at,
-            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id) VALUES ($1, $2, $3, 'Seal Safety Test', 'corrective', 'published',
+            safety_review_state, safety_reviewed_by_user_id, safety_reviewed_at, published_by_user_id, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id) VALUES ($1, $2, $3, 'Seal Safety Test', 'corrective', 'published',
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             ${GOVERNANCE_REVIEWER_SQL}, NOW(),
             'reviewed_no_control_required',
-            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL})
+            ${GOVERNANCE_REVIEWER_SQL}, NOW(), ${GOVERNANCE_PUBLISHER_SQL}, (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'corrective', 'no_fixed_interval', (SELECT knowledge_scope FROM task_templates WHERE id = $1), (SELECT organization_id FROM task_templates WHERE id = $1))
         RETURNING id
       `, [template.id, versionNo, template.equipment_type_id]);
 
@@ -3244,7 +3284,11 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       const [org] = await conn.query(`
         INSERT INTO organizations (organization_name) VALUES ('Pub Tenant') RETURNING id
       `);
-      await conn.query(`UPDATE task_templates SET organization_id = $1 WHERE id = $2`, [org.id, template.id]);
+      // Moving the definition under a tenant makes it customer-scoped knowledge:
+      // the scope and its organization binding must agree.
+      await conn.query(
+        `UPDATE task_templates SET organization_id = $1, knowledge_scope = 'customer' WHERE id = $2`,
+        [org.id, template.id]);
 
       await assert.rejects(
         () => TaskTemplate.publishVersion(template.id, publisher.id, { publishedByOrganizationId: 999999, connection: conn }),

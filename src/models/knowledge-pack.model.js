@@ -92,21 +92,32 @@ class KnowledgePack extends BaseModel {
   /**
    * Create a Knowledge Pack identity.
    *
-   * A Pack identity is shared knowledge: knowledge_packs has no organization_id
-   * and migration 009 gives it none. Pack authoring is therefore an act on
-   * shared knowledge, and the route layer restricts it accordingly.
+   * ATM-001 M6.3 makes Pack ownership explicit. A Pack is `shared` (owned by no
+   * tenant) or `customer` (owned by exactly one organization). The caller states
+   * which, and this method neither defaults a missing scope to `shared` nor
+   * infers the scope from whether an organization was supplied: migration 020's
+   * chk_knowledge_packs_scope_organization and its marketplace guard are the
+   * mirrored database expression of that rule.
+   *
+   * Pack authoring remains an admin-only act on knowledge (`TASKS.CREATE`); the
+   * route layer still restricts it, and this signature change does not widen it.
    */
   async createPack(input, { userId = null } = {}) {
     assertValid(validatePackInput(input));
 
+    const knowledgeScope = input.knowledgeScope.trim();
+    const organizationId = knowledgeScope === 'customer' ? input.organizationId : null;
+
     const rows = await this.query(
-      `INSERT INTO knowledge_packs (pack_code, pack_name, description)
-       VALUES (?, ?, ?)
+      `INSERT INTO knowledge_packs (pack_code, pack_name, description, knowledge_scope, organization_id)
+       VALUES (?, ?, ?, ?, ?)
        RETURNING id`,
       [
         input.packCode.trim(),
         input.packName.trim(),
-        input.description === undefined || input.description === null ? null : String(input.description)
+        input.description === undefined || input.description === null ? null : String(input.description),
+        knowledgeScope,
+        organizationId
       ]
     );
 
@@ -196,17 +207,33 @@ class KnowledgePackVersion extends BaseModel {
 
   // ------------------------------------------------------- version authoring
 
-  /** Create a new Pack version in `draft`, recording its author. */
+  /**
+   * Create a new Pack version in `draft`, recording its author.
+   *
+   * ATM-001 M6.3: migration 020 requires every governed Pack version to carry an
+   * explicit knowledge scope, and requires the Pack identity to have established
+   * its ownership before such a version exists. This method therefore SNAPSHOTS
+   * the scope the Pack already declared — the semantic decision was made
+   * explicitly at pack creation, so copying it here is not inference. A Pack
+   * without an established scope is refused rather than guessed at.
+   */
   async createVersion(packId, input, { userId } = {}) {
     assertValid(validatePackVersionInput(input));
 
     const conn = await getConnection();
     try {
       const packRows = await conn.query(
-        'SELECT id FROM knowledge_packs WHERE id = ? FOR SHARE', [packId]
+        'SELECT id, knowledge_scope FROM knowledge_packs WHERE id = ? FOR SHARE', [packId]
       );
       if (!packRows[0]) {
         throw new PackNotFoundError('Knowledge pack not found');
+      }
+      const packScope = packRows[0].knowledge_scope;
+      if (!packScope) {
+        throw new PackConflictError(
+          'This knowledge pack has no established ownership scope, so a governed version cannot be created for it',
+          'PACK_SCOPE_NOT_ESTABLISHED'
+        );
       }
 
       const authorId = userId || null;
@@ -214,10 +241,10 @@ class KnowledgePackVersion extends BaseModel {
       try {
         rows = await conn.query(
           `INSERT INTO knowledge_pack_versions
-             (knowledge_pack_id, version_number, lifecycle_state, author_user_id)
-           VALUES (?, ?, 'draft', ?)
+             (knowledge_pack_id, version_number, lifecycle_state, author_user_id, knowledge_scope)
+           VALUES (?, ?, 'draft', ?, ?)
            RETURNING id`,
-          [packId, input.versionNumber.trim(), authorId]
+          [packId, input.versionNumber.trim(), authorId, packScope]
         );
       } catch (error) {
         if (isUniqueViolation(error)) {

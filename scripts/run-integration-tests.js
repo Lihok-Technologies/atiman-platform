@@ -45,7 +45,9 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   // ATM-001 M5R.4B2 prerequisite: canonical-only import resolution, ambiguity refused.
   'tests/asset-import-resolver-safety.test.js',
   // ATM-001 M5R.4B2: governed taxonomy application (disposable database).
-  'tests/taxonomy-application.test.js'
+  'tests/taxonomy-application.test.js',
+  // ATM-001 M6.3: governed knowledge foundation (migration 020, disposable databases).
+  'tests/governed-knowledge-foundation.test.js'
 ];
 
 const result = spawnSync(process.execPath, ['--test', ...SANCTIONED_POSTGRES_INTEGRATION_SUITES], {

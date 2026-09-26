@@ -55,6 +55,8 @@ const DB_MUTATING_SUITES = [
   'asset-import-resolver-safety.test.js',
   // ATM-001 M5R.4B2: governed taxonomy application (creates disposable databases).
   'taxonomy-application.test.js',
+  // ATM-001 M6.3: governed knowledge foundation (migration 020; creates disposable databases).
+  'governed-knowledge-foundation.test.js',
   'step6-access-control.test.js',
   'step6-coverage-e2e.test.js',
   'step6-performance.test.js',
@@ -80,7 +82,8 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'knowledge-crosswalk-application.test.js',
   'taxonomy-identity-lifecycle.test.js',
   'asset-import-resolver-safety.test.js',
-  'taxonomy-application.test.js'
+  'taxonomy-application.test.js',
+  'governed-knowledge-foundation.test.js'
 ];
 
 const REPO_ROOT = path.resolve(__dirname, '..');

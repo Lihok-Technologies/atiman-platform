@@ -98,11 +98,25 @@ async function requireVersion(req, res, packId) {
 
 exports.createPack = async (req, res, next) => {
   try {
+    // ATM-001 M6.3: pack ownership is explicit. The caller declares the scope
+    // (`knowledge_scope`); it is never defaulted and never inferred from the
+    // presence of an organization. For a customer-scoped pack the owning
+    // organization is the authenticated caller's own organization — the same
+    // binding rule the task-template and provenance endpoints already use, so an
+    // author cannot assert ownership of a tenant they do not belong to. A pack
+    // declared `shared` is created with no organization binding at all.
+    const requestedScope = typeof req.body.knowledge_scope === 'string'
+      ? req.body.knowledge_scope.trim()
+      : req.body.knowledge_scope;
     const pack = await KnowledgePack.createPack(
       {
         packCode: req.body.pack_code,
         packName: req.body.pack_name,
-        description: req.body.description
+        description: req.body.description,
+        knowledgeScope: requestedScope,
+        organizationId: requestedScope === 'customer'
+          ? (req.user && req.user.organization_id) || null
+          : null
       },
       { userId: actorId(req) }
     );
