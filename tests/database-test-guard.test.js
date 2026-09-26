@@ -49,6 +49,8 @@ const DB_MUTATING_SUITES = [
   'external-classification-crosswalk-evidence.test.js',
   // ATM-001 M5R.3E: governed crosswalk application layer.
   'knowledge-crosswalk-application.test.js',
+  // ATM-001 M5R.4B: governed taxonomy identity lifecycle mechanism (migration 019).
+  'taxonomy-identity-lifecycle.test.js',
   'step6-access-control.test.js',
   'step6-coverage-e2e.test.js',
   'step6-performance.test.js',
@@ -71,7 +73,8 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'external-classification-foundation.test.js',
   'external-classification-crosswalk.test.js',
   'external-classification-crosswalk-evidence.test.js',
-  'knowledge-crosswalk-application.test.js'
+  'knowledge-crosswalk-application.test.js',
+  'taxonomy-identity-lifecycle.test.js'
 ];
 
 const REPO_ROOT = path.resolve(__dirname, '..');
