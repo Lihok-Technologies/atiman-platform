@@ -46,8 +46,9 @@
  *                                 Drilling > Well Control Equipment
  *                                 Drilling > Hoisting Equipment
  *   Types             1 new       Submersible Pump  (Pump > Submersible Pump)
- *   Existing rows     98 changed  62 relocated, 71 renamed, 35 of them both
- *                    132 unchanged
+ *   Existing rows     77 changed  14 relocated, 71 renamed, 8 of them both
+ *                    153 unchanged
+ *                    52 leave canonical standing (19 superseded, 33 retired)
  *   Resolutions      55 new       19 approved with target
  *                                33 approved without successor
  *                                 3 pending INSUFFICIENT_EVIDENCE
@@ -55,6 +56,23 @@
  *
  * Resulting equipment types: 283 (was 282), of which 231 canonical,
  * 19 superseded, 33 retired.
+ *
+ * TWO DISCREPANCIES IN THE RATIFIED RECORD, REPORTED AND NOT SILENTLY FIXED
+ *
+ * 1. ATM-001-M5R4B1 section 21.15 prints "227 + 132 + 52 = 282". That total is
+ *    411: the 129 KEEP-unchanged rows are a SUBSET of the 227 and are counted
+ *    again inside "unchanged 132". The individual sub-figures are correct; the
+ *    printed total is not.
+ * 2. The same block states "relocated (class change) 62 - all 62
+ *    placement-bearing rows". Only FOURTEEN rows actually change class. 62 is
+ *    the count of REVIEWED rows; for the other 48 the ratified final placement
+ *    is where the row already sat, which is exactly the R1 finding "48 of 62
+ *    placements are unchanged". Measured: 14 relocated, 71 renamed, 8 both,
+ *    therefore 77 changed; 52 leaving; 153 unchanged; 77 + 52 + 153 = 282.
+ *
+ * The ratified record was not edited. The operative accounting - 282 to
+ * 230/19/33 and 283 to 231/19/33 - reconciles exactly and is what this script
+ * produces.
  *
  * ===========================================================================
  * AUTHORITY
@@ -586,15 +604,44 @@ async function applyTransaction(client, label, fn) {
 async function apply(client, pkg, stats, principals, log) {
   const { transformations, resolutions, terms } = pkg;
 
-  // ---- transaction 1: provenance, parent structure, types -----------------
-  const t1 = await applyTransaction(client, 'structure', async () => {
-    // Root-cause repair for the bootstrap's un-advanced identity sequences.
-    // No-op on a healthy database (see alignIdentitySequence).
+  // =========================================================================
+  // ONE TRANSACTION FOR THE WHOLE GOVERNED PACKAGE
+  // =========================================================================
+  //
+  // The package is applied in a SINGLE transaction, deliberately.
+  //
+  // An earlier revision committed three transactions (structure, resolutions,
+  // terminology) and created the provenance anchor in the first. A failure in a
+  // later stage therefore left a PARTIALLY applied package committed, including
+  // the anchor that marks the package as applied — and the re-run path, seeing
+  // that anchor, verified instead of applying, so the incomplete package could
+  // never be completed by retrying. That is the defect this structure removes:
+  // either the whole ratified package commits, or nothing does, and a failed run
+  // leaves a database that is honestly un-applied and cleanly retryable.
+  //
+  // Migration 019's lifecycle coherence is DEFERRABLE INITIALLY DEFERRED, so it
+  // is evaluated once at COMMIT against the final state — which is exactly what
+  // makes a single transaction possible. Every Type is coherent by then: 19
+  // superseded each with one active approved target-bearing resolution, 33
+  // retired each with one active approved resolution and no target, and 231
+  // canonical with none.
+  // =========================================================================
+  return applyTransaction(client, 'M5R.4B2 governed content application', async () => {
+    // ---- stage 1: sequence alignment -------------------------------------
+    // setval() is NOT transactional in PostgreSQL: it is not rolled back when
+    // the surrounding transaction aborts (verified empirically against this
+    // repository's target versions). That is harmless here and is relied on
+    // only in the safe direction — it moves a sequence FORWARD to meet rows that
+    // already exist, creates no row, cannot mark the package applied (the
+    // provenance anchor row does that, and a row IS transactional), and cannot
+    // collide with an existing identity because the sequence is left at or above
+    // max(id).
     const alignments = [];
     for (const table of ['equipment_categories', 'equipment_classes', 'equipment_types']) {
       alignments.push(await alignIdentitySequence(client, table));
     }
 
+    // ---- stage 2: provenance substrate -----------------------------------
     const sourceIds = {};
     for (const [key, source] of Object.entries(PROVENANCE)) {
       const inserted = await client.query(`
@@ -603,7 +650,6 @@ async function apply(client, pkg, stats, principals, log) {
       [source.code, source.category, source.title]);
       sourceIds[key] = inserted.rows[0].id;
     }
-    // The edition every governed record cites.
     const version = await client.query(`
       INSERT INTO knowledge_source_versions
         (knowledge_source_id, version_designation, title, reference_number, issuing_organization)
@@ -611,7 +657,6 @@ async function apply(client, pkg, stats, principals, log) {
     [sourceIds.reasoning, 'M5R.4B2',
       'ATM-001 M5R.4A/M5R.4B1 accepted equipment-type reconciliation package',
       'docs/architecture/ATM-001-M5R4A-Equipment-Type-Reconciliation.md + docs/architecture/ATM-001-M5R4B1-Taxonomy-Identity-Lifecycle-Architecture.md']);
-    // The corpus edition is registered too, so the input's own provenance is recorded.
     await client.query(`
       INSERT INTO knowledge_source_versions
         (knowledge_source_id, version_designation, title, reference_number, issuing_organization)
@@ -619,8 +664,9 @@ async function apply(client, pkg, stats, principals, log) {
     [sourceIds.corpus, 'v1', 'Atiman legacy equipment-type corpus (282 identities)',
       'scripts/bootstrap-knowledge/equipment_types.jsonl']);
 
-    const category = await client.query(
-      'INSERT INTO equipment_categories (category_code, category_name, description) VALUES ($1, $2, $3) RETURNING id',
+    // ---- stage 3: parent structure ---------------------------------------
+    await client.query(
+      'INSERT INTO equipment_categories (category_code, category_name, description) VALUES ($1, $2, $3)',
       ['MINE_EQ', NEW_CATEGORY, 'Mining machinery domain established by ATM-001 M5R.4B1.']);
 
     for (const [categoryName, className] of NEW_CLASSES) {
@@ -633,6 +679,7 @@ async function apply(client, pkg, stats, principals, log) {
           'Class established by ATM-001 M5R.4B1.']);
     }
 
+    // ---- stage 4: the one genuinely new canonical Type -------------------
     const pumpClass = await client.query(`
       SELECT c.id FROM equipment_classes c
       JOIN equipment_categories g ON g.id = c.category_id
@@ -647,9 +694,10 @@ async function apply(client, pkg, stats, principals, log) {
       'INSERT INTO equipment_types (class_id, type_code, type_name, description) VALUES ($1, $2, $3, $4) RETURNING id',
       [newTypeClassId, NEW_TYPE.code, NEW_TYPE.name,
         'Canonical Type established by ATM-001 M5R.4B1 section 21.5 as the endpoint for candidates 7 and 8.']);
+    const newTypeId = newType.rows[0].id;
 
-    // Existing-row transformations, resolved by live id and never by name.
-    let renamed = 0; let relocated = 0;
+    // ---- stage 5: existing-row transformations ---------------------------
+    // Resolved by live id, never by name.
     for (const t of transformations) {
       const liveId = stats.resolved.get(t.candidateId);
       const sets = []; const params = [];
@@ -661,29 +709,21 @@ async function apply(client, pkg, stats, principals, log) {
         if (target.rows.length !== 1) {
           throw new Error(`candidate ${t.candidateId} target class ${t.targetCategory} > ${t.targetClass} unresolved`);
         }
-        params.push(target.rows[0].id); sets.push(`class_id = $${params.length}`); relocated += 1;
+        params.push(target.rows[0].id); sets.push(`class_id = $${params.length}`);
       }
-      if (t.renamed) { params.push(t.targetName); sets.push(`type_name = $${params.length}`); renamed += 1; }
+      if (t.renamed) { params.push(t.targetName); sets.push(`type_name = $${params.length}`); }
       if (!sets.length) continue;
       params.push(liveId);
       await client.query(
         `UPDATE equipment_types SET ${sets.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = $${params.length}`, params);
     }
 
-    return { versionId: version.rows[0].id, sourceIds, newTypeId: newType.rows[0].id, renamed, relocated, alignments };
-  });
-  const aligned = t1.alignments.filter((a) => a.aligned).map((a) => `${a.table}(max ${a.maxId})`);
-  if (aligned.length) log(`  sequences : aligned ${aligned.join(', ')}`);
-  log(`  structure : category + ${NEW_CLASSES.length} classes + 1 type; ${t1.relocated} relocations, ${t1.renamed} renames`);
-
-  // ---- transaction 2: governed identity resolutions -----------------------
-  const t2 = await applyTransaction(client, 'resolutions', async () => {
-    let approved = 0; let pending = 0;
+    // ---- stage 6: governed identity resolutions --------------------------
     for (const r of resolutions) {
       const fromId = stats.resolved.get(r.candidateId);
       let toId = null;
       if (r.target) {
-        toId = r.target.kind === 'NEW_TYPE' ? t1.newTypeId : stats.resolved.get(r.target.candidateId);
+        toId = r.target.kind === 'NEW_TYPE' ? newTypeId : stats.resolved.get(r.target.candidateId);
         if (!toId) throw new Error(`resolution ${r.candidateId} target did not resolve to an identity`);
       }
       if (r.approved) {
@@ -694,28 +734,23 @@ async function apply(client, pkg, stats, principals, log) {
              approved_by_user_id, approved_at, ai_assisted, knowledge_source_version_id, effective_from)
           VALUES ($1, $2, $3, $4, 'approved', $5, $5, CURRENT_TIMESTAMP, $6, CURRENT_TIMESTAMP,
                   FALSE, $7, CURRENT_TIMESTAMP)`,
-        [fromId, toId, r.kind, r.rationale, principals.reviewer.id, principals.approver.id, t1.versionId]);
-        approved += 1;
+        [fromId, toId, r.kind, r.rationale, principals.reviewer.id, principals.approver.id, version.rows[0].id]);
       } else {
         await client.query(`
           INSERT INTO equipment_type_identity_resolution
             (from_type_id, to_type_id, resolution_kind, rationale, review_state,
              proposed_by_user_id, ai_assisted, knowledge_source_version_id)
           VALUES ($1, NULL, 'INSUFFICIENT_EVIDENCE', $2, 'under_review', $3, FALSE, $4)`,
-        [fromId, r.rationale, principals.reviewer.id, t1.versionId]);
-        pending += 1;
+        [fromId, r.rationale, principals.reviewer.id, version.rows[0].id]);
       }
     }
-    return { approved, pending };
-  });
-  log(`  resolutions: ${t2.approved} approved, ${t2.pending} pending`);
 
-  // ---- transaction 3: governed terminology --------------------------------
-  const t3 = await applyTransaction(client, 'terminology', async () => {
+    // ---- stage 7: governed terminology -----------------------------------
     for (const t of terms) {
-      const canonicalId = t.canonical.kind === 'SELF' || t.canonical.kind === 'NEW_TYPE'
-        ? (t.canonical.kind === 'NEW_TYPE' ? t1.newTypeId : stats.resolved.get(t.candidateId))
-        : (t.canonical.kind === 'EXISTING' ? stats.resolved.get(t.canonical.candidateId) : null);
+      const canonicalId = t.canonical.kind === 'NEW_TYPE'
+        ? newTypeId
+        : (t.canonical.kind === 'SELF' ? stats.resolved.get(t.candidateId)
+          : (t.canonical.kind === 'EXISTING' ? stats.resolved.get(t.canonical.candidateId) : null));
       if (!canonicalId) throw new Error(`term for candidate ${t.candidateId} has no canonical identity`);
       await client.query(`
         INSERT INTO equipment_type_term
@@ -725,13 +760,20 @@ async function apply(client, pkg, stats, principals, log) {
         VALUES ($1, $2, $3, $4, $5, $6, 'approved', $7, $7, CURRENT_TIMESTAMP, $8, CURRENT_TIMESTAMP,
                 FALSE, $9, CURRENT_TIMESTAMP)`,
       [t.term, normalise(t.term), canonicalId, stats.resolved.get(t.candidateId), t.kind, t.rationale,
-        principals.reviewer.id, principals.approver.id, t1.versionId]);
+        principals.reviewer.id, principals.approver.id, version.rows[0].id]);
     }
-    return terms.length;
-  });
-  log(`  terminology: ${t3} governed terms`);
 
-  return { newTypeId: t1.newTypeId, versionId: t1.versionId };
+    const aligned = alignments.filter((a) => a.aligned).map((a) => `${a.table}(max ${a.maxId})`);
+    if (aligned.length) log(`  sequences : aligned ${aligned.join(', ')}`);
+    log(`  structure : category + ${NEW_CLASSES.length} classes + 1 type; `
+      + `${transformations.filter((t) => t.relocated).length} relocations, `
+      + `${transformations.filter((t) => t.renamed).length} renames`);
+    log(`  resolutions: ${resolutions.filter((r) => r.approved).length} approved, `
+      + `${resolutions.filter((r) => !r.approved).length} pending`);
+    log(`  terminology: ${terms.length} governed terms`);
+
+    return { newTypeId, versionId: version.rows[0].id };
+  });
 }
 
 // ---------------------------------------------------------------------------

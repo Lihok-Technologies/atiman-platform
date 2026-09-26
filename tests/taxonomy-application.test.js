@@ -176,6 +176,103 @@ async function query(sql, params) {
   try { return (await client.query(sql, params)).rows; } finally { client.release(); await pool.end(); }
 }
 
+
+// ---------------------------------------------------------------------------
+// helpers for the package-atomicity tests
+// ---------------------------------------------------------------------------
+
+/** A disposable database with migrations, the corpus and accountable users. */
+async function freshBootstrappedDatabase() {
+  const name = uniqueDbName();
+  await createDatabase(name);
+
+  const migrated = runNode(RUNNER, name);
+  assert.strictEqual(migrated.status, 0, `migration runner failed:\n${migrated.stdout}${migrated.stderr}`);
+  const bootstrapped = runNode(BOOTSTRAP, name);
+  assert.strictEqual(bootstrapped.status, 0, `bootstrap failed:\n${bootstrapped.stdout}${bootstrapped.stderr}`);
+
+  const { client, pool } = await serverClient(name);
+  try {
+    await client.query(`INSERT INTO organizations (id, organization_name) VALUES (990001, 'Atiman') ON CONFLICT DO NOTHING`);
+    await client.query(`
+      INSERT INTO users (id, username, email, password_hash, full_name, role, organization_id, is_active)
+      VALUES (990002, 'm5r4b2-reviewer', 'rev@test.local', 'x', 'Reviewer', 'admin', 990001, true),
+             (990003, 'm5r4b2-approver', 'app@test.local', 'x', 'Approver', 'admin', 990001, true)
+      ON CONFLICT DO NOTHING`);
+  } finally { client.release(); await pool.end(); }
+  return name;
+}
+
+/**
+ * Install a deliberate failure that fires once `table` already holds `afterRows`
+ * rows. This induces a genuine mid-application failure through the REAL code
+ * path — no production code is modified to make the failure testable.
+ */
+async function injectFailure(database, table, afterRows) {
+  const { client, pool } = await serverClient(database);
+  try {
+    await client.query(`
+      CREATE OR REPLACE FUNCTION m5r4b2_inject_failure() RETURNS TRIGGER AS $$
+      BEGIN
+        IF (SELECT count(*) FROM ${table}) >= ${afterRows} THEN
+          RAISE EXCEPTION 'INJECTED FAILURE for %', TG_TABLE_NAME;
+        END IF;
+        RETURN NEW;
+      END $$ LANGUAGE plpgsql`);
+    await client.query(`DROP TRIGGER IF EXISTS trg_m5r4b2_inject_failure ON ${table}`);
+    await client.query(`
+      CREATE TRIGGER trg_m5r4b2_inject_failure BEFORE INSERT ON ${table}
+        FOR EACH ROW EXECUTE FUNCTION m5r4b2_inject_failure()`);
+  } finally { client.release(); await pool.end(); }
+}
+
+async function removeInjection(database) {
+  const { client, pool } = await serverClient(database);
+  try {
+    await client.query(`DROP TRIGGER IF EXISTS trg_m5r4b2_inject_failure ON equipment_type_identity_resolution`);
+    await client.query(`DROP TRIGGER IF EXISTS trg_m5r4b2_inject_failure ON equipment_type_term`);
+    await client.query(`DROP FUNCTION IF EXISTS m5r4b2_inject_failure()`);
+  } finally { client.release(); await pool.end(); }
+}
+
+/** Every observable governed artefact, plus a fingerprint of the corpus rows. */
+async function governedSnapshot(database) {
+  const { client, pool } = await serverClient(database);
+  try {
+    return (await client.query(`
+      SELECT
+        (SELECT count(*)::int FROM equipment_types) AS types,
+        (SELECT count(*)::int FROM equipment_types WHERE identity_state='canonical') AS canonical,
+        (SELECT count(*)::int FROM equipment_types WHERE identity_state='superseded') AS superseded,
+        (SELECT count(*)::int FROM equipment_types WHERE identity_state='retired') AS retired,
+        (SELECT count(*)::int FROM equipment_categories WHERE category_name='Mining Equipment') AS new_category,
+        (SELECT count(*)::int FROM equipment_classes WHERE class_name IN
+           ('Level Switch','Cutting Equipment','Mine Hoisting','Well Control Equipment','Hoisting Equipment')) AS new_classes,
+        (SELECT count(*)::int FROM equipment_types WHERE type_name='Submersible Pump') AS new_type,
+        (SELECT count(*)::int FROM knowledge_sources WHERE source_code LIKE 'M5R4B2-%') AS provenance,
+        (SELECT count(*)::int FROM equipment_type_identity_resolution) AS resolutions,
+        (SELECT count(*)::int FROM equipment_type_term) AS terms,
+        (SELECT md5(string_agg(id::text||':'||type_name||':'||class_id::text, ',' ORDER BY id))
+           FROM equipment_types) AS corpus_fingerprint`)).rows[0];
+  } finally { client.release(); await pool.end(); }
+}
+
+/** The pre-application state, so a failed run can be compared against it exactly. */
+const PRISTINE = {
+  types: 282, canonical: 282, superseded: 0, retired: 0,
+  new_category: 0, new_classes: 0, new_type: 0,
+  provenance: 0, resolutions: 0, terms: 0
+};
+
+function assertNoGovernedContent(snapshot, pristineFingerprint, label) {
+  for (const [key, expected] of Object.entries(PRISTINE)) {
+    assert.strictEqual(snapshot[key], expected,
+      `${label}: ${key} must be back to its pre-application value (found ${snapshot[key]}, expected ${expected})`);
+  }
+  assert.strictEqual(snapshot.corpus_fingerprint, pristineFingerprint,
+    `${label}: no Type rename or relocation may survive — the corpus must be byte-identical`);
+}
+
 describe('Governed taxonomy application (ATM-001 M5R.4B2)', { skip: DB_TEST_SKIP_REASON }, () => {
   before(async () => {
     db = uniqueDbName();
@@ -664,6 +761,84 @@ describe('Governed taxonomy application (ATM-001 M5R.4B2)', { skip: DB_TEST_SKIP
           'a refused application must leave the database exactly as it found it');
       } finally {
         await dropDatabase(bare);
+      }
+    });
+  });
+
+  // ==========================================================
+  // I. PACKAGE ATOMICITY  (BLOCKER remediation)
+  //
+  // The package must be all-or-nothing. An earlier revision committed three
+  // transactions and wrote the provenance anchor in the first, so a later
+  // failure left a partially applied package that the re-run path — seeing the
+  // anchor — would only verify, never complete. These tests inject a real
+  // mid-application failure through the real code path and require the database
+  // to be exactly as it was.
+  // ==========================================================
+  describe('I. package atomicity', () => {
+    it('36. a failure before resolutions complete rolls the ENTIRE package back', async () => {
+      const atomic = await freshBootstrappedDatabase();
+      try {
+        const pristine = await governedSnapshot(atomic);
+        await injectFailure(atomic, 'equipment_type_identity_resolution', 10);
+
+        const applied = runNode(APPLIER, atomic, ['--apply', '--reviewer', 'm5r4b2-reviewer', '--approver', 'm5r4b2-approver']);
+        assert.notStrictEqual(applied.status, 0, 'the injected failure must fail the application');
+        assert.match(`${applied.stdout}${applied.stderr}`, /INJECTED FAILURE/);
+
+        assertNoGovernedContent(await governedSnapshot(atomic), pristine.corpus_fingerprint,
+          'failure during the resolution stage');
+      } finally {
+        await dropDatabase(atomic);
+      }
+    });
+
+    it('37. a failure before terminology completes rolls the ENTIRE package back', async () => {
+      const atomic = await freshBootstrappedDatabase();
+      try {
+        const pristine = await governedSnapshot(atomic);
+        await injectFailure(atomic, 'equipment_type_term', 10);
+
+        const applied = runNode(APPLIER, atomic, ['--apply', '--reviewer', 'm5r4b2-reviewer', '--approver', 'm5r4b2-approver']);
+        assert.notStrictEqual(applied.status, 0, 'the injected failure must fail the application');
+        assert.match(`${applied.stdout}${applied.stderr}`, /INJECTED FAILURE/);
+
+        assertNoGovernedContent(await governedSnapshot(atomic), pristine.corpus_fingerprint,
+          'failure during the terminology stage');
+      } finally {
+        await dropDatabase(atomic);
+      }
+    });
+
+    it('38. removing the injected failure makes the same database apply cleanly on retry', async () => {
+      const atomic = await freshBootstrappedDatabase();
+      try {
+        const pristine = await governedSnapshot(atomic);
+        await injectFailure(atomic, 'equipment_type_identity_resolution', 10);
+
+        const failed = runNode(APPLIER, atomic, ['--apply', '--reviewer', 'm5r4b2-reviewer', '--approver', 'm5r4b2-approver']);
+        assert.notStrictEqual(failed.status, 0);
+        assertNoGovernedContent(await governedSnapshot(atomic), pristine.corpus_fingerprint, 'after the failed run');
+
+        // The failed run left an honestly un-applied database, so a retry is a
+        // genuine first application rather than a half-application to verify.
+        await removeInjection(atomic);
+        const retried = runNode(APPLIER, atomic, ['--apply', '--reviewer', 'm5r4b2-reviewer', '--approver', 'm5r4b2-approver']);
+        assert.strictEqual(retried.status, 0, `retry must succeed:\n${retried.stdout}${retried.stderr}`);
+        assert.doesNotMatch(retried.stdout, /already applied/, 'the retry must APPLY, not merely verify');
+
+        const after = await governedSnapshot(atomic);
+        assert.strictEqual(after.types, EXPECTED.typesAfter);
+        assert.strictEqual(after.canonical, EXPECTED.canonical);
+        assert.strictEqual(after.superseded, EXPECTED.superseded);
+        assert.strictEqual(after.retired, EXPECTED.retired);
+        assert.strictEqual(after.new_category, 1);
+        assert.strictEqual(after.new_classes, 5);
+        assert.strictEqual(after.new_type, 1);
+        assert.strictEqual(after.resolutions, EXPECTED.resolutions);
+        assert.strictEqual(after.terms, EXPECTED.terms);
+      } finally {
+        await dropDatabase(atomic);
       }
     });
   });
