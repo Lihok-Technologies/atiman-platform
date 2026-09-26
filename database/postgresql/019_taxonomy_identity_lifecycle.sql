@@ -70,6 +70,13 @@
 --   I5  at most one active approved resolution per source Type  (partial index)
 --   I6  approved target -> source 'superseded'; approved no-target -> 'retired'
 --                                                                 (trigger)
+--   I6b [BLOCKER-1] at COMMIT a non-canonical Type carries EXACTLY ONE active
+--       approved resolution, and it agrees with the standing's kind/target
+--       semantics; supersession can therefore never strand a standing without
+--       a governed conclusion                          (DEFERRED constraint trigger)
+--   I6c [BLOCKER-1] supersession is append-only and well-formed: only an
+--       approved conclusion may be superseded, by a resolution about the SAME
+--       source type, never itself, never closing a cycle          (trigger)
 --   I7  a 'canonical' Type has no active approved resolution       (trigger)
 --   I8  an approved row carries attribution and a rationale        (CHECK)
 --   I9  AI cannot satisfy the approver requirement                  (FK + CHECK)
@@ -104,7 +111,10 @@
 -- equipment_type_identity_resolution_superseded_by_resolution_id_fkey (67 bytes)
 -- and silently truncated. Every constraint, index, trigger and function below is
 -- therefore NAMED EXPLICITLY and audited; the longest identifier introduced by
--- this migration is 60 bytes (chk_equipment_type_identity_resolution_insufficient_pending).
+-- this migration is 59 bytes
+-- (chk_equipment_type_identity_resolution_insufficient_pending). The
+-- supersession-safety objects added in §6 are shorter still, so the measured
+-- maximum is unchanged.
 --
 -- ---------------------------------------------------------------------------
 -- IDEMPOTENCY
@@ -694,3 +704,225 @@ CREATE TRIGGER trg_equipment_type_term_delete_guard
     BEFORE DELETE ON equipment_type_term
     FOR EACH ROW
     EXECUTE FUNCTION taxonomy_term_delete_guard();
+
+-- ============================================================
+-- 6. Supersession safety and commit-time lifecycle coherence
+--    (BLOCKER-1 remediation)
+-- ============================================================
+--
+-- THE DEFECT THIS CLOSES
+--
+-- A governed conclusion is "active" only while
+--     review_state = 'approved' AND superseded_by_resolution_id IS NULL.
+-- The only column an approved row may still change is its supersession pointer
+-- (whole-row immutability, §4 above). That pointer change therefore DEACTIVATES
+-- the row — and nothing reconciled equipment_types.identity_state when it did.
+-- Observed consequence: approving A -> B sets A to 'superseded'; setting that
+-- resolution's supersession pointer left A 'superseded' with ZERO active
+-- approved resolutions. The standing then had no active governed conclusion
+-- supporting it, which the ratified lifecycle/resolution coherence forbids.
+-- taxonomy_type_standing_guard() did not catch it because that guard runs on
+-- updates to equipment_types, not when a resolution's pointer moves.
+--
+-- THE REPAIR — two mechanisms, both in the database, neither in application code
+--
+-- (a) §6.1 makes supersession WELL-FORMED: only an approved conclusion may be
+--     superseded; the successor must exist, concern the SAME source type, not
+--     be the row itself, and not close a supersession cycle; and the pointer,
+--     once set, can never be cleared, because clearing it would silently
+--     un-supersede governed history.
+--
+-- (b) §6.2 makes the lifecycle/resolution agreement a COMMIT-TIME property via
+--     a DEFERRABLE INITIALLY DEFERRED constraint trigger (the idiom migration
+--     009 uses for its seal). At COMMIT it asserts, for the affected type:
+--         canonical  -> 0 active approved resolutions
+--         superseded -> exactly 1 active approved, and it must carry a target
+--         retired    -> exactly 1 active approved, and it must carry no target
+--
+-- WHY COMMIT TIME IS THE CORRECT BOUNDARY
+--
+-- A governed REPLACEMENT is inherently two steps — withdraw the predecessor,
+-- then approve the successor — and the partial unique index
+-- uq_equipment_type_identity_resolution_active correctly forbids two active
+-- approved conclusions for one type, so the successor cannot be pre-approved.
+-- Between the two steps the type legitimately has zero active conclusions. That
+-- transient state is invisible to other transactions and must not be mistaken
+-- for the committed one. Deferring the assertion to COMMIT therefore lets a
+-- governed rebase commit atomically, while a transaction that ends with an
+-- unsupported standing is refused outright.
+--
+-- The operational consequence, and the reason it is safe: a bare pointer change
+-- with no approved replacement is not a rebase and is refused. The governed
+-- sequence is, in ONE transaction:
+--     UPDATE predecessor SET superseded_by_resolution_id = successor;
+--     UPDATE successor SET review_state = 'approved', ... ;
+--     COMMIT;
+--
+-- Nothing here weakens the lifecycle invariant: the states themselves are
+-- unchanged (canonical / superseded / retired only), no uncertainty state is
+-- introduced, INSUFFICIENT_EVIDENCE still cannot coexist with approval, and
+-- approved history stays immutable except for the pointer.
+
+-- ------------------------------------------------------------
+-- 6.1 Supersession well-formedness
+--
+-- Deliberately does NOT require the successor to be APPROVED. It cannot: the
+-- partial unique index forbids a second active approved conclusion for the same
+-- type, so a replacement can only be approved after its predecessor is
+-- withdrawn. Requiring approval here would deadlock every rebase. Whether the
+-- committed outcome is governed is therefore decided by §6.2, which is the
+-- correct place for it: a pointer to a draft, an under-review row or a rejected
+-- row leaves the type with no active approved conclusion and is refused there.
+-- ------------------------------------------------------------
+CREATE OR REPLACE FUNCTION taxonomy_identity_resolution_supersession_check()
+RETURNS TRIGGER AS $$
+DECLARE
+    successor_from_type INTEGER;
+    successor_review_state VARCHAR(20);
+    next_id INTEGER;
+    visited INTEGER[];
+BEGIN
+    -- Only a change to the supersession pointer is governed by this trigger.
+    IF NEW.superseded_by_resolution_id IS NOT DISTINCT FROM OLD.superseded_by_resolution_id THEN
+        RETURN NEW;
+    END IF;
+
+    -- Supersession is append-only. Clearing the pointer would resurrect a
+    -- withdrawn conclusion without any governed act, and would leave the
+    -- successor's own governance meaningless.
+    IF OLD.superseded_by_resolution_id IS NOT NULL
+       AND NEW.superseded_by_resolution_id IS NULL THEN
+        RAISE EXCEPTION 'identity resolution % cannot clear its supersession pointer; supersession is append-only', OLD.id
+            USING ERRCODE = 'insufficient_privilege';
+    END IF;
+
+    -- Only a GOVERNED conclusion confers the meaning "no longer current", so
+    -- only an approved row may be superseded.
+    IF OLD.review_state <> 'approved' THEN
+        RAISE EXCEPTION 'identity resolution % is % and cannot be superseded; only approved conclusions are superseded', OLD.id, OLD.review_state
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    IF NEW.id = NEW.superseded_by_resolution_id THEN
+        RAISE EXCEPTION 'identity resolution % cannot supersede itself', NEW.id
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    SELECT from_type_id, review_state
+    INTO successor_from_type, successor_review_state
+    FROM equipment_type_identity_resolution
+    WHERE id = NEW.superseded_by_resolution_id;
+
+    -- review_state is NOT NULL, so a NULL here means the successor is absent.
+    IF successor_review_state IS NULL THEN
+        RAISE EXCEPTION 'superseded_by_resolution_id must reference an existing identity resolution'
+            USING ERRCODE = 'foreign_key_violation';
+    END IF;
+
+    -- A conclusion about one type can only be replaced by a conclusion about the
+    -- SAME type. A pointer across types would withdraw one type's only
+    -- justification while nothing took its place.
+    IF successor_from_type IS DISTINCT FROM NEW.from_type_id THEN
+        RAISE EXCEPTION 'identity resolution % may only be superseded by a resolution about the same source type; successor % concerns type %',
+            NEW.id, NEW.superseded_by_resolution_id, successor_from_type
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    -- Cycle detection over the supersession graph, mirroring migration 009.
+    next_id := NEW.superseded_by_resolution_id;
+    visited := ARRAY[NEW.id];
+    LOOP
+        IF next_id = ANY(visited) THEN
+            RAISE EXCEPTION 'supersession assignment would create a cycle involving identity resolution %', NEW.id
+                USING ERRCODE = 'check_violation';
+        END IF;
+        visited := array_append(visited, next_id);
+        SELECT superseded_by_resolution_id INTO next_id
+        FROM equipment_type_identity_resolution
+        WHERE id = next_id;
+        EXIT WHEN next_id IS NULL;
+    END LOOP;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_equipment_type_identity_resolution_supersession
+    ON equipment_type_identity_resolution;
+
+CREATE TRIGGER trg_equipment_type_identity_resolution_supersession
+    BEFORE UPDATE ON equipment_type_identity_resolution
+    FOR EACH ROW
+    EXECUTE FUNCTION taxonomy_identity_resolution_supersession_check();
+
+-- ------------------------------------------------------------
+-- 6.2 Commit-time lifecycle coherence (DEFERRABLE INITIALLY DEFERRED)
+--
+-- The single statement of the ratified invariant, asserted rather than assumed:
+-- a type's lifecycle standing must agree exactly with its active approved
+-- conclusion set. Being deferred, it is evaluated at COMMIT against the final
+-- visibility of every row the transaction touched, so an atomic rebase is legal
+-- and an unsupported standing is impossible.
+--
+-- The check is per affected type, so a multi-type transaction validates each
+-- type it touched and no others.
+-- ------------------------------------------------------------
+CREATE OR REPLACE FUNCTION taxonomy_identity_resolution_lifecycle_check()
+RETURNS TRIGGER AS $$
+DECLARE
+    subject_type_id INTEGER;
+    current_standing VARCHAR(20);
+    active_count INTEGER;
+    active_with_target INTEGER;
+BEGIN
+    subject_type_id := COALESCE(NEW.from_type_id, OLD.from_type_id);
+
+    SELECT identity_state INTO current_standing
+    FROM equipment_types
+    WHERE id = subject_type_id;
+
+    -- The type itself is gone: its deletion is governed by the RESTRICT foreign
+    -- keys and the delete guard, not by this coherence rule.
+    IF current_standing IS NULL THEN
+        RETURN NULL;
+    END IF;
+
+    SELECT count(*), count(*) FILTER (WHERE to_type_id IS NOT NULL)
+    INTO active_count, active_with_target
+    FROM equipment_type_identity_resolution
+    WHERE from_type_id = subject_type_id
+      AND review_state = 'approved'
+      AND superseded_by_resolution_id IS NULL;
+
+    IF current_standing = 'canonical' THEN
+        IF active_count <> 0 THEN
+            RAISE EXCEPTION 'equipment type % is canonical but carries % active approved identity resolution(s)', subject_type_id, active_count
+                USING ERRCODE = 'check_violation';
+        END IF;
+    ELSIF current_standing = 'superseded' THEN
+        IF active_count <> 1 OR active_with_target <> 1 THEN
+            RAISE EXCEPTION 'equipment type % is superseded but has % active approved identity resolution(s), % of them target-bearing; a superseded type requires exactly one active approved target-bearing resolution', subject_type_id, active_count, active_with_target
+                USING ERRCODE = 'check_violation';
+        END IF;
+    ELSIF current_standing = 'retired' THEN
+        IF active_count <> 1 OR active_with_target <> 0 THEN
+            RAISE EXCEPTION 'equipment type % is retired but has % active approved identity resolution(s), % of them target-bearing; a retired type requires exactly one active approved resolution with no target', subject_type_id, active_count, active_with_target
+                USING ERRCODE = 'check_violation';
+        END IF;
+    END IF;
+
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+-- CREATE CONSTRAINT TRIGGER has no IF NOT EXISTS form, so drop first to keep the
+-- migration re-runnable.
+DROP TRIGGER IF EXISTS trg_equipment_type_identity_resolution_lifecycle
+    ON equipment_type_identity_resolution;
+
+CREATE CONSTRAINT TRIGGER trg_equipment_type_identity_resolution_lifecycle
+    AFTER INSERT OR UPDATE OR DELETE ON equipment_type_identity_resolution
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW
+    EXECUTE FUNCTION taxonomy_identity_resolution_lifecycle_check();
+

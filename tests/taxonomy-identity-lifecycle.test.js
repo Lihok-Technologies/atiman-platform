@@ -884,9 +884,13 @@ describe('Taxonomy Identity Lifecycle Mechanism (ATM-001 M5R.4B)', { skip: DB_TE
     it('42. the migration declares no taxonomy content: no ratified names appear in executable SQL', async () => {
       const sql = fs.readFileSync(MIGRATION_PATH, 'utf8');
       const withoutComments = sql.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/--[^\n]*/g, ' ');
-      for (const name of ['Mining Equipment', 'Submersible Pump', 'Press',
+      // The ratified taxonomy names that migration 019 must never carry. Each is
+      // specific enough not to collide with SQL vocabulary: a bare "Filter"
+      // would match the SQL FILTER clause used by the commit-time coherence
+      // check, which is a keyword and not taxonomy content.
+      for (const name of ['Mining Equipment', 'Submersible Pump', 'Pressure Filter',
         'Level Switch', 'Cutting Equipment', 'Mine Hoisting',
-        'Well Control Equipment', 'Hoisting Equipment', 'Filter', 'COMPACT', 'ESP']) {
+        'Well Control Equipment', 'Hoisting Equipment', 'Press Booth', 'COMPACT']) {
         assert.doesNotMatch(withoutComments, new RegExp(name, 'i'),
           `'${name}' is ratified taxonomy content and must not appear in migration 019`);
       }
@@ -925,6 +929,274 @@ describe('Taxonomy Identity Lifecycle Mechanism (ATM-001 M5R.4B)', { skip: DB_TE
         FROM equipment_types`));
       assert.strictEqual(rows[0].invalid, 0, 'every standing must be an approved value');
       assert.ok(rows[0].canonical <= rows[0].total);
+    });
+  });
+
+  // ==========================================================
+  // J. SUPERSESSION AND REBASE SAFETY  (BLOCKER-1 remediation)
+  //
+  // BLOCKER-1: an approved resolution's supersession pointer can be changed, so
+  // the ONLY active approved resolution for a type can be deactivated while
+  // equipment_types.identity_state is left non-canonical and therefore
+  // unsupported by any active governed conclusion.
+  //
+  // The ratified model requires, after every COMMITTED supersession operation:
+  //   canonical  -> no active approved resolution
+  //   superseded -> exactly one, and it must have a target
+  //   retired    -> exactly one, and it must have no target
+  //
+  // These are commit-time properties, so the refusals below are observed at
+  // COMMIT (the mechanism is a DEFERRABLE INITIALLY DEFERRED constraint
+  // trigger). A governed replacement is therefore performed as ONE transaction:
+  // deactivate the predecessor, approve the successor, commit.
+  // ==========================================================
+  describe('J. supersession and rebase safety', () => {
+    /** Commit and require the COMMIT itself to be refused. */
+    async function expectCommitRefusal(fn, predicate, message) {
+      const conn = await getConnection();
+      let raised = null;
+      try {
+        await fn(conn);
+        await conn.commit();          // deferred lifecycle coherence fires HERE
+      } catch (error) {
+        raised = error;
+        await conn.rollback();
+      } finally {
+        conn.release();
+      }
+      if (!raised) assert.fail(`${message}\n  expected the committed state to be refused`);
+      assert.ok(predicate(raised),
+        `${message}\n  expected a specific refusal but got: ${raised.code} ${raised.message}`);
+      return raised;
+    }
+
+    /** An approved, active resolution from `fromId` to `toId`. Committed. */
+    async function approvedTargetResolution(fromId, toId, kind = 'MERGED_DUPLICATE') {
+      return withConn(async (conn) => {
+        const rows = await addResolution(conn, {
+          fromTypeId: fromId, toTypeId: toId, kind, reviewState: 'approved', attributed: true
+        });
+        return rows[0].id;
+      });
+    }
+
+    /** An approved, active no-successor (retirement) resolution. Committed. */
+    async function approvedRetirement(fromId, kind = 'NOT_AN_EQUIPMENT_TYPE') {
+      return withConn(async (conn) => {
+        const rows = await addResolution(conn, {
+          fromTypeId: fromId, toTypeId: null, kind, reviewState: 'approved', attributed: true
+        });
+        return rows[0].id;
+      });
+    }
+
+    const deactivate = (conn, id, successorId) => query(conn,
+      `UPDATE ${RESOLUTION} SET superseded_by_resolution_id = ? WHERE id = ?`, [successorId, id]);
+
+    const approve = (conn, id) => query(conn, `
+      UPDATE ${RESOLUTION} SET review_state = 'approved', rationale = 'Synthetic governed rationale',
+        reviewed_by_user_id = ?, reviewed_at = CURRENT_TIMESTAMP,
+        approved_by_user_id = ?, approved_at = CURRENT_TIMESTAMP
+      WHERE id = ?`, [REVIEWER, APPROVER, id]);
+
+    /** The active approved set for a type, as the invariant defines it. */
+    const activeApproved = async (conn, typeId) => query(conn, `
+      SELECT id, to_type_id, resolution_kind FROM ${RESOLUTION}
+      WHERE from_type_id = ? AND review_state = 'approved' AND superseded_by_resolution_id IS NULL`,
+    [typeId]);
+
+    it('46. deactivating the only active approved resolution with no replacement is REFUSED', async () => {
+      const { typeIds } = await makeClassWithTypes(2);
+      const p = await approvedTargetResolution(typeIds[0], typeIds[1]);
+      // A committed draft that is NOT approved: it must not become the
+      // justification for a non-canonical standing.
+      const draft = await withConn(async (conn) => (await addResolution(conn, {
+        fromTypeId: typeIds[0], toTypeId: typeIds[1], kind: 'SYNONYM_OF'
+      }))[0].id);
+
+      await expectCommitRefusal(
+        (conn) => deactivate(conn, p, draft),
+        (e) => e.code === '23514' || /lifecycle|active approved/i.test(e.message || ''),
+        'a superseded type with zero active approved resolutions must be unrepresentable');
+
+      // The refused transaction left nothing behind.
+      const state = await withConn((conn) => stateOf(conn, typeIds[0]));
+      assert.strictEqual(state, 'superseded');
+      const active = await withConn((conn) => activeApproved(conn, typeIds[0]));
+      assert.strictEqual(active.length, 1, 'the original conclusion must still be active');
+    });
+
+    it('47. a target-bearing conclusion CAN be replaced by another target-bearing conclusion', async () => {
+      const { typeIds } = await makeClassWithTypes(3);
+      const p = await approvedTargetResolution(typeIds[0], typeIds[1]);
+      const s = await withConn(async (conn) => (await addResolution(conn, {
+        fromTypeId: typeIds[0], toTypeId: typeIds[2], kind: 'MERGED_DUPLICATE'
+      }))[0].id);
+
+      // One governed transaction: withdraw the predecessor, then approve the
+      // successor. Deferred coherence is evaluated at COMMIT.
+      await withConn(async (conn) => {
+        await deactivate(conn, p, s);
+        await approve(conn, s);
+      });
+
+      await withConn(async (conn) => {
+        const active = await activeApproved(conn, typeIds[0]);
+        assert.strictEqual(active.length, 1, 'exactly one active approved resolution');
+        assert.strictEqual(active[0].id, s, 'the successor is the active conclusion');
+        assert.strictEqual(active[0].to_type_id, typeIds[2]);
+        assert.strictEqual(await stateOf(conn, typeIds[0]), 'superseded');
+      });
+    });
+
+    it('48. a retirement conclusion can be replaced by another retirement conclusion', async () => {
+      const { typeIds } = await makeClassWithTypes(1);
+      const p = await approvedRetirement(typeIds[0], 'NOT_AN_EQUIPMENT_TYPE');
+      const s = await withConn(async (conn) => (await addResolution(conn, {
+        fromTypeId: typeIds[0], toTypeId: null, kind: 'TOO_BROAD_FOR_TYPE'
+      }))[0].id);
+
+      await withConn(async (conn) => {
+        await deactivate(conn, p, s);
+        await approve(conn, s);
+      });
+
+      await withConn(async (conn) => {
+        const active = await activeApproved(conn, typeIds[0]);
+        assert.strictEqual(active.length, 1);
+        assert.strictEqual(active[0].to_type_id, null, 'a retirement conclusion carries no target');
+        assert.strictEqual(await stateOf(conn, typeIds[0]), 'retired');
+      });
+    });
+
+    it('49. replacement may change the conclusion kind, and standing follows the successor', async () => {
+      const { typeIds } = await makeClassWithTypes(2);
+      // retired (no target) replaced by superseded (target-bearing).
+      const p = await approvedRetirement(typeIds[0], 'TOO_BROAD_FOR_TYPE');
+      assert.strictEqual(await withConn((c) => stateOf(c, typeIds[0])), 'retired');
+      const s = await withConn(async (conn) => (await addResolution(conn, {
+        fromTypeId: typeIds[0], toTypeId: typeIds[1], kind: 'MERGED_DUPLICATE'
+      }))[0].id);
+
+      await withConn(async (conn) => {
+        await deactivate(conn, p, s);
+        await approve(conn, s);
+      });
+
+      await withConn(async (conn) => {
+        assert.strictEqual(await stateOf(conn, typeIds[0]), 'superseded',
+          'standing must agree with the kind/target semantics of the active conclusion');
+        const active = await activeApproved(conn, typeIds[0]);
+        assert.strictEqual(active.length, 1);
+        assert.ok(active[0].to_type_id !== null);
+      });
+    });
+
+    it('50. a replacement that would create a supersession cycle is refused', async () => {
+      const { typeIds } = await makeClassWithTypes(3);
+      const p = await approvedTargetResolution(typeIds[0], typeIds[1]);
+      const s = await withConn(async (conn) => (await addResolution(conn, {
+        fromTypeId: typeIds[0], toTypeId: typeIds[2], kind: 'MERGED_DUPLICATE'
+      }))[0].id);
+      // Close the loop first: S supersedes P, then P supersedes S would cycle.
+      await withConn(async (conn) => {
+        await deactivate(conn, p, s);
+        await approve(conn, s);
+      });
+      await inRollback(async (conn) => {
+        await expectRefusal(conn,
+          (c) => deactivate(c, s, p),
+          (e) => /cycle|supersed/i.test(e.message || ''),
+          'a supersession cycle must be refused');
+      });
+    });
+
+    it('51. a replacement concerning a DIFFERENT source type is refused', async () => {
+      const { typeIds } = await makeClassWithTypes(3);
+      const p = await approvedTargetResolution(typeIds[0], typeIds[1]);
+      const otherTypeResolution = await withConn(async (conn) => (await addResolution(conn, {
+        fromTypeId: typeIds[2], toTypeId: typeIds[1], kind: 'MERGED_DUPLICATE'
+      }))[0].id);
+      await inRollback(async (conn) => {
+        await expectRefusal(conn,
+          (c) => deactivate(c, p, otherTypeResolution),
+          (e) => /same source type|same equipment type|from_type_id/i.test(e.message || ''),
+          'a conclusion about one type cannot be replaced by a conclusion about another');
+      });
+    });
+
+    it('52. a DRAFT replacement does not justify non-canonical standing', async () => {
+      const { typeIds } = await makeClassWithTypes(2);
+      const p = await approvedTargetResolution(typeIds[0], typeIds[1]);
+      const draft = await withConn(async (conn) => (await addResolution(conn, {
+        fromTypeId: typeIds[0], toTypeId: typeIds[1], kind: 'SYNONYM_OF'
+      }))[0].id);
+      await expectCommitRefusal(
+        (conn) => deactivate(conn, p, draft),
+        (e) => e.code === '23514' || /lifecycle|active approved/i.test(e.message || ''),
+        'a draft must never leave a type non-canonical with no active approved conclusion');
+    });
+
+    it('53. an UNDER_REVIEW replacement does not justify non-canonical standing', async () => {
+      const { typeIds } = await makeClassWithTypes(2);
+      const p = await approvedTargetResolution(typeIds[0], typeIds[1]);
+      const underReview = await withConn(async (conn) => (await addResolution(conn, {
+        fromTypeId: typeIds[0], toTypeId: typeIds[1], kind: 'SYNONYM_OF',
+        reviewState: 'under_review'
+      }))[0].id);
+      await expectCommitRefusal(
+        (conn) => deactivate(conn, p, underReview),
+        (e) => e.code === '23514' || /lifecycle|active approved/i.test(e.message || ''),
+        'an under-review proposal must never justify a non-canonical standing');
+    });
+
+    it('54. a self-referential supersession pointer is refused', async () => {
+      const { typeIds } = await makeClassWithTypes(2);
+      const p = await approvedTargetResolution(typeIds[0], typeIds[1]);
+      await inRollback(async (conn) => {
+        await expectRefusal(conn,
+          (c) => deactivate(c, p, p),
+          (e) => /itself|cycle/i.test(e.message || ''),
+          'a resolution cannot supersede itself');
+      });
+    });
+
+    it('55. a supersession pointer cannot be reverted, because that would rewrite governed history', async () => {
+      const { typeIds } = await makeClassWithTypes(3);
+      const p = await approvedTargetResolution(typeIds[0], typeIds[1]);
+      const s = await withConn(async (conn) => (await addResolution(conn, {
+        fromTypeId: typeIds[0], toTypeId: typeIds[2], kind: 'MERGED_DUPLICATE'
+      }))[0].id);
+      await withConn(async (conn) => {
+        await deactivate(conn, p, s);
+        await approve(conn, s);
+      });
+      await inRollback(async (conn) => {
+        await expectRefusal(conn,
+          (c) => query(c, `UPDATE ${RESOLUTION} SET superseded_by_resolution_id = NULL WHERE id = ?`, [p]),
+          (e) => isInsufficientPrivilege(e) && refuses(e, /append-only|clear its supersession pointer/),
+          'clearing a supersession pointer would silently un-supersede a governed conclusion');
+      });
+    });
+
+    it('56. every non-canonical type carries EXACTLY ONE active approved resolution', async () => {
+      const { typeIds } = await makeClassWithTypes(3);
+      await approvedTargetResolution(typeIds[0], typeIds[1]);
+      await approvedRetirement(typeIds[2], 'NOT_AN_EQUIPMENT_TYPE');
+
+      // The global statement of the ratified invariant, over the whole table.
+      const rows = await withConn((conn) => query(conn, `
+        SELECT t.id, t.identity_state, count(r.id)::int AS active
+        FROM equipment_types t
+        LEFT JOIN ${RESOLUTION} r
+          ON r.from_type_id = t.id
+         AND r.review_state = 'approved'
+         AND r.superseded_by_resolution_id IS NULL
+        GROUP BY t.id, t.identity_state
+        HAVING (t.identity_state = 'canonical' AND count(r.id) <> 0)
+            OR (t.identity_state <> 'canonical' AND count(r.id) <> 1)`));
+      assert.deepStrictEqual(rows.map((r) => r.id), [],
+        'a canonical type must have no active approved resolution; a non-canonical type must have exactly one');
     });
   });
 });
