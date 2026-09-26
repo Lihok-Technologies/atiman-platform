@@ -907,15 +907,37 @@ describe('Taxonomy Identity Lifecycle Mechanism (ATM-001 M5R.4B)', { skip: DB_TE
         'the mechanism must not apply the ratified taxonomy decisions');
     });
 
-    it('44. the mechanism holds no populated rows of its own', async () => {
-      // Only rows this suite created for the fixture codes may exist; nothing the
-      // migration itself inserted can, because it inserts nothing.
+    it('44. the mechanism holds no INCOHERENT rows, whoever created them', async () => {
+      // This replaces a global "the tables are empty" assertion, which is NOT a
+      // sound claim in this repository's test topology: `node --test` runs the
+      // sanctioned suites in parallel processes against ONE shared database, and
+      // every suite legitimately leaves APPROVED rows behind because migration
+      // 019 correctly forbids deleting governed knowledge. An emptiness claim
+      // would therefore be a statement about the other suites rather than about
+      // migration 019. (The real guarantee — that the migration inserts nothing —
+      // is asserted from the migration file itself in test 41.)
+      //
+      // What IS sound, and strictly stronger than emptiness, is a positive
+      // coherence invariant that must hold no matter which suite created a row.
+      // This is asserted independently here and again in the resolver suite's
+      // own terms, so migration 019's core rule cannot silently regress.
       const rows = await withConn((conn) => query(conn, `
-        SELECT count(*)::int AS n FROM ${RESOLUTION} r
-        JOIN equipment_types t ON t.id = r.from_type_id
-        WHERE t.type_code NOT LIKE ?`, [`${CODE_PREFIX}%`]));
-      assert.strictEqual(rows[0].n, 0,
-        'no pre-existing taxonomy row may carry an identity resolution as a result of this migration');
+        SELECT t.id, t.identity_state, count(r.id)::int AS active,
+               count(r.id) FILTER (WHERE r.to_type_id IS NOT NULL)::int AS with_target
+        FROM equipment_types t
+        LEFT JOIN ${RESOLUTION} r
+          ON r.from_type_id = t.id
+         AND r.review_state = 'approved'
+         AND r.superseded_by_resolution_id IS NULL
+        GROUP BY t.id, t.identity_state
+        HAVING (t.identity_state = 'canonical'   AND count(r.id) <> 0)
+            OR (t.identity_state = 'superseded'  AND (count(r.id) <> 1
+                 OR count(r.id) FILTER (WHERE r.to_type_id IS NOT NULL) <> 1))
+            OR (t.identity_state = 'retired'     AND (count(r.id) <> 1
+                 OR count(r.id) FILTER (WHERE r.to_type_id IS NOT NULL) <> 0))`));
+      assert.deepStrictEqual(rows.map((r) => r.id), [],
+        'every Type must agree with its active approved resolution set: canonical carries none, '
+        + 'superseded carries exactly one target-bearing resolution, retired exactly one without a target');
     });
 
     it('45. all 282 equipments types, if present, are untouched and canonical by default', async () => {
