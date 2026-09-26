@@ -1,7 +1,14 @@
 # ATM-001 M5R.4B1 — Taxonomy Identity Lifecycle Architecture (Discovery)
 
-**Status:** Discovery / architecture recommendation. **Awaiting OWNER review.**
+**Status:** Discovery / architecture recommendation, **corrected by M5R.4B1-R1**. **Awaiting OWNER review.**
 **Baseline:** `origin/main` = `abfd6c8be83ee3201b8deea8f0c08a25952e4cda`, tree `0dbadf1c9bfcc951f6f08e1a90bf7c3e8efbd83a` (the M5R.4A merge).
+
+**Revision history**
+
+| Revision | Change |
+|---|---|
+| M5R.4B1 | First issue: Option D recommendation; B1-1/B1-2/B1-3 reported; three findings recorded as blocking M5R.4B2. |
+| **M5R.4B1-R1** | OWNER rulings applied. **B1-1 is substantially reversed:** the live taxonomy already contains a semantically correct parent for **59 of the 62** placement-bearing rows, and M5R.4A's 18 proposed categories were largely duplicate restatements of categories that already exist. **B1-2 and B1-3 are closed.** The 3 `INSUFFICIENT_EVIDENCE` rows are **not** retired (RULING 1), which revises the representation partition from **227 / 19 / 36** to **230 / 19 / 33**. Terminology population fixed at **65** terms with `ABBREVIATION` shown to be orthogonal to relationship kind. Option D **upheld, with one clarification**: unresolved governance is not a lifecycle state. Succeeded content is marked **[R1]**; the superseded reading is retained in §5.5 for the audit trail. See **§21** for the closure record. |
 **Migrations at baseline:** 001–018. **Migration 019: ABSENT.**
 **Scope of this record:** documentation and repository investigation only. No schema, migration, seed, code, test, API, UI, crosswalk, evidence or taxonomy change was made.
 **Supersedes:** nothing. **Reopens:** nothing. M5R.4A engineering dispositions are treated as **accepted and frozen**.
@@ -31,6 +38,8 @@
 | 19 Open questions | §19 |
 | *(also)* existing lifecycle capability (mission §5C) | §3 |
 | *(also)* explicitly not done (mission §15) | §20 |
+| **(R1)** parent-taxonomy and unresolved-identity closure | §21 |
+| **(R1)** the 62-row parent-placement decision table | `docs/research/m5r4b1/parent-taxonomy-placement-review.jsonl` |
 
 ---
 
@@ -50,17 +59,20 @@ The investigation establishes that **at least five semantically different things
 | b | A Type **row keeps its identity but moves** (class, and often name) | `RECLASSIFY` 33 |
 | c | A Type **row keeps its identity and only its name changes** | 36 `KEEP_EXISTING` renames |
 | d | A Type **row stops being a canonical identity**, and the engineering identity continues under another Type | `MERGE_DUPLICATE` 17 + `SYNONYM_OR_ALIAS` 2 = **19** |
-| e | A concept **stops being a Type at all**, with **no** Type successor | `NOT_EQUIPMENT_TYPE` 29 + `TOO_BROAD_CONTAINER` 4 + `INSUFFICIENT_EVIDENCE` 3 = **36** |
+| e | A concept **stops being a Type at all**, with **no** Type successor | `NOT_EQUIPMENT_TYPE` 29 + `TOO_BROAD_CONTAINER` 4 = **33** |
+| f | A concept **cannot be concluded at all** — insufficient evidence | `INSUFFICIENT_EVIDENCE` **3** — **[R1] not retired**; see §21.7 |
 
-**(a)(b)(c) are Type-row concerns. (d) is an identity-resolution concern. (e) is a retirement concern with no successor.** Requirements (c) and (d) additionally create **legacy vocabulary** that must stay resolvable: 46 existing identities are renamed (§5.4) and 19 retire with a target.
+**(a)(b)(c) are Type-row concerns. (d) is an identity-resolution concern. (e) is a retirement concern with no successor. (f) is a governance/decision concern, which R1 rules is NOT a lifecycle concern.** Requirements (c) and (d) additionally create **legacy vocabulary** that must stay resolvable: 46 existing identities are renamed (§5.4) and 19 retire with a target.
+
+**[R1] Revised partition:** 230 remain canonical (227 + the 3 unresolved rows, which stay `canonical` and selectable) · 19 leave with a canonical target · 33 retire = **282**.
 
 ### 1.3 The recommendation
 
 **OPTION D — canonical identity + governed standing + governed terminology**, built entirely from idioms the repository already uses.
 
 1. **One additive column** on `equipment_types`: `identity_state` ∈ (`canonical`, `superseded`, `retired`), default `canonical`.
-2. **One governed resolution table** recording, for each identity whose standing changes, the source Type, the optional canonical successor, the relationship kind, full human attribution, AI-assistance disclosure, provenance and effectivity. **All 55 rows of (d) and (e) get exactly one row here**, so retirement without a successor is represented as *positive governed knowledge* rather than as an absence.
-3. **One governed terminology table** mapping a term (legacy name, abbreviation, synonym) to its canonical Type, so renamed and merged vocabulary stays discoverable.
+2. **One governed resolution table** recording, for each identity whose standing changes, the source Type, the optional canonical successor, the relationship kind, full human attribution, AI-assistance disclosure, provenance and effectivity. **All 52 rows of (d) and (e) get exactly one row here**, so retirement without a successor is represented as *positive governed knowledge* rather than as an absence. The 3 rows of **(f)** get a **pending** record in the same table that changes no lifecycle state — **[R1]**.
+3. **One governed terminology table** mapping a term (legacy name, synonym, or merged-identity term) to its canonical Type, so renamed and merged vocabulary stays discoverable. **[R1]** `ABBREVIATION` is **not** a distinct kind: R1 proves it is orthogonal to the relationship (11 legacy names and 2 merged-identity terms are abbreviation-form), so it is at most an attribute. See §21.8.
 
 **Not recommended now:** any tenant-scoped/customer alias layer. M5R.1 §6.2 defers it and M5R.4A produced **zero** `CUSTOMER_SPECIFIC` rows.
 
@@ -68,21 +80,19 @@ The investigation establishes that **at least five semantically different things
 
 **Necessary.** Option E (no schema change) is **not viable** (§7.6, §16). Migration 019 will eventually be required, with a bounded scope stated in §16.3. **It was not written.**
 
-### 1.5 Three findings that block M5R.4B2
+### 1.5 Findings, and their disposition after R1 **[R1]**
 
-These are reported, not resolved. M5R.4A was **not** reopened and **not** modified.
-
-| ID | Finding | Severity |
+| ID | Finding at M5R.4B1 | Disposition after R1 |
 |---|---|---|
-| **B1-1** | **All 62 placement-bearing rows (`ADD_TYPE` 29 + `RECLASSIFY` 33) target a `(category, class)` pair that does not exist.** 46 distinct pairs are missing; **18 new categories** and **44 new class names** would have to be created. M5R.4A §9 explicitly deferred the Category/Class layer. | **BLOCKING** for M5R.4B2 |
-| **B1-2** | Candidates **7** and **8** merge into **`Submersible Pump`**, which is a **class name**, not any accepted Type identity. No candidate is named `Submersible Pump`; no accepted disposition establishes one. | **BLOCKING** for those 2 rows |
-| **B1-3** | Candidate **56** `Pressure Filter` merges into `Pressure Filter` — **its own name**. The intended target is candidate 200, the other `Pressure Filter` row. The package is correct in substance but **ambiguously expressed by name**, proving relationship endpoints must be identified by **identity, not text**. | **CORRECTNESS** — an architecture requirement, not a package defect |
+| **B1-1** | All 62 placement-bearing rows target a `(category, class)` pair that does not exist; 46 pairs missing, 18 new categories and 44 new class names needed. | **REVERSED IN SUBSTANCE.** True only of the *pairing*. The live taxonomy already contains a semantically correct parent for **59 of 62** rows; **48 of 62 placements are unchanged**; only **1 new Category** (`Mining Equipment`) and **5 new Classes** are genuinely required. M5R.4A's 18 proposed categories were almost all **duplicate restatements** of existing ones. Detail in §21.3. |
+| **B1-2** | Candidates 7 and 8 merge into `Submersible Pump`, a class name that no accepted disposition establishes as a Type. | **CLOSED.** Confirmed as the same class-promotion pattern M5R.4A applies to 8 other rows. Resolution: the class-level identity `Pump > Submersible Pump` must be established as a Type. Adds **1 Type** (29 → 30). OWNER ratification required. Detail in §21.5. |
+| **B1-3** | Candidate 56 merges into its own name; intended target is candidate 200. | **CLOSED — CONFIRMED.** M5R.4A §7C states the basis in its own words. Endpoint fixed by immutable identity, not text. No ambiguity remains. Detail in §21.6. |
 
-Full detail in §5.5–§5.7 and §19.
+Two further package observations were recorded during R1 and are **not** corrections to M5R.4A: **id 37** (`Orifice Plate`) is the one `ADD_TYPE` row carrying **no proposed parent at all**, and **2 `KEEP_EXISTING` rows** (167, 273) also propose a different parent, placing them outside the mission's 62-row definition. See §21.4.
 
-### 1.6 Consequence
+### 1.6 Consequence **[R1]**
 
-M5R.4B1 **cannot** conclude that M5R.4B2 is ready to execute. The identity-lifecycle mechanism can be decided and is decided here; **the Category/Class target structure must be decided first**, because 62 of the 282 accepted decisions cannot be applied without it.
+The identity-lifecycle mechanism is decided (Option D, upheld). The parent-taxonomy dependency is **resolved in principle but not yet ratified**: R1 determines a defensible parent for all 62 rows using **1 new Category and 5 new Classes**, and identifies **35 rows** whose resolution overrides an M5R.4A proposed parent name — every one of which is an OWNER decision. M5R.4B2 remains **not executable** until those ratifications are given and migration 019 is authorised, but it is no longer blocked by a missing structural domain.
 
 ---
 
@@ -381,13 +391,19 @@ MERGE_DUPLICATE 17 · TOO_BROAD_CONTAINER 4 · INSUFFICIENT_EVIDENCE 3
 SYNONYM_OR_ALIAS 2 · CUSTOMER_SPECIFIC 0           = 282
 ```
 
-### 5.3 The representation partition (verified, 227 + 19 + 36 = 282)
+### 5.3 The representation partition (**[R1] revised: 230 + 19 + 33 = 282**)
+
+> **[R1] Superseded reading.** As first issued, this section read `227 + 19 + 36 = 282`, retiring the 3 `INSUFFICIENT_EVIDENCE` rows. OWNER RULING 1 rejects that: absence of evidence cannot become an affirmative retirement decision. The corrected partition is below, and the superseded row is retained for the audit trail.
 
 | Bucket | Rows | Composition | What must be representable |
 |---|---|---|---|
-| **Remain canonical** | **227** | KEEP 165 + RECLASSIFY 33 + ADD 29 | 29 inserts; 198 in-place updates (replacement `class_id` and/or `type_name`) |
-| **Leave with a target** | **19** | MERGE 17 + SYNONYM 2 | source Type stops being canonical; a canonical successor; why; who; when; from what source |
-| **Retire without a Type successor** | **36** | NOT_EQUIPMENT_TYPE 29 + TOO_BROAD_CONTAINER 4 + INSUFFICIENT_EVIDENCE 3 | source Type stops being canonical; **no** successor; why; who; when; from what source |
+| **Remain canonical** | **230** | KEEP 165 + RECLASSIFY 33 + ADD 29 + **`INSUFFICIENT_EVIDENCE` 3** | 29 inserts; 198 in-place updates (replacement `class_id` and/or `type_name`); **3 rows whose governance is unresolved and which therefore stay `canonical` and selectable** |
+| **Leave with a canonical target** | **19** | MERGE 17 + SYNONYM 2 | source Type stops being canonical; a canonical successor; why; who; when; from what source |
+| **Retire without a Type successor** | **33** | NOT_EQUIPMENT_TYPE 29 + TOO_BROAD_CONTAINER 4 | source Type stops being canonical; **no** successor; why; who; when; from what source |
+| ~~*Superseded: retire 36 incl. `INSUFFICIENT_EVIDENCE` 3*~~ | ~~36~~ | — | **rejected by RULING 1** |
+
+230 + 19 + 33 = 282. The 3 unresolved rows generate a **pending governance record that changes no lifecycle state** (§21.7).
+
 
 `M5R.4A §15` states the same partition: *"(1) add 29 … (2) reclassify 33 … (3) resolve 17 merges and 2 synonyms … (4) retire 36 rows from Type level without deleting their engineering vocabulary."*
 
@@ -428,7 +444,9 @@ Dry Type Transformer → Dry-Type Transformer         Oil Filled Transformer →
 
 **This is the decisive sizing fact for the terminology layer.** The old term is *not* preserved by `type_code`, which M5R.4A leaves unchanged — but a human search for `ESP`, `CSTR`, `GIS Switchgear` or `TEG Dehydrator` returns **nothing** after a rename, because `EquipmentType.search()` matches `type_name` only. Combined with the 2 `SYNONYM_OR_ALIAS` rows and the 17 merged names, **the accepted package creates ~65 legacy terms that must remain resolvable** (46 renamed + 19 retired-into-a-target). A design that ignores this fails VUDA O (§15.15) on day one.
 
-### 5.5 BLOCKING FINDING B1-1 — every placement targets a non-existent class
+### 5.5 FINDING B1-1 — every placement targets a non-existent class (**[R1] reversed in substance**)
+
+> **[R1] Read this with §21.3.** The measurements below are correct and were independently reproduced in R1. The **conclusion drawn from them at M5R.4B1 was wrong** in one decisive respect: it treated "the proposed `(category, class)` pair does not exist" as "no correct parent exists". R1 established that the live taxonomy already contains a semantically correct parent for **59 of the 62** rows. What does not exist is M5R.4A's *proposed pairing* — largely because those proposals were **duplicate restatements of categories and classes that already exist**. Only **1 new Category** and **5 new Classes** are genuinely required. The remaining text of this section is retained as the audit trail of the original finding.
 
 `199` rows carry both a `proposed_category` and a `proposed_class`. Measured against the live `65` categories / `311` classes:
 
@@ -456,9 +474,9 @@ Separation · Surface Treatment
 
 Several of the 18 would create **new parallel schemes of exactly the kind M5R.4A §9 defers**: `Material Handling` (live) vs `Materials Handling` (new); `Blower` (live) vs `Fans` and `Fans and Blowers` (new); `Filter` vs `Filtration`; `Separator` vs `Separation`; `Screen` vs `Screening`; `Mixer` vs `Mixing`; `Compressor`/`General Compressor` vs `Compressors`; `Heater`/`Heat Exchanger` vs `Heat Transfer`/`Heat Rejection`/`Heat Recovery`; `Instrumentation` and `Instrumentation and Control` both in use.
 
-**Therefore M5R.4B2 cannot be a Type-only additive application.** It depends on a prior bounded decision about the Category/Class target structure — which M5R.4A §9 ("*R1 is TYPE-SEMANTICS ONLY*") and the M5R.4B1 prohibitions both place outside this work. **No consolidation, rename or creation of any category or class was performed.**
+**~~Therefore M5R.4B2 cannot be a Type-only additive application.~~** **[R1] Superseded.** The correct conclusion is narrower and is given in §21.3: M5R.4B2 **can** be a Type-level additive application for **48 of the 62** rows without touching any parent, and needs **1 new Category and 5 new Classes** for the remainder. The 18 categories and 44 classes that M5R.4A proposed are **not** required and **must not** be created. **No consolidation, rename or creation of any category or class was performed by either M5R.4B1 or R1.**
 
-### 5.6 BLOCKING FINDING B1-2 — an unresolved merge target
+### 5.6 FINDING B1-2 — an unresolved merge target (**[R1] CLOSED — see §21.5**)
 
 ```
 id= 7  Submersible Sewage Pump  (class: Submersible Pump)  MERGE_DUPLICATE → Submersible Pump
@@ -474,7 +492,7 @@ The only accepted submersible-pump identity is `id=5` → `Submersible Centrifug
 
 **The package therefore merges two identities into a Type identity that it never establishes.** Applying the merge requires an OWNER ruling — at least: (a) author `Submersible Pump` as a new canonical Type, (b) re-target 7 and 8 to `Submersible Centrifugal Pump`, or (c) something else. **M5R.4A was not changed; it is reported (mission §14).**
 
-### 5.7 FINDING B1-3 — a relationship expressed by name is not unambiguous
+### 5.7 FINDING B1-3 — a relationship expressed by name is not unambiguous (**[R1] CLOSED — see §21.6**)
 
 ```
 id=56   Pressure Filter  code=PRESSURE     src: Filter / Sand Filter          MERGE_DUPLICATE → "Pressure Filter"
@@ -702,9 +720,11 @@ equipment_type_term                   ← vocabulary: a term denotes a canonical
 
 | Value | Meaning | Offered for new classification? | Historical records resolve? | M5R.4A rows |
 |---|---|---|---|---|
-| `canonical` | The identity is Atiman-canonical and valid for new classification. | **Yes** | to itself | 227 (165 KEEP + 33 RECLASSIFY + 29 ADD) |
+| `canonical` | The identity is Atiman-canonical and valid for new classification. | **Yes** | to itself | **230** (165 KEEP + 33 RECLASSIFY + 29 ADD + **3 `INSUFFICIENT_EVIDENCE`, unresolved but canonical**) **[R1]** |
 | `superseded` | No longer valid for new classification; the engineering identity continues under another canonical Type. **Requires an active resolution whose target is `canonical`.** | **No** | follows the resolution edge | 19 |
-| `retired` | Not an equipment Type at all. **No Type successor exists**, and that absence is a governed conclusion. | **No** | preserved as a row; resolves to nothing | 36 (see §19 Q2) |
+| `retired` | Not an equipment Type at all. **No Type successor exists**, and that absence is a governed conclusion. | **No** | preserved as a row; resolves to nothing | **33** (29 `NOT_EQUIPMENT_TYPE` + 4 `TOO_BROAD_CONTAINER`) **[R1]** |
+
+**[R1] `identity_state` carries lifecycle only — three values remain semantically sufficient.** Unresolved governance is deliberately **not** a fourth value and **not** a column: RULING 1 forbids treating insufficient evidence as retirement, and RULING 2 separates ratification from lifecycle. The 3 unresolved rows therefore stay `canonical`, remain selectable, and carry a **pending** governance record instead. See §21.7.
 
 Invariants: `DEFAULT 'canonical'`; `NOT NULL`; `CHECK (identity_state IN (...))`. All 282 existing rows become `canonical` on migration (additive, safe). Transitioning away from `canonical` happens **only** by approving a resolution row (§12.3).
 
@@ -788,7 +808,7 @@ Schema-enforceable invariants (a `CHECK` where possible, a trigger or partial in
 | **I3** | Resolution chains are **forbidden**: because I2 holds, resolution depth is exactly **1** and never recursive. | consequence of I2 |
 | **I4** | A → B while B → A is unrepresentable. | `009`-style `visited[]` chain walk trigger |
 | **I5** | A Type has at most **one active** resolution. | partial unique index on `(from_type_id)` |
-| **I6** | A Type with an active resolution to a target is `superseded`; a Type with an active resolution without a target is `retired`; no disagreement is representable. | trigger coerces `identity_state`, `009` precedent (*"Coerce lifecycle when a successor is assigned"*) |
+| **I6** | A Type with an **approved** resolution to a target is `superseded`; a Type with an **approved** resolution without a target is `retired`; no disagreement is representable. **[R1] A `draft` or `under_review` proposal record changes NO lifecycle state** — that is how the 3 unresolved rows remain `canonical` and selectable while their governance is pending. | trigger coerces `identity_state`, `009` precedent (*"Coerce lifecycle when a successor is assigned"*); coercion fires only on approval |
 | **I7** | A `canonical` Type has **no** active resolution. | converse of I6, enforced by the same trigger |
 | **I8** | An approved resolution carries complete human attribution. | `CHECK` — `017` precedent |
 | **I9** | AI cannot satisfy the approver requirement. | `approved_by_user_id` FKs to `users(id)`; AI is not a user; the I8 `CHECK` therefore makes an AI approval unrepresentable |
@@ -1029,30 +1049,33 @@ Migration 019 provides the **mechanism**. It does **not** apply M5R.4A. Applying
 
 ## 17. Proposed M5R.4B2 boundary (mission §17)
 
-### 17.1 In scope for M5R.4B2 (only after B1-1 is resolved and 019 is authorised and applied)
+### 17.1 In scope for M5R.4B2 (only after the §21.11 ratifications are given and 019 is authorised and applied) **[R1]**
 
-1. **227 canonical outcomes** — 29 `ADD_TYPE` inserts; 198 in-place updates (`class_id` and/or `type_name` for the 33 `RECLASSIFY` and the 36 renamed `KEEP_EXISTING` rows).
-2. **55 standing changes** — one governed `equipment_type_identity_resolution` row each: 19 with a canonical target (`MERGED_DUPLICATE` 17, `SYNONYM_OF` 2), 36 without (`NOT_AN_EQUIPMENT_TYPE` 29, `TOO_BROAD_FOR_TYPE` 4, and the `INSUFFICIENT_EVIDENCE` 3 subject to §19 Q2).
-3. **Terminology** — `LEGACY_NAME`/`ABBREVIATION` term rows for the 46 renamed identities; `SYNONYM` term rows for the 2 `SYNONYM_OR_ALIAS` rows. Whether the 17 merged names also become terms is an OWNER decision (§19 Q3).
-4. **Provenance** — one `knowledge_sources` + `knowledge_source_versions` pair citing the accepted decision package (`legacy_migration` + `engineering_authored`), referenced by every resolution and term.
-5. **Read-path correctness** — the I16 discovery/selection split, and the `asset-import.service.js` ambiguity fix (§13.3), which is a **precondition**, not an optional extra.
-6. **The 9 decomposition referrals** recorded as referrals only (M5R.4A §11) — no decomposition architecture.
+1. **230 canonical outcomes** — 30 `ADD_TYPE` inserts (**29 + `Submersible Pump`, §21.5**); 198 in-place updates (`class_id` and/or `type_name` for the 33 `RECLASSIFY` and the 36 renamed `KEEP_EXISTING` rows); the 3 unresolved rows are left `canonical` and untouched.
+2. **Parent structure** — create exactly **1 Category** (`Mining Equipment`) and **5 Classes** per the ratified §21.3 table. **No other category or class may be created, renamed or consolidated.**
+3. **52 standing changes** — one governed `equipment_type_identity_resolution` row each: 19 with a canonical target (`MERGED_DUPLICATE` 17, `SYNONYM_OF` 2), 33 without (`NOT_AN_EQUIPMENT_TYPE` 29, `TOO_BROAD_FOR_TYPE` 4).
+4. **3 pending governance records** — for `INSUFFICIENT_EVIDENCE` (ids 6, 158, 190), carrying **no** lifecycle effect.
+5. **Terminology** — **65** terms: 46 `LEGACY_NAME` (renamed existing identities), 2 `SYNONYM`, 17 `MERGED_IDENTITY_TERM` (RULING 3). `ABBREVIATION` is not a kind (§21.8).
+6. **Provenance** — one `knowledge_sources` + `knowledge_source_versions` pair citing the accepted decision package (`legacy_migration` + `engineering_authored`), referenced by every resolution and term.
+7. **Read-path correctness** — the I16 discovery/selection split, and the `asset-import.service.js` ambiguity fix (§13.3), which is a **precondition**, not an optional extra.
+8. **The 9 decomposition referrals** recorded as referrals only (M5R.4A §11) — no decomposition architecture.
 
 ### 17.2 Explicitly NOT in M5R.4B2
 
-Category/Class creation, rename or consolidation (B1-1 — needs its own decision) · the 166 same-name class/type pairs · the 65-category dual scheme · Equipment Family · decomposition architecture (M5R.1 §6.1) · customer/tenant alias layer (§6.2) · crosswalk or evidence population · standards content · false-provenance remediation · `YEAR(created_at)` defect · class-level remediation · M6 · ATM-002 · UI · taxonomy delete-guard hardening (§18).
+Any category or class creation beyond the ratified 1 + 5 · category or class **renaming or consolidation** · the 166 same-name class/type pairs · the 65-category dual scheme · Equipment Family · decomposition architecture (M5R.1 §6.1) · customer/tenant alias layer (§6.2) · crosswalk or evidence population · standards content · false-provenance remediation · `YEAR(created_at)` defect · M6 · ATM-002 · UI · taxonomy delete-guard hardening (§18).
 
-### 17.3 Preconditions for M5R.4B2 — all currently unmet
+### 17.3 Preconditions for M5R.4B2 — status after R1
 
-| # | Precondition | Status |
+| # | Precondition | Status after R1 |
 |---|---|---|
-| P1 | **OWNER ruling on the Category/Class target structure** for the 62 placement-bearing rows (B1-1) | **UNMET — BLOCKING** |
-| P2 | **OWNER ruling on `Submersible Pump`** for rows 7 and 8 (B1-2) | **UNMET** |
-| P3 | **OWNER ruling that row 56's target is candidate 200** (identity, not name) (B1-3) | **UNMET** |
-| P4 | **OWNER ruling on the 3 `INSUFFICIENT_EVIDENCE` rows** (§19 Q2) | **UNMET** |
+| P1 | **Ratify the parent-placement table** (62 rows; 1 new Category, 5 new Classes; 35 rows overriding an M5R.4A proposed parent name) | **RESOLVED IN PRINCIPLE — awaiting OWNER ratification** (§21.3, §21.11) |
+| P2 | **Ratify `Submersible Pump`** as an added canonical Type for rows 7 and 8 (29 → 30 added Types) | **RECOMMENDED — awaiting ratification** (§21.5) |
+| P3 | **Ratify candidate 56's endpoint as candidate 200 by identity** | **RESOLVED — no OWNER decision required** (§21.6) |
+| P4 | **Ratify the 3 `INSUFFICIENT_EVIDENCE` rows as unresolved, not retired** | **RULED by the OWNER (RULING 1)**; representation determined in §21.7 |
 | P5 | Migration 019 authored, reviewed, approved, applied | **NOT STARTED** |
 | P6 | `asset-import.service.js` ambiguity fixed (application change) | **NOT STARTED** |
-| P7 | OWNER decision: are the 282 "ratified"? (M5R.4A §2 calls them *unratified*) — determines whether a ratification dimension is needed | **UNMET** |
+| P7 | OWNER decision: are the 282 "ratified"? (M5R.4A §2 calls them *unratified*) | **UNMET** — deliberately **not** given a column (RULING 2) |
+| P8 | **[R1] OWNER decision on the 2 `KEEP_EXISTING` rows outside the 62-row scope** (ids 167, 273, §21.4) | **UNMET — newly identified** |
 
 ---
 
@@ -1060,7 +1083,7 @@ Category/Class creation, rename or consolidation (B1-1 — needs its own decisio
 
 | # | Deferred item | Why deferred | Recorded in |
 |---|---|---|---|
-| D1 | **Category/Class target structure** — 18 categories, 44 classes | M5R.4A §9 *"R1 is TYPE-SEMANTICS ONLY"*; mission prohibits consolidation | §5.5 |
+| D1 | **[R1] Category naming and scope questions only** — the *domains* are resolved (§21.3); what remains deferred is whether to rename/consolidate categories whose names are narrower than their contents (`Heater`→heat transfer, `CNC Machine`→machine tools, `Injection Molding`→plastics processing, `Excavation`→earthmoving, `Blower`→fans and blowers, `Pollution Control`/`Dust Collection`, `Filter`/`Chemical Separation`, `Valve`/`Valves`, `Instrumentation`/`Instrumentation and Control`, `Material Handling` vs the rejected `Materials Handling`) | M5R.4A §9 *"R1 is TYPE-SEMANTICS ONLY"*; mission prohibits consolidation. **No longer a placement blocker** — 59 of 62 rows reuse existing parents | §5.5, §21.3 |
 | D2 | **Tenant/customer alias layer** | M5R.1 §6.2 — requirement mandatory, implementation deferred; `ARCHITECTURE_GAP-2` | §15.8 |
 | D3 | **Taxonomy delete-guard hardening** (`class_id`/`category_id` CASCADE → RESTRICT or guard trigger) | schema change prohibited here; a real knowledge-destruction vector | §15.7 |
 | D4 | **Context-aware term resolution** (class/category/industry-scoped) | no M5R.4A case requires it | §15.13 |
@@ -1077,21 +1100,271 @@ Category/Class creation, rename or consolidation (B1-1 — needs its own decisio
 
 ---
 
-## 19. Open questions (mission §19)
+## 19. Open questions (mission §19) — **[R1] status**
 
-| # | Question | Why it must be answered by the OWNER, not by engineering | Recommended default |
-|---|---|---|---|
-| **Q1** | **How are the 62 placement-bearing rows applied, given that all 46 target `(category, class)` pairs do not exist?** Options: (a) authorise a separate bounded Category/Class task first; (b) defer the 62 and apply only the 220 rows whose placement exists; (c) some other ruling. | This is a **taxonomy-structure decision**, explicitly outside M5R.4A's scope (§9) and outside this mission's prohibitions. Engineering cannot choose it. | **(a)** — apply nothing at the Type level until the target structure is decided, because applying 62 rows into invented classes would pre-empt the deferred structural decision. |
-| **Q2** | **Do the 3 `INSUFFICIENT_EVIDENCE` rows become `retired`?** M5R.4A §15 reads *"retire 36 rows from Type level"* (29 + 4 + 3), but §7E calls those 3 *undecided*. Retiring an undecided row is itself a decision. | It changes the accepted package's meaning; §14 forbids silently changing it. | Keep them **`canonical`** and unresolved until decided (i.e. 33 retirements, 230 canonical) — or record them as `INSUFFICIENT_EVIDENCE` resolutions with no target. **Requires an explicit ruling.** |
-| **Q3** | **Do the 17 merged identities' names become governed terms for their targets?** | It expands the term set from 48 to 65 and is a knowledge-preservation judgement. | **Yes** — an operator who says "Multistage Centrifugal" should still be understood. |
-| **Q4** | **Are the 282 Type identities "ratified" by M5R.4A?** M5R.4A §2 records them as *unratified* `CANDIDATE_EQUIPMENT_IDENTITIES`. | Determines whether a ratification dimension is needed on `equipment_types` — a second additive column, i.e. scope. | Do **not** add a ratification dimension in 019; treat ratification as a separate governance act. |
-| **Q5** | **Does `Submersible Pump` become a canonical Type, or do rows 7 and 8 re-target to `Submersible Centrifugal Pump`?** | Engineering identity decision; M5R.4A is accepted and cannot be silently edited. | **Neither asserted here.** Reported as B1-2. |
-| **Q6** | **Is the two-table design (D) preferred over the single XOR-subject table (D′)?** | It is a maintainability judgement with one fewer table at stake. | **D** — two subjects, two cardinalities, two lookup intents. |
+| # | Question | Status after R1 |
+|---|---|---|
+| **Q1** | ~~How are the 62 placement-bearing rows applied, given that all 46 target `(category, class)` pairs do not exist?~~ | **ANSWERED by R1 (§21.3).** A semantically correct existing parent exists for 59 of 62 rows. 48 placements are unchanged; the rest reuse an existing parent. Only **1 Category** (`Mining Equipment`) and **5 Classes** are required. What remains is OWNER **ratification**, not an open structural question. |
+| **Q2** | ~~Do the 3 `INSUFFICIENT_EVIDENCE` rows become `retired`?~~ | **RULED by the OWNER — RULING 1: they must NOT be retired.** Representation determined in §21.7: they stay `canonical`, remain selectable, and carry a pending governance record with no lifecycle effect. The M5R.4A §15 reading of "retire 36" is superseded by 33 + 3 pending. |
+| **Q3** | **Do the 17 merged identities' names become governed terms for their targets?** | **RULED by the OWNER — RULING 3: yes**, where technically and semantically valid. Population fixed at 65 terms (§21.8). Rows 7/8 remain contingent on §21.5. |
+| **Q4** | **Are the 282 Type identities "ratified" by M5R.4A?** | **RULED — RULING 2: ratification is separate from identity lifecycle; no column in this mission.** The requirement is recorded (§21.7) and not implemented. |
+| **Q5** | ~~Does `Submersible Pump` become a canonical Type, or do rows 7 and 8 re-target to `Submersible Centrifugal Pump`?~~ | **RESOLVED by R1 (§21.5)** with a recommendation and a stated alternative. Requires OWNER ratification because it changes the added-Type count from 29 to 30. |
+| **Q6** | **Is the two-table design (D) preferred over the single XOR-subject table (D′)?** | **Still open** — unaffected by R1; the freeze check (§21.9) upholds D. |
+| **Q7** | **[R1] How should the 2 `KEEP_EXISTING` rows outside the 62-row scope (ids 167, 273) be handled?** | **Newly identified.** Both propose a different parent while remaining `KEEP_EXISTING`. See §21.4. |
+| **Q8** | **[R1] Should `Mining Equipment` be created, or should rows 84/85/100 be resolved another way?** | **Newly identified.** It is the only genuinely new domain among the 62. Recommended, but it is a category-creation decision and therefore an OWNER call. |
 
 ---
 
 ## 20. Explicitly NOT done (mission §15)
 
-No schema modification · **no migration 019** · no database mutation · no taxonomy mutation · no category or class creation, rename or consolidation · no bootstrap/seed mutation · no synonym implementation · no supersession implementation · no application or runtime change · no UI change · no API change · no crosswalk population · no standards evidence population · no decomposition architecture · no Equipment Family · no customer alias architecture · no M5R.4A reopen or edit · no M5R.4B2 · no M6 · no ATM-002 · PR #27 untouched at `a8511bcdbe41a40f4656ce79d1a6224d3d1e55cb` · no merge · no deployment · no Render change · no production database access.
+No schema modification · **no migration 019** · no database mutation · no taxonomy mutation · **no category or class created, renamed, merged or deleted in any database** (R1 *recommends* 1 + 5 and *applies* none) · no bootstrap/seed mutation · no synonym implementation · no supersession implementation · no application or runtime change · no UI change · no API change · no crosswalk population · no standards evidence population · no decomposition architecture · no Equipment Family · no customer alias architecture · no M5R.4A reopen or edit · no M5R.4B2 · no M6 · no ATM-002 · PR #27 untouched at `a8511bcdbe41a40f4656ce79d1a6224d3d1e55cb` · no merge · no deployment · no Render change · no production database access.
 
-**The only change made by this mission is the addition of this document.**
+**Files changed by M5R.4B1 + R1:** this architecture record and `docs/research/m5r4b1/parent-taxonomy-placement-review.jsonl`. Nothing else.
+
+---
+
+## 21. M5R.4B1-R1 — Parent taxonomy and unresolved-identity decision closure **[R1]**
+
+This section is the authoritative record of the R1 correction. Where it conflicts with an earlier section, **this section governs**, and the earlier text is retained as the audit trail.
+
+Machine-readable companion: `docs/research/m5r4b1/parent-taxonomy-placement-review.jsonl` — 62 records, one per placement-bearing row, generated programmatically and validated against the live taxonomy.
+
+### 21.1 The four OWNER rulings, and how each was applied
+
+| Ruling | Applied as |
+|---|---|
+| **1 — `INSUFFICIENT_EVIDENCE` is not retired** | The 3 rows stay `canonical` and selectable. No retirement record is created. `identity_state` gains **no** fourth value. Partition revised to **230 / 19 / 33**. §21.7 |
+| **2 — ratification is separate from lifecycle** | **No ratification column was added.** The requirement is recorded only. §21.7 |
+| **3 — merged names remain resolvable** | All 17 `MERGE_DUPLICATE` names enter the terminology population as `MERGED_IDENTITY_TERM`. §21.8 |
+| **4 — endpoints are identities, not text** | Every endpoint in the recommended architecture is `equipment_types.id`. Reaffirms I17; reinforces B1-3. §21.6 |
+
+### 21.2 Methodology
+
+1. Extract the 62 placement-bearing rows (`ADD_TYPE` 29 + `RECLASSIFY` 33) programmatically.
+2. Reconstruct the **live** taxonomy from `scripts/bootstrap-knowledge/*.jsonl` — 65 categories, 311 classes, 282 types — and re-verify the bijection with the M5R.4A candidates (282/282 keys identical).
+3. For every row, classify M5R.4A's proposed Category and Class against the live taxonomy, and determine **why** the pairing fails.
+4. Apply the R1 parent-placement policy, stated verbatim in §21.2.1.
+5. Validate every determination: a `USE_EXISTING` parent must exist; an `ADD_REQUIRED` parent must not. The generator **fails the build** otherwise — and did fail twice during authoring, catching a real error at row 166 (§21.2.2).
+6. Simulate the post-application Type population of every affected class to measure the same-name consequence (§21.10).
+
+**21.2.1 R1 parent-placement policy**
+
+> 1. Reuse the **most specific existing Class** whose engineering scope genuinely contains the Type.
+> 2. Otherwise reuse the Class in the row's **existing** placement, unless that parent is **engineeringly wrong** for the Type.
+> 3. Otherwise **ADD** the minimum Class under the semantically correct **existing** Category.
+> 4. **ADD a Category only when no existing Category denotes the domain.**
+>
+> Creating a parent that duplicates an existing parent's name or scope is **prohibited**. Forcing a Type under an engineeringly incorrect parent merely to avoid an addition is **prohibited**.
+
+**21.2.2 Disclosed self-inflicted error.** The first generation run failed validation at **row 166**: I had assumed the baghouse's parent was `Dust Collection`, but the live taxonomy places `Baghouse Filter` under `Pollution Control`. The validator caught it before the artifact was written. This is the second time in this engagement that a mechanical check has caught a transcription error that manual review had passed; it is the reason the generator asserts rather than prints.
+
+### 21.3 The 62-row result — B1-1 reversed
+
+```
+category_action : USE_EXISTING 59 · ADD_REQUIRED 3 · DEFER_BLOCKED 0
+class_action    : USE_EXISTING 55 · ADD_REQUIRED 7 · DEFER_BLOCKED 0
+new Categories  : 1   Mining Equipment
+new Classes     : 5   Instrumentation/Level Switch
+                      Mining Equipment/Cutting Equipment
+                      Mining Equipment/Mine Hoisting
+                      Drilling/Well Control Equipment
+                      Drilling/Hoisting Equipment
+placements that R1 leaves completely UNCHANGED : 48 of 62
+rows where the M5R.4A proposed pair already existed : 1 (id 13)
+rows requiring an OWNER ratification              : 35
+```
+
+**(a) How many can use existing Categories — 59 of 62.**
+
+**(b) How many genuinely require a new Category — 3 rows, 1 distinct Category** (`Mining Equipment`, for ids 84, 85, 100). Justified because the current parents are engineeringly wrong (a continuous miner and a longwall shearer are not drilling machines; a mine hoist is not a gearbox) and **no existing Category denotes mining machinery at all**.
+
+**(c) Exact proposed new Categories —** `Mining Equipment`.
+
+**(d) How many can use existing Classes — 55 of 62.**
+
+**(e) How many genuinely require a new Class — 7 rows, 5 distinct Classes.**
+
+**(f) Exact proposed new Classes —** `Level Switch` (Instrumentation); `Cutting Equipment` and `Mine Hoisting` (Mining Equipment); `Well Control Equipment` and `Hoisting Equipment` (Drilling). Each is justified in the JSONL with explicit reasoning per row.
+
+**(g) How many remain blocked or unresolved — 0.** Every one of the 62 rows has a recommended parent. What remains is **ratification**, not an engineering gap.
+
+**(h) Does any proposed parent reintroduce Equipment Family — NO.** The one new Category is a domain, and all five new Classes group Types by engineering characteristics. No new identity level is created. `Category → Class → Type` is preserved exactly, and no Type carries a broad-container name.
+
+**(i) Does any proposal prematurely perform the 65-category consolidation — NO.** No category is renamed, merged or deleted. The **10 empty legacy shell categories** (`Rotating Equipment`, `Static Equipment`, `Valves`, `Piping Systems`, `Structures`, `Safety Systems`, `Utility Equipment`, `SCADA`, `UPS`, `Instrumentation and Control`) are left **exactly as they are**, unpopulated. Several of them contain classes that M5R.4A proposed to create elsewhere — `Valves > Isolation Valve` already exists — and R1 deliberately does **not** repopulate them, because doing so would be the consolidation task.
+
+**The 18 categories and 44 classes M5R.4A proposed are NOT required and must not be created.** Every one of the 18 is either an exact duplicate of a live category (`Compressors`/`Compressor`, `Heat Transfer`/`Heater`, `Filtration`/`Filter`, `Separation`/`Separator`, `Screening`/`Screen`, `Mixing`/`Mixer`, `Machine Tools`/`CNC Machine`, `Plastics Processing`/`Injection Molding`, `Pipeline Equipment`/`Pipeline`, `Surface Treatment`/`Paint`, `Heat Rejection`/`Cooling`, `Heat Recovery`/`HRSG`, `Earthmoving`/`Excavation`, `Fans` and `Fans and Blowers`/`Blower`, `Materials Handling`/`Material Handling`) or has no live equivalent (`Mining Equipment`, `Gas Cleaning`).
+
+**Note a split M5R.4A introduced inside its own accepted package:** it proposes `Materials Handling` for 4 rows while 5 `KEEP_EXISTING` rows (235–238, 259) use the live `Material Handling`. Adopting the proposal would have created a singular/plural duplicate **within one decision set**.
+
+### 21.4 Two package observations (reported, not corrected)
+
+| Observation | Detail |
+|---|---|
+| **One `ADD_TYPE` row has no proposed parent** | **id 37 `Orifice Plate`** carries `proposed_category = null` and `proposed_class = null`. M5R.4A's rationale states it was converted from `MERGE_DUPLICATE` to `ADD_TYPE` "so the canonical identity has an originating row", but no destination was supplied. R1 supplies `Instrumentation > Flow Meter` by reuse — the same parent as its five sibling flow-meter principles. |
+| **Two `KEEP_EXISTING` rows also propose a different parent** | **id 167 `Wet Scrubber`** (`Pollution Control`/`Wet Scrubber` → `Gas Cleaning`/`Scrubbers`) and **id 273 `Air Circuit Breaker`** (`Electrical Equipment`/`Switchgear` → `Electrical Equipment`/`Switching Devices`). Neither is inside the mission's 62-row definition, and **R1 did not expand scope to cover them.** `Gas Cleaning` has no live equivalent; `Switching Devices` does not exist as a class. Recorded as precondition **P8** and question **Q7**. |
+
+Neither observation changes an M5R.4A engineering disposition.
+
+### 21.5 Candidate 7 / 8 closure — `Submersible Pump` (B1-2, CLOSED)
+
+**Source identities**
+
+| id | name | code | class | disposition |
+|---|---|---|---|---|
+| 7 | Submersible Sewage Pump | `SEWAGE` | `Pump > Submersible Pump` | `MERGE_DUPLICATE` → `Submersible Pump` |
+| 8 | Submersible Drainage | `DRAINAGE` | `Pump > Submersible Pump` | `MERGE_DUPLICATE` → `Submersible Pump` |
+| 9 | Submersible Slurry | `SLURRY` | `Pump > Submersible Pump` | `MERGE_DUPLICATE` → `Slurry Pump` |
+
+**Finding.** `Submersible Pump` is **not** a candidate name and **not** any candidate's canonical name. It is the **name of the class** `Pump > Submersible Pump`, which contains exactly rows 7, 8 and 9.
+
+**This is not an anomaly — it is M5R.4A's own governing pattern.** Eight other rows promote the class-level kind and take the class name as their canonical identity: `TEFC Motor → AC Induction Motor`, `Rising Stem Gate → Gate Valve`, `Concentric Butterfly → Butterfly Valve`, `Swing Check → Check Valve`, `Modular PLC → Programmable Logic Controller`, `Single Stage Centrifugal → Centrifugal Blower`, `Twin Lobe Blower → Rotary Lobe Blower`, `Turbine Mixer → Mechanical Mixer`. Rows 7 and 8 are the **same operation**, except that no row performs the promotion, so the merge has no endpoint.
+
+**Intended canonical engineering identity.** The submersible pump as a machine — differentiated by *installation* (submerged) rather than by hydraulic principle, which is why `Sewage` and `Drainage` are duty qualifiers and not Types. This is consistent with M5R.4A disposing of them as duplicates rather than as Types.
+
+**Resolution.** Establish **`Submersible Pump`** as a canonical Type under `Pump > Submersible Pump`, using the same mechanism as the 29 `ADD_TYPE` rows; rows 7 and 8 then have a real endpoint.
+
+**Numeric consequence — requires OWNER ratification.** M5R.4A §15 says *"add 29 canonical types"*. This closure makes it **30**. That is a change to an accepted count, so it is reported rather than assumed.
+
+**Alternative, if the OWNER prefers no added Type.** Re-target rows 7 and 8 to **`Submersible Centrifugal Pump`** (id 5, `KEEP_EXISTING`). This keeps the count at 29, but it merges a duty-differentiated submersible into a hydraulic-principle class, which cuts across the two organizing axes in the corpus and would make `Pump > Submersible Pump` an empty class.
+
+**Does this change M5R.4A semantics? NO.** Rows 7 and 8 remain `MERGE_DUPLICATE` into `Submersible Pump`. Only the **existence of their endpoint** is clarified. No disposition, rationale or confidence is altered. Per mission §10 this is therefore a clarification, not a revision, and does not require a STOP.
+
+**Confidence: HIGH.** Not `MEDIUM`, because the pattern is attested eight times inside the same accepted package.
+
+### 21.6 Candidate 56 closure — `Pressure Filter` endpoint (B1-3, CLOSED — no OWNER decision required)
+
+| id | name | code | context | disposition |
+|---|---|---|---|---|
+| 56 | Pressure Filter | `PRESSURE` | `Filter > Sand Filter` | `MERGE_DUPLICATE` → `Pressure Filter` |
+| 200 | Pressure Filter | `PRESS_FILT` | `Chemical Separation > Pressure Filter` | `KEEP_EXISTING` → canonical `Pressure Filter` |
+
+**Verification from the package's own evidence, not inference.** M5R.4A §7C states the basis for row 56 in these words: *"Duplicate identity: the same pressure filter is also held under Chemical Separation."* There is exactly one pressure filter held under `Chemical Separation`, and it is candidate 200. **Confirmed.**
+
+**Why they are duplicates.** Two live Type rows carry the same name in different categories. Row 56 is additionally mis-filed: a machine named "Pressure Filter" sits in the class `Sand Filter`. Row 200 sits in a class named after itself.
+
+**Immutable endpoint.** `equipment_types.id` of the row whose class is `Chemical Separation > Pressure Filter` and whose `type_code` is **`PRESS_FILT`** — i.e. candidate/type **200**. **Not** the string `Pressure Filter`, which identifies two rows. This is RULING 4 applied concretely.
+
+**Residual ambiguity — NONE in substance.** The endpoint is unique once expressed by identity. The only residual is the *textual* ambiguity in the accepted package, which is why the architecture's I17 prohibits text endpoints.
+
+**Consistency check with §21.3.** Row 200 stays under `Chemical Separation`, and R1's recommendations for rows 201–203 also keep filtration equipment under `Chemical Separation`. The survivor and its siblings therefore remain in one category. **No contradiction.**
+
+### 21.7 The three `INSUFFICIENT_EVIDENCE` rows (RULINGS 1 and 2)
+
+```
+id=6    Circulator Pump   Pump > Centrifugal Pump
+id=158  Turbo Generator   Generator > Generator
+id=190  Agitated Vessel   Mixer > Agitated Vessel
+```
+
+| Question (mission §12) | Determination |
+|---|---|
+| What evidence is missing? | **6:** whether a small hydronic in-line circulator is a distinct hydraulic machine or a synonym of the circulating water pump already carried. **158:** whether a turbo generator is a distinct package or already covered where the driving turbine is the Type. **190:** whether an agitated vessel is a Type-level vessel with an agitator package or a variant of the mechanical mixer. In each case the corpus supplies no physical description, no component list and no duty envelope. |
+| Why the current evidence cannot conclude? | The governing test (§3.1) asks whether a distinction changes the maintenance task set, inspection regime, failure-mode family, safety controls or operating principle. The corpus content is a name, a code, a one-line description and a component phrase — enough to place a machine, **not** enough to decide these three. The M5R.4A rationale says exactly this: *"The corpus gives no way to choose."* |
+| What evidence would resolve it? | For 6: a circulation-duty specification and whether the unit is a distinct machine or a selection of the existing circulating pump. For 158: whether the generator is supplied as an integrated package with its own control and lubrication, or as a turbine-driven machine. For 190: whether the agitator is a decomposition component of a vessel or the vessel is a variant of a mixer. Each is an **engineering-authoring** question answerable by Atiman without any standards evidence. |
+| Can it safely remain an existing Type temporarily? | **YES — and it MUST.** Each is already a live Type with normal standing, and no evidence contradicts it. RULING 1 forbids converting that into a retirement. |
+| Should it be excluded from new selection while unresolved? | **NO.** See VUDA K (§21.12). Excluding a Type without evidence is a negative decision reached by stealth, which is precisely what RULING 1 prohibits. They remain `canonical` and selectable. |
+| Does this need a governance state distinct from identity lifecycle? | **YES — and this is the R1 finding for Option D.** Lifecycle answers *"may this identity still be used"*; the unresolved condition answers *"have we concluded about this identity's distinctness"*. They are different questions, which is exactly why RULING 2 separates them. |
+
+**Cleanest representation, given the frozen architecture and RULING 2.** No new column and no fourth `identity_state`. The recommended resolution table already holds **proposals** as well as approved resolutions: its `review_state` is `draft` / `under_review` / `approved` / `rejected` (the `017` vocabulary). An unresolved identity is therefore represented as a record with:
+
+- `review_state = 'under_review'`,
+- `resolution_kind = 'INSUFFICIENT_EVIDENCE'`,
+- `to_type_id = NULL`,
+- `identity_state` **unchanged at `canonical`** — because I6 coerces lifecycle **only on approval**.
+
+This satisfies both rulings simultaneously: the pending condition is durable, attributed and auditable, while the identity keeps its full standing. When evidence arrives, the same record is revised or superseded into a real resolution and only **then** does lifecycle move.
+
+**Recorded but NOT implemented (RULING 2):** whether the Knowledge Foundation needs a first-class **ratification / decision** dimension distinct from lifecycle. It is a real requirement — M5R.4A §2 records the 282 as *unratified* `CANDIDATE_EQUIPMENT_IDENTITIES` — but it must not be smuggled in as a lifecycle value or an extra column.
+
+### 21.8 Terminology closure (RULING 3)
+
+**Population: 65 governed terms.**
+
+| Kind | Count | Source |
+|---|---|---|
+| `LEGACY_NAME` | **46** | the 36 `KEEP_EXISTING` + 10 `RECLASSIFY` rows renamed in place |
+| `SYNONYM` | **2** | `Ultrasonic` → `Ultrasonic Flow Meter`; `Orifice Meter` → `Orifice Plate Flow Meter` |
+| `MERGED_IDENTITY_TERM` | **17** | all `MERGE_DUPLICATE` names, per RULING 3 |
+| **Total** | **65** | |
+
+**The 25 `ADD_TYPE` renames create NO term** — those are new rows and no prior term exists. **Nothing is created merely because strings differ:** each of the 65 is an *existing* string that would otherwise become unresolvable.
+
+**`ABBREVIATION` is NOT a distinct kind — proven, not asserted.** If abbreviation were a relationship kind, a term could not be both an abbreviation and a merged-identity term. It can:
+
+```
+LEGACY_NAME terms containing an abbreviation token (11):
+  RTD Sensor · DTH Drill · API Atmospheric Tank · TEG Dehydrator · GIS Switchgear
+  ESP · LP Feedwater Heater · CSTR · EDM Machine · MIG Welder · TIG Welder
+MERGED_IDENTITY_TERM terms containing an abbreviation token (2):
+  HP Feedwater Heater -> Feedwater Heater · AC Motor -> AC Induction Motor
+```
+
+The two sets overlap in form and are disjoint in relationship, so **abbreviation is orthogonal to relationship kind**: it is at most an attribute of a term, and `LEGACY_NAME / SYNONYM / MERGED_IDENTITY_TERM` fully partition the 65. Adding `ABBREVIATION` as a fourth kind would create a false dichotomy and could not represent `HP Feedwater Heater` without picking one dimension arbitrarily.
+
+**Machine-checked totals:** 46 + 2 + 17 = 65; the 46 decompose as 36 + 10 by disposition; the 17 merge into **14 distinct targets**.
+
+### 21.9 Option D freeze check
+
+The OWNER froze Option D unless a concrete contradiction is demonstrated. **No contradiction was found. Option D is upheld**, with one clarification.
+
+| Question | Answer |
+|---|---|
+| Does it still satisfy the requirements? | **YES.** All 282 accepted outcomes remain representable: 230 canonical (29 in-place renames, 198 updates, 30 inserts), 19 superseded-with-target, 33 retired-without-target, 3 unresolved-pending, 65 terms. |
+| Is `canonical` / `superseded` / `retired` still semantically sufficient for **lifecycle**? | **YES.** R1 produced no row requiring a fourth lifecycle value. The one candidate (`unresolved`) is a **decision** state, not a lifecycle state, and RULING 2 forbids conflating them. |
+| Does unresolved governance need to remain outside lifecycle? | **YES — confirmed by evidence.** Two of the three unresolved rows (`6`, `190`) could plausibly resolve to `superseded` (a synonym of a carried Type) *or* to `canonical` (a distinct Type). Their lifecycle is genuinely unknown, so encoding the uncertainty as a lifecycle value would make the row's standing false in one of the two outcomes. |
+| Are the two tables still justified? | **YES, and R1 strengthened the case.** (i) The **resolution** table is required because 33 retirements have **no target** — a nullable-target governed record with a coherence CHECK, exactly the `017` `NO_DIRECT_MAPPING` precedent — and because it now also carries pending proposals. (ii) The **terminology** table is required because **46 existing identities are renamed**, which R1 re-verified, so the old vocabulary must stay resolvable independently of any lifecycle change. A single XOR-subject table (D′) would have to hold a pending proposal, an approved resolution and a rename term under one cardinality rule; **D remains cleaner.** |
+| Does migration 019 remain necessary? | **YES.** Unchanged in principle; scope is re-examined in §21.10. |
+| Did R1 invalidate any Option D component? | **NO.** One refinement: the resolution table's partial unique index must be scoped to **approved, active** rows only — which is already how it was specified. A pending proposal must never collide with an approved resolution, and because I5's uniqueness is conditional on `review_state = 'approved'`, it does not. |
+
+### 21.10 Migration 019 — necessity and revised scope
+
+**Migration 019 is still necessary and was NOT written.** Its previously proposed responsibility **remains valid**, with two clarifications arising from R1:
+
+**Unchanged (still in scope for 019):** the `identity_state` column + CHECK; the `equipment_type_identity_resolution` table with coherence, attribution and no-self CHECKs, `RESTRICT` FKs and a partial unique index among approved rows; the `equipment_type_term` table with its governance CHECKs and partial unique index; the lifecycle-coercion trigger; the chain/cycle and target-canonicality trigger; the delete guards; the ≤63-byte identifier audit; strict idempotency.
+
+**Clarification 1 — no fourth lifecycle value, no ratification column.** RULINGS 1 and 2 remove any question of `identity_state` gaining `unresolved`, and forbid a ratification column. The pending condition is carried by the existing `review_state` vocabulary on the resolution table. **019 does not grow.** If anything it is unchanged in size.
+
+**Clarification 2 — the resolution table must accept a pending proposal coherently.** The coherence CHECK must permit (`review_state IN ('draft','under_review')`, `resolution_kind = 'INSUFFICIENT_EVIDENCE'`, `to_type_id IS NULL`) without triggering lifecycle coercion. This is already implied by "coercion fires only on approval" (I6) and requires no extra object.
+
+**019 must still NOT** create, rename, merge or delete any category or class; populate any row; touch 001–018; import the legacy design artifact; alter the crosswalk; add a tenant scope; add an AI path; or change any runtime file. **No SQL was written in this mission.**
+
+### 21.11 The single OWNER ratification this mission requests
+
+R1 asks the Chief Architect to ratify **one** artefact — the 62-row placement table in `docs/research/m5r4b1/parent-taxonomy-placement-review.jsonl` — comprising:
+
+1. **48 placements unchanged** and **11 rows moved to a different existing parent**, all by reuse;
+2. **1 new Category** (`Mining Equipment`) and **5 new Classes** (§21.3(f));
+3. **35 rows** where R1's parent overrides an M5R.4A proposed parent name — each needing ratification because M5R.4A's name was not approval to create it;
+4. the **§21.5** `Submersible Pump` addition, which changes the added-Type count from 29 to **30**.
+
+Everything else in R1 is either a ruling already given by the OWNER, a closure requiring no decision (§21.6), or a recorded observation concerning rows outside the 62 (§21.4).
+
+### 21.12 VUDA — R1 attacks
+
+Run against the corrected architecture and the 62 parent decisions. Attacks that **succeed** are stated as successes.
+
+| # | Attack | Result |
+|---|---|---|
+| **A** | Did we create Categories merely because M5R.4A proposed names? | **NO.** All 18 proposed names were classified and rejected: 16 are exact duplicates of live categories, and `Mining Equipment` + `Gas Cleaning` have no live equivalent — of which only `Mining Equipment` is needed, and it is justified by the **absence of any mining domain**, not by M5R.4A having named it. Created: **1**. |
+| **B** | Did we create Classes that are actually Types? | **NO.** None of the 5 new class names equals any Type name. `Mine Hoisting` ≠ `Mine Hoist`; `Well Control Equipment` and `Hoisting Equipment` are families, not Types; `Level Switch` is a functional family; `Cutting Equipment` groups two peer Types. The inverse risk — M5R.4A's proposals `Isolation Valve`, `Non-Return Valve`, `Dynamic`, `Positive Displacement`, `Shell and Tube`, `Plate`, `Air-Cooled` — **were** constructions/technologies masquerading as Classes, and they were **rejected**. |
+| **C** | Did we create Classes that merely repeat their only Type? | **PARTIALLY — disclosed.** Of the 5 new classes, **3 hold exactly one Type at application time**: `Level Switch` (Float Level Switch), `Mine Hoisting` (Mine Hoist), `Well Control Equipment` (Blowout Preventer); `Cutting Equipment` and `Hoisting Equipment` hold two each. Justification: each is a genuine functional family that will accrete members (other level-switch principles; other hoists; annular/ram/rotating preventers), and none of the three could be placed under an existing class without violating the engineering rule. **But this is a real cost and it is not hidden.** See §21.10's measurement of the wider same-name condition. |
+| **D** | Did we recreate Equipment Family? | **NO.** No new identity level; no Type carries a broad-container name; the single new Category is a domain and the 5 new Classes sit below Category. Verified across all 62 final placements. |
+| **E** | Did we collapse materially different engineering Classes? | **NO.** R1 created no class merge, and declined 18 category creations. `Gate Valve` and `Butterfly Valve` remain distinct classes with distinct Types; `Flow Meter`, `Level Transmitter` and `Pressure Transmitter` remain distinct instrument classes; the three valve constructions stay separate rather than being collapsed into one `Isolation Valve`. |
+| **F** | Did we force equipment under incorrect existing parents just to avoid additions? | **NO — with a disclosed nuance.** In every reuse, the **Class** scope is exact; only the **Category name** is sometimes narrower than its contents (`Heater` holding exchangers, `CNC Machine` holding grinding/EDM, `Injection Molding` holding blow/extrusion/thermoforming, `Excavation` holding earthmoving plant, `Blower` holding a fan, `Conveyor` holding feeders, `Pollution Control` holding a baghouse, `Chemical Separation` holding filtration plant, `Haulage` holding a wheel loader, `Dust Collection` holding a cyclone). That is **pre-existing category-naming debt, explicitly deferred by M5R.4A §9** — not a placement error, and not something R1 may fix. Where the parent was engineeringly **wrong**, R1 added structure instead: rows **84, 85** (leaving `Drilling`) and **100** (leaving `Gearbox`). |
+| **G** | Did we accidentally perform the deferred category consolidation? | **NO.** No category renamed, merged or deleted; the 10 empty legacy shell categories are untouched and still empty; `Valve`/`Valves`, `Instrumentation`/`Instrumentation and Control`, `Compressor`/`General Compressor`, `Heater`/`Heat Exchanger`, `Filter`/`Chemical Separation` all remain exactly as found. In particular R1 **declined** to populate `Valves > Isolation Valve` even though doing so would have satisfied M5R.4A's proposal with zero new objects. |
+| **H** | Did we treat insufficient evidence as a negative conclusion? | **NO.** RULING 1 applied: 3 rows stay `canonical`, selectable, with no retirement record. The identity-lifecycle partition was **corrected from 227/19/36 to 230/19/33**. This was the one place where the first M5R.4B1 issue would have made an affirmative negative decision out of an absence of evidence. |
+| **I** | Did we resolve an endpoint by name instead of identity? | **NO in the architecture; disclosed in the companion.** The JSONL reports `candidate_name` for readability but every governed endpoint is defined as `equipment_types.id`, and §21.6 fixes row 56's endpoint by class + `type_code`. **The M5R.4A companion does express `canonical_target` as text**, which is exactly what produced B1-3; RULING 4 and invariant I17 exist to prevent the architecture from inheriting that. |
+| **J** | Did we lose historical terminology? | **NO.** All 65 terms are preserved as governed knowledge (§21.8), including the 17 merged names. Note the **18 rejected category names are not "historical terminology"**: they were never live taxonomy, they remain recorded in the M5R.4A package and in this record, and rejecting a proposal destroys no history. |
+| **K** | Can an unresolved identity be selected as if fully governed? | **YES — deliberately, and this is the honest answer.** The 3 rows remain `canonical` and **selectable**, because excluding them without evidence would be a negative decision by stealth (RULING 1). **Residual risk:** nothing forces a picker to *surface* the pending condition, so a user could select `Circulator Pump` without seeing that its distinctness is under review. Mitigation requires the discovery/selection read-path work already scoped as I16 — the pending record must be visible in discovery. Not implemented here. |
+| **L** | Does Option D still preserve historical truth? | **YES.** §21.9. Renames keep the prior term as governed vocabulary; retirements keep the row and record the conclusion; merges keep the source row and its name; the 3 unresolved rows keep full standing. |
+| **M** | Can external/customer vocabulary pollute canonical taxonomy? | **NO new path.** Both new tables are global-scope only; the tenant/customer alias layer remains unbuilt (M5R.1 §6.2); no external identity becomes canonical. R1's reuse decision adds no pollution vector, and R1 created no category named after a customer, duty, medium or site. |
+| **N** | Can AI approve any of these decisions? | **NO.** Unchanged: `approved_by_user_id` FKs to `users(id)` and I8 requires it non-NULL for `approved`, so an AI approval is **unrepresentable**. The 62 placements are human engineering determinations recorded as recommendations for a human OWNER. |
+| **O** | Can any relationship form a cycle or ambiguous chain? | **NO.** Invariants I2 + I5 bound resolution depth to exactly 1. The 62 placements are Category/Class **parent** links, which are a tree, not a graph, so they cannot cycle. The one genuinely ambiguous input — two rows named `Pressure Filter` — is closed by identity in §21.6. |
+
+**Additional R1-specific attack, not in the mission list.** *Does the class-promotion pattern degrade the Class level?* **YES, and it is measured.** M5R.4A's `ADD_TYPE` rows promote a class-level kind to Type level 30 times. Simulating the post-application population of all 185 affected classes shows **125 classes would hold exactly one Type whose name equals the class name** — including **27 of the 62** rows here. So M5R.4A's level-shift **increases** the same-name Class/Type debt that M5R.4A §9 records (166 of 282 names identical to their class name). **R1 neither created nor fixed this**, and it is the strongest argument for the deferred Class-level remediation task. It is recorded so the OWNER sees the true cost of the Type-level decisions, not just the parent cost.
+
+### 21.13 R1 explicitly did NOT do
+
+No taxonomy mutation · **no schema change** · **no migration 019** · no database mutation · no category or class **created, renamed, merged or deleted in any database** · no seed or bootstrap mutation · no runtime, API, UI, test or view change · no crosswalk or evidence population · no standards evidence invented · no synonym or supersession implementation · no decomposition architecture · no Equipment Family · no customer alias architecture · no category consolidation · no M5R.4A file edited · no M5R.4B2 · no M6 · no ATM-002 · PR #27 untouched · no merge · no deployment · no production access.
+
+**R1 changed exactly two files:** this architecture record (corrected in place) and the one authorised machine-readable companion. The generator that produced the companion was **run from outside the repository** and was deliberately **not committed**, because mission §17 authorises exactly one research companion file.
