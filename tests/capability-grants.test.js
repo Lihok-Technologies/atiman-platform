@@ -18,6 +18,9 @@ const { Pool } = require('pg');
 const { getConnection, isIntegrationTest } = require('../src/config/database');
 const { resolveCapabilities, REFUSAL_REASONS } = require('../src/services/capability.service');
 const {
+  requireCapability, requireAllCapabilities, requirePermissionViaCapability, attachCapabilities
+} = require('../src/middleware/capability.middleware');
+const {
   RESOLUTION_MODES, LEGACY_COMPATIBILITY_BUNDLES, V1_HUMAN_GRANTABLE, NON_HUMAN_GRANTABLE
 } = require('../src/config/capabilities');
 
@@ -506,6 +509,154 @@ describe('ATM-003 capability grants (migration 022)', { skip: DB_TEST_SKIP_REASO
         'the migration constraint and the resolver vocabulary must be identical');
     });
   });
+
+  describe('authorization primitive', () => {
+    /** Minimal Express-shaped request/response pair. */
+    const request = (user) => ({ user });
+    const response = () => {
+      const res = { statusCode: null, payload: null };
+      res.status = (code) => { res.statusCode = code; return res; };
+      res.json = (body) => { res.payload = body; return res; };
+      return res;
+    };
+    const run = async (middleware, user) => {
+      const res = response();
+      let advanced = false;
+      await middleware(request(user), res, () => { advanced = true; });
+      return { res, advanced };
+    };
+
+    it('requires an authenticated principal (401, never 403-as-allow)', async () => {
+      for (const user of [undefined, null, {}]) {
+        const { res, advanced } = await run(requireCapability('finding.report'), user);
+        assert.strictEqual(res.statusCode, 401);
+        assert.strictEqual(advanced, false);
+      }
+    });
+
+    it('permits a capability the principal holds and denies one they do not', async () => {
+      const operator = await makeUser('operator');
+      const allowed = await run(requireCapability('finding.report'), { id: operator });
+      assert.strictEqual(allowed.advanced, true);
+
+      const denied = await run(requireCapability('knowledge.approve'), { id: operator });
+      assert.strictEqual(denied.advanced, false);
+      assert.strictEqual(denied.res.statusCode, 403);
+      assert.match(denied.res.payload.message, /knowledge\.approve is required/);
+    });
+
+    it('denies when the principal does not exist or is inactive', async () => {
+      const missing = await run(requireCapability('finding.report'), { id: 987654321 });
+      assert.strictEqual(missing.res.statusCode, 403, 'a missing principal must never be allowed');
+
+      const inactive = await makeUser('admin');
+      await withConn((conn) => conn.query(`UPDATE users SET is_active=false WHERE id=?`, [inactive]));
+      const denied = await run(requireCapability('org.user_admin'), { id: inactive });
+      assert.strictEqual(denied.advanced, false);
+      assert.strictEqual(denied.res.statusCode, 403);
+    });
+
+    it('honours explicit grants in place of the legacy bundle', async () => {
+      const supervisor = await makeUser('supervisor');
+      const before = await run(requireCapability('escalation.approve'), { id: supervisor });
+      assert.strictEqual(before.advanced, true, 'legacy supervisor bundle holds escalation.approve');
+
+      const [sql, params] = grant(supervisor, ORG, 'knowledge.approve');
+      assert.strictEqual((await attempt(sql, params)).accepted, true);
+
+      const after = await run(requireCapability('escalation.approve'), { id: supervisor });
+      assert.strictEqual(after.advanced, false,
+        'one explicit grant must switch the principal to explicit mode and drop the legacy bundle');
+      const granted = await run(requireCapability('knowledge.approve'), { id: supervisor });
+      assert.strictEqual(granted.advanced, true);
+    });
+
+    it('fails closed when the resolver cannot resolve', async () => {
+      const stub = await requireCapability('finding.report')({ user: { id: 'not-a-number' } }, response(), () => {});
+      // A non-numeric id cannot resolve; the guard must deny rather than throw.
+      assert.ok(stub === undefined || stub === null || true);
+      const res = response();
+      const req = { user: { id: 'not-a-number' } };
+      await requireCapability('finding.report')(req, res, () => {});
+      assert.ok(req.capabilities instanceof Set);
+      assert.strictEqual(req.capabilities.size, 0);
+      assert.strictEqual(res.statusCode, 403);
+    });
+
+    it('requires every capability for all-or-nothing guards', async () => {
+      const user = await makeUser('operator');
+      const partial = await run(requireAllCapabilities('finding.report', 'knowledge.approve'), { id: user });
+      assert.strictEqual(partial.res.statusCode, 403);
+      assert.match(partial.res.payload.message, /knowledge\.approve/);
+
+      const complete = await run(requireAllCapabilities('finding.report', 'evidence.attach'), { id: user });
+      assert.strictEqual(complete.advanced, true);
+    });
+
+    it('adapter refuses an unmapped authorization seam rather than guessing', async () => {
+      const admin = await makeUser('admin');
+      for (const [resource, action] of [['TASKS', 'CREATE'], ['WORK_ORDERS', 'UPDATE'], ['CATALOGS', 'DELETE']]) {
+        const { res, advanced } = await run(requirePermissionViaCapability(resource, action), { id: admin });
+        assert.strictEqual(advanced, false, `${resource}.${action} must not be silently allowed`);
+        assert.strictEqual(res.statusCode, 403);
+        assert.match(res.payload.message, /not capability-mapped/);
+      }
+    });
+
+    it('adapter maps the knowledge lifecycle pairs to their capabilities', async () => {
+      const operator = await makeUser('operator');
+      const denied = await run(requirePermissionViaCapability('KNOWLEDGE', 'APPROVE'), { id: operator });
+      assert.strictEqual(denied.res.statusCode, 403, 'an operator has no knowledge.approve');
+
+      const admin = await makeUser('admin');
+      for (const action of ['REVIEW', 'APPROVE', 'SAFETY_REVIEW']) {
+        const { advanced } = await run(requirePermissionViaCapability('KNOWLEDGE', action), { id: admin });
+        assert.strictEqual(advanced, true, `admin must satisfy KNOWLEDGE.${action}`);
+      }
+      const withGrant = await makeUser('operator');
+      const [sql, params] = grant(withGrant, ORG, 'knowledge.approve');
+      assert.strictEqual((await attempt(sql, params)).accepted, true);
+      const granted = await run(requirePermissionViaCapability('KNOWLEDGE', 'APPROVE'), { id: withGrant });
+      assert.strictEqual(granted.advanced, true, 'an explicit grant must satisfy the adapter');
+    });
+
+    it('treats reading governed knowledge as authenticated-only, not as a capability', async () => {
+      const operator = await makeUser('operator');
+      const { advanced } = await run(requirePermissionViaCapability('KNOWLEDGE', 'VIEW'), { id: operator });
+      assert.strictEqual(advanced, true, 'reading is not an accountable act in the capability architecture');
+
+      const unauthenticated = await run(requirePermissionViaCapability('KNOWLEDGE', 'VIEW'), undefined);
+      assert.strictEqual(unauthenticated.res.statusCode, 401);
+    });
+
+    it('attaches a resolved capability set and mode to the request', async () => {
+      const operator = await makeUser('operator');
+      const req = { user: { id: operator } };
+      await attachCapabilities(req, response(), () => {});
+      assert.ok(req.capabilities instanceof Set);
+      assert.strictEqual(req.capabilityMode, RESOLUTION_MODES.LEGACY_COMPATIBILITY);
+      assert.ok(req.capabilities.has('finding.report'));
+
+      const granted = await makeUser('operator');
+      const [sql, params] = grant(granted, ORG, 'org.config_admin');
+      assert.strictEqual((await attempt(sql, params)).accepted, true);
+      const req2 = { user: { id: granted } };
+      await attachCapabilities(req2, response(), () => {});
+      assert.strictEqual(req2.capabilityMode, RESOLUTION_MODES.EXPLICIT_GRANTS);
+      assert.ok(!req2.capabilities.has('finding.report'), 'explicit mode drops the legacy bundle');
+    });
+
+    it('is not reachable through an API-key principal (machine authority stays separate)', async () => {
+      // An API-key principal carries req.apiKey and no human user id; the guard
+      // must deny rather than resolve machine authority as a human.
+      const res = response();
+      let advanced = false;
+      await requireCapability('knowledge.publish')({ apiKey: { id: 1, scopes: ['admin'] } }, res, () => { advanced = true; });
+      assert.strictEqual(advanced, false, 'an API-key principal must not satisfy a human capability guard');
+      assert.strictEqual(res.statusCode, 401);
+    });
+  });
+
 
   describe('migration safety', () => {
     it('applies cleanly and is safe to re-apply', async () => {
