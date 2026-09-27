@@ -1,269 +1,116 @@
 /**
- * Role-Based Access Control (RBAC) - Frontend
- * 
- * Permission levels:
- * - 'all' - Can perform action on any record
- * - 'own' - Can only perform action on own records
- * - 'none' - Cannot perform action
+ * Role display helpers (presentation only).
+ *
+ * ATM-003 milestone 5 removed this file's duplicated client-side authorization
+ * matrix. The browser must never hold a copy of the authorization rules: it is
+ * not an authorization boundary, and a duplicated matrix drifts from the server
+ * silently. Measured before removal, that matrix had no consumer — its
+ * `checkPermission`, `hasPermission` and `showIfPermitted` functions were loaded
+ * by two pages and called by none.
+ *
+ * Capability-based presentation now comes from the capability descriptor:
+ *   public/js/capabilities.js  ->  GET /api/users/me/capabilities
+ *
+ * What remains here are role *display* helpers used to label and organise the UI.
+ * A role is NOT authority in the capability model: to decide whether to show a
+ * control, use `window.atimanCapabilities.hasCapability(...)`, and remember that
+ * showing or hiding a control never authorizes the operation — the server
+ * authorizes it from the same resolver.
  */
 
-// Permission matrix (mirrors backend configuration)
-const PERMISSIONS = {
-  USERS: {
-    VIEW: { admin: 'all', supervisor: 'all', operator: 'none' },
-    CREATE: { admin: 'all', supervisor: 'none', operator: 'none' },
-    UPDATE: { admin: 'all', supervisor: 'own', operator: 'own' },
-    DELETE: { admin: 'all', supervisor: 'none', operator: 'none' },
-    ASSIGN_FACILITY: { admin: 'all', supervisor: 'none', operator: 'none' }
-  },
-  WORK_ORDERS: {
-    VIEW_ALL: { admin: 'all', supervisor: 'all', operator: 'none' },
-    VIEW_OWN: { admin: 'all', supervisor: 'all', operator: 'all' },
-    CREATE: { admin: 'all', supervisor: 'all', operator: 'none' },
-    UPDATE: { admin: 'all', supervisor: 'all', operator: 'none' },
-    DELETE: { admin: 'all', supervisor: 'none', operator: 'none' },
-    ASSIGN: { admin: 'all', supervisor: 'all', operator: 'none' },
-    UPDATE_STATUS: { admin: 'all', supervisor: 'all', operator: 'own' },
-    ADD_NOTES: { admin: 'all', supervisor: 'all', operator: 'own' }
-  },
-  INSPECTIONS: {
-    VIEW: { admin: 'all', supervisor: 'all', operator: 'all' },
-    SUBMIT_READINGS: { admin: 'all', supervisor: 'all', operator: 'own' },
-    MANAGE_POINTS: { admin: 'all', supervisor: 'all', operator: 'none' },
-    EDIT_READINGS: { admin: 'all', supervisor: 'all', operator: 'none' }
-  },
-  EQUIPMENT: {
-    VIEW: { admin: 'all', supervisor: 'all', operator: 'all' },
-    CREATE: { admin: 'all', supervisor: 'none', operator: 'none' },
-    UPDATE: { admin: 'all', supervisor: 'none', operator: 'none' },
-    DELETE: { admin: 'all', supervisor: 'none', operator: 'none' }
-  },
-  FACILITIES: {
-    VIEW: { admin: 'all', supervisor: 'all', operator: 'all' },
-    CREATE: { admin: 'all', supervisor: 'none', operator: 'none' },
-    UPDATE: { admin: 'all', supervisor: 'none', operator: 'none' },
-    DELETE: { admin: 'all', supervisor: 'none', operator: 'none' }
-  },
-  SCHEDULES: {
-    VIEW: { admin: 'all', supervisor: 'all', operator: 'all' },
-    CREATE: { admin: 'all', supervisor: 'all', operator: 'none' },
-    UPDATE: { admin: 'all', supervisor: 'all', operator: 'none' },
-    DELETE: { admin: 'all', supervisor: 'none', operator: 'none' }
-  },
-  TASKS: {
-    VIEW: { admin: 'all', supervisor: 'all', operator: 'all' },
-    CREATE: { admin: 'all', supervisor: 'none', operator: 'none' },
-    UPDATE: { admin: 'all', supervisor: 'none', operator: 'none' },
-    DELETE: { admin: 'all', supervisor: 'none', operator: 'none' }
-  },
-  REPORTS: {
-    VIEW: { admin: 'all', supervisor: 'all', operator: 'all' },
-    EXPORT: { admin: 'all', supervisor: 'all', operator: 'none' }
-  }
-};
-
-// Cache for user permissions fetched from server
-let cachedPermissions = null;
 let userRole = null;
 
 /**
- * Get current user's role
+ * Get current user's role (display only).
  * @returns {string|null}
  */
 function getUserRole() {
   if (userRole) return userRole;
-  
-  // Try to get from body data attribute (server-rendered)
+
   const bodyRole = document.body.getAttribute('data-user-role');
   if (bodyRole) {
     userRole = bodyRole;
     return userRole;
   }
-  
-  // Try localStorage
-  const userStr = localStorage.getItem('user');
-  if (userStr) {
-    try {
-      const user = JSON.parse(userStr);
-      userRole = user.role;
-      return userRole;
-    } catch (e) {
-      console.error('Error parsing user:', e);
-    }
-  }
-  
+
   return null;
 }
 
 /**
- * Check permission level for a resource/action
- * @param {string} resource - Resource name (e.g., 'WORK_ORDERS')
- * @param {string} action - Action name (e.g., 'CREATE')
- * @returns {string} - 'all', 'own', or 'none'
+ * Does the authenticated principal hold this capability?
+ *
+ * Delegates to the server-supplied descriptor. Presentation only, and fail-closed:
+ * if the descriptor has not loaded or has failed, no capability is reported and
+ * gated controls stay hidden. Forging this state in the browser authorizes nothing.
  */
-function checkPermission(resource, action) {
-  const role = getUserRole();
-  if (!role) return 'none';
-  
-  if (!PERMISSIONS[resource] || !PERMISSIONS[resource][action]) {
-    return 'none';
-  }
-  
-  return PERMISSIONS[resource][action][role] || 'none';
+function hasCapability(capability) {
+  const descriptor = window.atimanCapabilities;
+  return !!(descriptor && typeof descriptor.hasCapability === 'function'
+    && descriptor.hasCapability(capability));
 }
 
-/**
- * Check if user has permission
- * @param {string} resource - Resource name
- * @param {string} action - Action name
- * @param {boolean} isOwn - Whether the resource belongs to the user
- * @returns {boolean}
- */
-function hasPermission(resource, action, isOwn = false) {
-  const level = checkPermission(resource, action);
-  
-  if (level === 'all') return true;
-  if (level === 'own' && isOwn) return true;
-  
-  return false;
-}
-
-/**
- * Check if user is admin
- * @returns {boolean}
- */
+/** Role display helper. Not an authorization check. */
 function isAdmin() {
   return getUserRole() === 'admin';
 }
 
-/**
- * Check if user is supervisor or admin
- * @returns {boolean}
- */
+/** Role display helper. Not an authorization check. */
 function isSupervisor() {
   const role = getUserRole();
   return role === 'admin' || role === 'supervisor';
 }
 
-/**
- * Check if user is operator
- * @returns {boolean}
- */
+/** Role display helper. Not an authorization check. */
 function isOperator() {
   return getUserRole() === 'operator';
 }
 
 /**
- * Show/hide elements based on permission
- * @param {string} selector - CSS selector
- * @param {string} resource - Resource name
- * @param {string} action - Action name
- * @param {boolean} isOwn - Whether resource belongs to user
+ * @deprecated The client authorization matrix was removed in ATM-003 milestone 5.
+ *
+ * These are retained only as fail-closed no-ops so that a stale caller cannot
+ * treat a removed matrix as a permissive default, and cannot show or hide a
+ * control based on duplicated rules. Always reports none / false / does nothing.
  */
-function showIfPermitted(selector, resource, action, isOwn = false) {
-  const elements = document.querySelectorAll(selector);
-  const permitted = hasPermission(resource, action, isOwn);
-  
-  elements.forEach(el => {
-    el.style.display = permitted ? '' : 'none';
-  });
-}
+function checkPermission() { return 'none'; }
+
+/** @deprecated see checkPermission. */
+function hasPermission() { return false; }
+
+/** @deprecated see checkPermission. */
+function showIfPermitted() { /* no-op by design */ }
+
+/** @deprecated see checkPermission. */
+function disableIfNotPermitted() { /* no-op by design */ }
+
+/** @deprecated see checkPermission. */
+function fetchUserPermissions() { return Promise.resolve(null); }
+
+/** @deprecated see checkPermission. */
+function clearPermissionsCache() { /* no-op by design */ }
 
 /**
- * Disable elements based on permission
- * @param {string} selector - CSS selector
- * @param {string} resource - Resource name
- * @param {string} action - Action name
- * @param {boolean} isOwn - Whether resource belongs to user
- */
-function disableIfNotPermitted(selector, resource, action, isOwn = false) {
-  const elements = document.querySelectorAll(selector);
-  const permitted = hasPermission(resource, action, isOwn);
-  
-  elements.forEach(el => {
-    if (!permitted) {
-      el.disabled = true;
-      el.classList.add('disabled');
-      el.title = 'You do not have permission to perform this action';
-    }
-  });
-}
-
-/**
- * Apply RBAC to the page - hide/show elements based on role
+ * Load the capability descriptor on page load.
+ *
+ * The client no longer derives or enforces authorization; it loads the
+ * presentation descriptor and capability-aware callers consume it.
  */
 function applyRBAC() {
-  const role = getUserRole();
-  if (!role) return;
-  
-  // Hide admin-only elements for non-admins
-  if (!isAdmin()) {
-    document.querySelectorAll('.admin-only').forEach(el => {
-      el.style.display = 'none';
-    });
-  }
-  
-  // Hide supervisor+admin elements from operators
-  if (isOperator()) {
-    document.querySelectorAll('.supervisor-only').forEach(el => {
-      el.style.display = 'none';
-    });
-  }
-  
-  // Show operator-only elements
-  if (!isOperator()) {
-    document.querySelectorAll('.operator-only').forEach(el => {
-      el.style.display = 'none';
-    });
+  if (window.atimanCapabilities && typeof window.atimanCapabilities.load === 'function') {
+    window.atimanCapabilities.load();
   }
 }
 
-/**
- * Fetch user permissions from server
- * @returns {Promise<Object>}
- */
-async function fetchUserPermissions() {
-  if (cachedPermissions) return cachedPermissions;
-  
-  try {
-    const token = localStorage.getItem('token');
-    const response = await fetch('/api/users/me/permissions', {
-      headers: { 'Authorization': `Bearer ${token}` }
-    });
-    
-    if (response.ok) {
-      const data = await response.json();
-      if (data.success) {
-        cachedPermissions = data.data.permissions;
-        return cachedPermissions;
-      }
-    }
-  } catch (error) {
-    console.error('Error fetching permissions:', error);
-  }
-  
-  return null;
-}
-
-/**
- * Clear cached permissions (call on logout)
- */
-function clearPermissionsCache() {
-  cachedPermissions = null;
-  userRole = null;
-}
-
-// Apply RBAC on page load
 document.addEventListener('DOMContentLoaded', applyRBAC);
 
-// Export functions for use in other scripts
 window.RBAC = {
   getUserRole,
-  checkPermission,
-  hasPermission,
+  hasCapability,
   isAdmin,
   isSupervisor,
   isOperator,
+  checkPermission,
+  hasPermission,
   showIfPermitted,
   disableIfNotPermitted,
   applyRBAC,
