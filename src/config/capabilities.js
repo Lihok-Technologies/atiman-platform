@@ -82,55 +82,83 @@ const RESOLUTION_MODES = Object.freeze({
 });
 
 /**
- * Legacy-role compatibility bundles.
+ * Legacy-role compatibility bundles — PARITY VERIFIED (milestone 4).
  *
- * These exist so that existing users keep working while explicit grants become
- * the authority. A bundle is applied ONLY when the user has no active explicit
- * grant, and it must never exceed the authority that role had before the
- * capability model existed — see the parity record in the milestone 4 register.
+ * These exist so existing users keep working while explicit grants become the
+ * authority. A bundle applies ONLY when the principal holds no active explicit
+ * grant, and every entry below was verified against the authority that role
+ * actually had BEFORE the capability model existed:
  *
- * Deliberately absent from every bundle:
- *   platform.admin, knowledge.taxonomy_admin, integration.service.
+ *   src/config/permissions.js (resource/action matrix) and the guards on the
+ *   routes that enforce it. The per-capability evidence, including where parity
+ *   was impossible and the less-privileged mapping was chosen, is recorded in
+ *   docs/architecture/ATM-003-R3-Compatibility-Parity-Register.md.
  *
- * `knowledge.publish` is present for admin and supervisor because both could
- * publish through the existing requireAdmin seam before this campaign, and
- * removing it would be a compatibility regression rather than a safety gain.
- * `knowledge.legacy_clearance` is present for admin only, matching the
- * administrative act of clearing legacy content; it is not reachable by
- * supervisor or operator today.
+ * Deliberately in NO bundle:
+ *   platform.admin, knowledge.taxonomy_admin, integration.service
+ *     — never human-grantable in V1.
+ *   knowledge.legacy_clearance
+ *     — no route enforces it, so no role could perform it; granting it through
+ *       compatibility would pre-authorise a future capability. Explicit grant
+ *       required.
+ *
+ * A bundle is an explicit enumeration, never a wildcard: a capability added to
+ * the vocabulary later is NOT silently granted to any legacy role.
  */
 const LEGACY_COMPATIBILITY_BUNDLES = Object.freeze({
+  // Parity: INSPECTIONS.SUBMIT (supervisor=all, operator=all, ADMIN=NONE) and
+  // FINDINGS.CREATE (all three roles).
   operator: Object.freeze([
     CAPABILITIES.INSPECTION_EXECUTE,
-    CAPABILITIES.FINDING_REPORT,
-    CAPABILITIES.EVIDENCE_ATTACH
+    CAPABILITIES.FINDING_REPORT
   ]),
+
+  // Parity: inspection execution (INSPECTIONS.SUBMIT), finding reporting
+  // (FINDINGS.CREATE), knowledge authoring and lifecycle (create/update were
+  // guarded by requireAdmin = admin OR supervisor; submit/review/approve/
+  // safety-review by the KNOWLEDGE matrix where supervisor=all), publication
+  // (requireAdmin), finding management (FINDINGS.MANAGE, supervisor=all, mapped
+  // to the finer assessment/monitoring/closure/escalation capabilities) and
+  // inspection assignment (WORK_ORDERS.ASSIGN / INSPECTIONS.MANAGE_POINTS,
+  // supervisor=all).
   supervisor: Object.freeze([
     CAPABILITIES.INSPECTION_EXECUTE,
     CAPABILITIES.FINDING_REPORT,
-    CAPABILITIES.EVIDENCE_ATTACH,
+    CAPABILITIES.KNOWLEDGE_AUTHOR,
+    CAPABILITIES.KNOWLEDGE_SUBMIT,
+    CAPABILITIES.KNOWLEDGE_REVIEW,
+    CAPABILITIES.KNOWLEDGE_APPROVE,
+    CAPABILITIES.KNOWLEDGE_PUBLISH,
+    CAPABILITIES.KNOWLEDGE_SAFETY_REVIEW,
+    CAPABILITIES.FINDING_ASSESS,
+    CAPABILITIES.FINDING_MONITOR,
+    CAPABILITIES.FINDING_CLOSE,
+    CAPABILITIES.ESCALATION_PREPARE,
+    CAPABILITIES.ESCALATION_APPROVE,
+    CAPABILITIES.INSPECTION_ASSIGN
+  ]),
+
+  // Everything the admin role could reach, minus the two entries recorded above.
+  // Notably ABSENT: inspection.execute — INSPECTIONS.SUBMIT is `admin: none`
+  // (the legacy application explicitly refuses to let an admin perform an
+  // inspection), so granting it here would expand admin authority.
+  admin: Object.freeze([
+    CAPABILITIES.FINDING_REPORT,
     CAPABILITIES.FINDING_ASSESS,
     CAPABILITIES.FINDING_MONITOR,
     CAPABILITIES.FINDING_CLOSE,
     CAPABILITIES.ESCALATION_PREPARE,
     CAPABILITIES.ESCALATION_APPROVE,
     CAPABILITIES.INSPECTION_ASSIGN,
+    CAPABILITIES.EVIDENCE_ATTACH,
+    CAPABILITIES.KNOWLEDGE_AUTHOR,
+    CAPABILITIES.KNOWLEDGE_SUBMIT,
     CAPABILITIES.KNOWLEDGE_REVIEW,
     CAPABILITIES.KNOWLEDGE_APPROVE,
     CAPABILITIES.KNOWLEDGE_PUBLISH,
-    CAPABILITIES.KNOWLEDGE_SAFETY_REVIEW
-  ]),
-  admin: Object.freeze([
-    CAPABILITIES.INSPECTION_EXECUTE, CAPABILITIES.INSPECTION_ASSIGN,
-    CAPABILITIES.FINDING_REPORT, CAPABILITIES.FINDING_ASSESS,
-    CAPABILITIES.FINDING_MONITOR, CAPABILITIES.FINDING_CLOSE,
-    CAPABILITIES.ESCALATION_PREPARE, CAPABILITIES.ESCALATION_APPROVE,
-    CAPABILITIES.EVIDENCE_ATTACH,
-    CAPABILITIES.KNOWLEDGE_AUTHOR, CAPABILITIES.KNOWLEDGE_SUBMIT,
-    CAPABILITIES.KNOWLEDGE_REVIEW, CAPABILITIES.KNOWLEDGE_APPROVE,
-    CAPABILITIES.KNOWLEDGE_PUBLISH, CAPABILITIES.KNOWLEDGE_SAFETY_REVIEW,
-    CAPABILITIES.KNOWLEDGE_LEGACY_CLEARANCE,
-    CAPABILITIES.ORG_USER_ADMIN, CAPABILITIES.ORG_CONFIG_ADMIN
+    CAPABILITIES.KNOWLEDGE_SAFETY_REVIEW,
+    CAPABILITIES.ORG_USER_ADMIN,
+    CAPABILITIES.ORG_CONFIG_ADMIN
   ])
 });
 
