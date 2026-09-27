@@ -1,0 +1,13 @@
+<header class="atiman-header">
+  <div class="atiman-header__row">
+    <div>
+      <h1 class="atiman-header__title"><%= title %></h1>
+      <% if (organizationName) { %>
+        <div class="atiman-header__context"><%= organizationName %></div>
+      <% } %>
+    </div>
+    <span class="atiman-header__spacer"></span>
+    <%- include('connectivity') %>
+    <a class="atiman-header__account" href="<%= accountHref %>">Account</a>
+  </div>
+</header>

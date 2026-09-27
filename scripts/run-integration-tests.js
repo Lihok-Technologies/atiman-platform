@@ -58,7 +58,10 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'tests/ai-assistance-disclosure.test.js',
   // ATM-003 capability grant foundation (migration 022): tenant-scoped,
   // attributed, revocable grant storage with no authority backfill.
-  'tests/capability-grants.test.js'
+  'tests/capability-grants.test.js',
+  // ATM-002-I1: Atiman application shell, capability-composed work navigation
+  // and the canonical Today entry.
+  'tests/atiman-shell.test.js'
 ];
 
 /**

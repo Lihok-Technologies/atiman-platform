@@ -93,6 +93,10 @@ app.use((req, res, next) => {
 app.use('/api', routes);
 console.log('[APP] Routes mounted at /api');
 
+// Atiman-native application shell (ATM-002-I1). Task-first work navigation,
+// capability-composed, and independent of the legacy mobile router.
+app.use('/atiman', require('./routes/atiman.routes'));
+
 // Mobile UI routes (separate from API)
 app.use('/mobile', require('./routes/mobile.routes'));
 
@@ -127,6 +131,10 @@ app.get('/signup', (req, res) => {
 // Old views archived in /archive/views/
 // ========================================
 
+// ATM-002-I1 entry-point reconciliation: Today is the canonical authenticated
+// work entry. The legacy Today and home entries redirect to it so there is one
+// landing concept and existing bookmarks keep working.
+app.get('/today', require('./routes/atiman.routes'));
 app.get('/dashboard', (req, res) => res.redirect('/mobile/dashboard'));
 app.get('/work-orders', (req, res) => res.redirect('/mobile/work-orders'));
 app.get('/work-orders/:id', (req, res) => res.redirect(`/mobile/work-orders/${req.params.id}`));

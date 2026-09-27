@@ -65,6 +65,8 @@ const DB_MUTATING_SUITES = [
   'ai-assistance-disclosure.test.js',
   // ATM-003 capability grant foundation (migration 022).
   'capability-grants.test.js',
+  // ATM-002-I1 Atiman shell (resolves real capabilities, reads real product state).
+  'atiman-shell.test.js',
   'step6-access-control.test.js',
   'step6-coverage-e2e.test.js',
   'step6-performance.test.js',
@@ -95,7 +97,8 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'm6r3-r1-remediation.test.js',
   'knowledge-authoring.test.js',
   'ai-assistance-disclosure.test.js',
-  'capability-grants.test.js'
+  'capability-grants.test.js',
+  'atiman-shell.test.js'
 ];
 
 const REPO_ROOT = path.resolve(__dirname, '..');

@@ -1,0 +1,83 @@
+/**
+ * Atiman semantic design tokens (ATM-002-R4).
+ *
+ * Three-tier architecture: these are TIER 2 semantic tokens — the only tokens
+ * product code may reference. Tier 1 scales and Tier 3 component tokens are
+ * declared here too, but components read semantics.
+ *
+ * BRANDING IS OPEN (ATM-002-R4 §2): final palette and typeface values are not
+ * approved. The values below are deliberately NEUTRAL implementation values
+ * chosen for legibility and contrast, not an Atiman brand. Replacing them here
+ * changes every component without touching markup. The legacy ODM amber is NOT
+ * carried over as Atiman identity.
+ *
+ * Tier 1 scales are intentionally small: this slice proves the foundation, it
+ * does not migrate the application.
+ */
+
+:root {
+  /* ---- Tier 1: scales ---------------------------------------------------- */
+  --atiman-space-1: 4px;
+  --atiman-space-2: 8px;
+  --atiman-space-3: 12px;
+  --atiman-space-4: 16px;
+  --atiman-space-5: 24px;
+  --atiman-space-6: 32px;
+
+  --atiman-radius-sm: 6px;
+  --atiman-radius-md: 10px;
+  --atiman-radius-lg: 16px;
+
+  --atiman-font-size-sm: 0.875rem;
+  --atiman-font-size-md: 1rem;
+  --atiman-font-size-lg: 1.25rem;
+  --atiman-font-size-xl: 1.5rem;
+
+  --atiman-font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+
+  --atiman-border-width: 1px;
+  --atiman-focus-width: 3px;
+
+  /* Field-use target floor (ATM-002-R4 §5, R7 §5): an ATIMAN standard, not a
+     WCAG 2.1 AA requirement. */
+  --atiman-target-min: 44px;
+
+  /* ---- Tier 2: semantics ------------------------------------------------- */
+  --atiman-surface: #ffffff;
+  --atiman-surface-raised: #ffffff;
+  --atiman-surface-sunken: #f4f5f7;
+  --atiman-surface-inverse: #1f2933;
+
+  --atiman-text: #1f2933;
+  --atiman-text-muted: #5b6672;
+  --atiman-text-inverse: #ffffff;
+  --atiman-text-link: #1b4f9c;
+
+  --atiman-border: #d5dae0;
+  --atiman-border-strong: #9aa5b1;
+
+  --atiman-action: #1b4f9c;
+  --atiman-action-text: #ffffff;
+  --atiman-action-subtle: #e8eef8;
+
+  --atiman-focus: #0b3d91;
+
+  --atiman-status-info: #1b4f9c;
+  --atiman-status-attention: #8a4b00;
+  --atiman-status-attention-surface: #fdf3e3;
+  --atiman-status-neutral-surface: #eef1f4;
+  --atiman-status-danger: #a11b1b;
+
+  --atiman-connectivity-online: #1c6b3c;
+  --atiman-connectivity-degraded: #8a4b00;
+  --atiman-connectivity-offline: #5b6672;
+
+  --atiman-attention: var(--atiman-status-attention);
+  --atiman-attention-surface: var(--atiman-status-attention-surface);
+
+  --atiman-shadow-raised: 0 1px 2px rgba(31, 41, 51, 0.08), 0 1px 3px rgba(31, 41, 51, 0.06);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --atiman-motion: 0s; }
+}
