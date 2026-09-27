@@ -2,7 +2,15 @@
 
 **Document ID:** ATM-005  
 **Title:** Legacy ODM-CMMS User Experience Inventory  
-**Status:** Controlled Architecture Document — Draft for Review  
+**Status:** Controlled Architecture Document — Draft for Review *(historical evidence)*.  
+**Reconciliation (ATM-002-R1, 2026-09-27).** This inventory's per-screen verdicts, §4 discard list
+and §6 implementation ordering remain useful historical evidence. One premise is now **stale**
+and must not be relied on as current fact: the claim that the product has *module-first bottom
+navigation*. Measured at the R1 baseline, the primary navigation has already evolved toward
+task-first — `Today · Inspect · Report · Know · Assess · Escalate`, role-gated — while the
+underlying route and view surface remains substantially legacy/module-oriented (work orders,
+calendar, maintenance plans, reports, coverage, 18 admin surfaces, archived duplicates). The
+historical observation is retained above rather than rewritten.  
 **Repository:** `/Users/gcb/Documents/GitHub/ODM-CMMS`  
 **Branch:** `atm-005-ux-inventory`  
 **Date:** 2026-08-10  

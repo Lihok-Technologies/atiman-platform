@@ -2,7 +2,11 @@
 
 **Document ID:** ATM-002  
 **Title:** Atiman Experience Architecture  
-**Status:** Controlled Architecture Document — Draft for Review  
+**Status:** Controlled Architecture Document — Draft for Review *(historical)*.  
+**Authority for V1 is `ATM-002-R1-Experience-Architecture-V1.md`**, which ratifies the approved
+V1 principles, classifies every section of this draft (APPROVED V1 / DEFERRED / OPEN /
+HISTORICAL-SUPERSEDED) and lists what V1 explicitly does **not** ratify. This draft is retained
+as historical reasoning; where the two differ, R1 governs.  
 **Repository:** `/Users/gcb/Documents/GitHub/ODM-CMMS`  
 **Branch:** `atm-002-experience-architecture`  
 **Date:** 2026-08-10  
