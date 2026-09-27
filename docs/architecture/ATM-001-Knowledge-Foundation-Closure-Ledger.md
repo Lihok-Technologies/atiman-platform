@@ -1,12 +1,14 @@
 # ATM-001 Knowledge Foundation — Closure Ledger
 
 **Document ID:** ATM-001-CL
-**Status:** Record of execution and classification. **This ledger decides nothing.** It records what
-was executed, what each remaining item's *existing* authority is, and which items require an OWNER
-decision. It creates no milestone, authorises no implementation and defers nothing on its own
-authority.
+**Status:** Record of execution, classification, OWNER adjudication and **ATM-001 V1 completion**.
+The ledger itself decides nothing; it records what was executed, what each item's authority is, and
+the dispositions the OWNER has since issued. The governed deferrals in §3 and the completion record
+in §9 are **OWNER decisions recorded here**, not decisions made by this document.
 
-**Baseline of record:** `origin/main` = `6b26c0eb70aa6d2958b3edcc01cd29aaafb7c70b`
+**Baseline of record:** `origin/main` = `922a0405f3bbfa52d2d34d46368912c3295eea94`
+**OWNER V1 closure adjudication date:** 2026-09-27
+**V1 completion date:** 2026-09-27
 **Migration endpoint:** `021_ai_assistance_disclosure.sql` (chain 001–021, forward-only)
 **Authority basis:** the OWNER-authorized ATM-001 Knowledge Foundation autonomous closure campaign
 (§11 requires this ledger; §12.18 requires evidence to be recorded).
@@ -68,23 +70,25 @@ acceptance** wherever schema was involved.
 
 ---
 
-## 3. Items requiring OWNER adjudication (campaign §18‑B / §18‑J)
+## 3. OWNER-adjudicated deferrals — ATM-001 V1 (2026-09-27)
 
-Named in approved architecture, but **no controlled record authorises implementation and none defers
-them**. Implementing any of these would require a new product/architecture decision, which is an OWNER
-act. Bounded-PR boundary is stated so that authorisation can be given precisely.
+The OWNER / Chief Architect adjudicated the four concepts that were previously recorded here as
+"neither implemented nor deferred". **All four are DEFERRED from ATM-001 V1.** These are **governed
+deferrals**: they are not declarations that the capabilities will never exist, they are not
+cancellations, and **no implementation was performed**. Each remains discoverable for future
+architectural adjudication through the trigger recorded below.
 
-| Item | Approved source naming it | Current state | Remaining gap | Bounded PR boundary if authorised | L | V | D |
-|---|---|---|---|---|---|---|---|
-| **Knowledge-version effective dates** | ATM-001 §8.3, §15, §17 | NOT STARTED — the governed model deliberately cannot express a date (M6.3 §2.4); effective dates exist only on the *source* registry (`knowledge_source_versions`) | No version effectivity window is representable | One migration + admission rule + freeze semantics | ✓ | ✓ | ✓ |
-| **Knowledge Pack adoption records** | ATM-001 §10.3, §17 | NOT STARTED — §10.3 states the mechanism "is an **open architectural question** pending ATM-002 / implementation review" | Which tenants hold which pack versions | Undetermined until the §10.3 question is decided | ✓ | ✓ | ✓ |
-| **Knowledge-to-knowledge dependency resolution** | ATM-001 §6.2, §17 | NOT STARTED | Pack dependency expression and resolution | Undetermined | ✓ | ✓ | ✓ |
-| **Contribution-request entity** | ATM-001 §15, §17 (replaces `equipment_type_family_proposals`) | NOT STARTED — legacy table still exists, empty, ungoverned; legacy disposition recorded `REJECT_TEST_OR_DEMO` in M6.1 | A governed contribution workflow in place of an ad-hoc proposal table | Undetermined | ✓ | ✓ | ✓ |
+| Concept | Disposition | Reason (OWNER) | V1 completion impact | Future architectural trigger | Decision date | Implementation |
+|---|---|---|---|---|---|---|
+| **Knowledge-version effective dates** | **DEFERRED from ATM-001 V1** | "The V1 Knowledge Foundation already governs identity, approval, versioning and publication. Temporal applicability, supersession and effective-dating semantics shall be designed when an approved Knowledge Services / consumption capability requires them." | None — not required for V1 correctness | When an approved Knowledge Services / consumption capability requires temporal applicability, supersession or effective-dating semantics | 2026-09-27 | **None performed** |
+| **Knowledge Pack adoption records** | **DEFERRED from ATM-001 V1** | "ATM-001 §10.3 explicitly identifies the adoption mechanism as an open architectural question pending ATM-002. ATM-001 shall not pre-empt that decision." | None — V1 does not pre-empt the ATM-002 question | ATM-002 (Experience Architecture) / the §10.3 adoption-mechanism decision | 2026-09-27 | **None performed** |
+| **Knowledge-to-knowledge dependency resolution** | **DEFERRED from ATM-001 V1** | "Dependency resolution introduces graph, compatibility and cascading lifecycle semantics that are not prerequisites for the governed V1 Knowledge Foundation." | None — not a prerequisite for governance of V1 knowledge | When graph/compatibility/cascading-lifecycle semantics are required by an approved capability | 2026-09-27 | **None performed** |
+| **Contribution-request entity** | **DEFERRED from ATM-001 V1** | "Contribution requests are collaboration/workflow capability around future knowledge evolution, not a prerequisite for the V1 foundation's governed storage, provenance, authoring, approval, versioning and publication." | None — collaboration workflow is not a V1 foundation prerequisite | When an approved knowledge-evolution / collaboration capability is designed | 2026-09-27 | **None performed** |
 
-**Why this ledger does not resolve them:** classifying an item as implemented, or deferring it, is a
-governance decision. This ledger reports the evidence; the OWNER decides.
-
----
+**Effect on the V1 completion assessment.** With these four governed deferrals recorded, the
+previously unmet condition of the campaign's completion standard — "every approved ATM-001 milestone
+is complete **or explicitly governed-deferred**" — is satisfied. No deferred capability is asserted to
+be implemented anywhere in this ledger, and none is asserted to be cancelled.
 
 ## 4. Deferred by approved architecture (explicitly recorded deferrals)
 
@@ -116,6 +120,89 @@ an approved record, and is therefore satisfied under the campaign's completion s
 
 ---
 
+## 4a. Adjudication of every other open / deferred item
+
+Each item below was tested against a single question: **is it required for ATM-001 V1 correctness?**
+"Correctness" means: does its absence create a contradiction with Knowledge Before Transactions,
+governed knowledge identity, provenance, evidence, authoring, approval, versioning, publication,
+tenant/organization isolation, Knowledge Packs, AI disclosure, or human accountability? No item was
+implemented during this adjudication.
+
+| Item | What the approved record actually says | Required for V1 correctness? | Contradiction check |
+|---|---|---|---|
+| **M6.1 D03** inspection-point anchor | "remain **OPEN**"; "not prerequisites for a bounded single-Equipment-Type authoring slice unless direct evidence proves otherwise" (M6.4 §12) | **No** — GOVERNED-DEFERRED / OPEN | None: inspection-point *anchoring* is a knowledge-modelling choice for a future authored slice, not a property of the implemented governance |
+| **M6.1 D05** decomposition identity space | OPEN (M6.4 §12); decomposition architecture excluded from ATM-001 | **No** — GOVERNED-DEFERRED / OPEN | None: decomposition is explicitly outside the governed V1 boundary (also permanently excluded, §5) |
+| **M6.1 D07** false-provenance remediation | OPEN; M6.1 inventoried 35 rows and rewrote nothing | **No** — GOVERNED-DEFERRED / OPEN | None: it concerns *legacy data quality*, not the governance model; V1 makes no claim about those rows' standards conformance |
+| **M6.1 D08** retired-type content target | OPEN (M6.4 §12) | **No** — GOVERNED-DEFERRED / OPEN | None |
+| **M6.1 D09** endpoint procedure for Type 284 | OPEN (M6.4 §12) | **No** — GOVERNED-DEFERRED / OPEN | None |
+| **G1** rights/licence status not structurally represented | Dated debt; "must be resolved before the first procedure is authored from a licensed standard or a customer-supplied document whose rights are not already established" | **No, not yet** — event-triggered debt; trigger has **not fired** (production: 0 authored definitions) | None in V1: no procedure has been authored from such material |
+| **G2** evidence subjects template XOR step | Dated debt; "must be resolved before the first safety control or applicability claim is asserted as *type-specific evidenced* knowledge" | **No, not yet** — event-triggered debt; trigger has **not fired** (production: 0 safety controls, 0 versions) | None in V1: no type-specific evidenced claim exists; template-level safety review remains the operative attestation |
+| **`ARCHITECTURE_GAP-2`** tenant/customer alias layer | M5R.1 §6.2: requirement mandatory, implementation deferred to a decision coordinated with Platform Foundation / tenancy; M5R.4B1 states the isolation mechanism the requirement needs "already exists at the provenance layer" | **No** — see the §4b determination | **None**: core knowledge remains uncontaminated and tenant isolation is enforced |
+| **M5R.3A item D** executable OWNER authority-registration mechanism | "Future implementation — NOT IMPLEMENTED. NOT IN THIS PR."; "no new authorization capability is created in V1" | **No** — explicitly excluded from V1 | None: crosswalk population is a future gated capability (production crosswalks: 0); implementing it would override an approved record |
+| **ATM-013D2 deferrals** (`knowledge_governance_events`, `knowledge_evidence`, `knowledge_entity_evidence`, further AI-governance tables) | "Deferred / not approved for implementation by this task" | **No** — GOVERNED-DEFERRED | None: V1 governance does not depend on an event stream or on those additional tables |
+| **M5R.4B1 D1–D14** (naming/scope refinement, tenant alias layer, delete-guard hardening, contextual term resolution, effectivity-aware reporting, decomposition, duplicate-name detection, false-provenance remediation, ratification state, repository-governance hardening, Project Source synchronisation, unrelated work-order defect) | Recorded with an explicit reason per item (§4) | **No** for V1 correctness; D12/D13 are standing *process* debt, D14 is explicitly unrelated | None: no V1 governance invariant depends on them. D3 (taxonomy delete-guard) is a recorded risk, not an active contradiction — no deletion path is exercised and the taxonomy is unreferenced by any delete flow |
+| **Proprietary material containment** | "a separate bounded mission" | **No** — separate mission by the record's own words | None: containment is about not *reading* that material; V1 reads none |
+| **Marketplace** | Proposed Future Architecture (ATM-000 §15.8, ATM-001 Decision 8) | **No** — not approved | None: marketplace fields carry explicit "not assignable" constraints |
+
+## 4b. Special review — `ARCHITECTURE_GAP-2` (tenant/customer alias layer)
+
+The ledger previously reported the source record's words: *"The isolation requirement is mandatory.
+Only its implementation is deferred."* That wording was **not** reinterpreted; it was resolved against
+the record's own later, OWNER-ratified authority.
+
+**Mandatory for WHAT.** The requirement is that **customer-specific terminology and proprietary
+knowledge must not contaminate Atiman Core Knowledge** — i.e. the canonical taxonomy stays global and
+uncontaminated. It is a *non-contamination* requirement, not a requirement that a tenant terminology
+capability exist.
+
+**Mandatory at WHICH architectural stage.** M5R.1 defers only "the exact architecture" of the alias
+layer, "to be taken in coordination with Platform Foundation / tenancy architecture". It does not make
+the alias layer a precondition of the taxonomy's correctness.
+
+**Is current isolation already correct without it.** **Yes, on both layers, and this is measured:**
+- *Structural:* **no taxonomy table carries tenant scope** — `equipment_categories`, `equipment_classes`,
+  `equipment_types`, `equipment_type_term`, `equipment_type_identity_resolution` and
+  `equipment_type_external_classification` have **no `organization_id` column**. Customer terminology
+  therefore has **no representable home inside the taxonomy**; contamination is not merely prevented,
+  it is unrepresentable.
+- *Provenance:* the later OWNER-ratified record states the isolation mechanism the requirement needs
+  "already exists at the provenance layer". Verified directly:
+  `uq_knowledge_sources_code_org UNIQUE NULLS NOT DISTINCT (organization_id, source_code)`, with
+  `organization_id` NULL = global and non-NULL = tenant (`fk_knowledge_sources_organization`). This is
+  where customer material is held, tenant-scoped.
+- *Behavioural:* cross-organization knowledge create, edit and read are all **refused** (VUDA H1:
+  `ACTOR_ORGANIZATION_MISMATCH`, `KNOWLEDGE_AUTHORING_NOT_FOUND`, `KNOWLEDGE_AUTHORING_NOT_FOUND`).
+  `equipment_type_term` exists but is a **global** governed identity-lifecycle registry (migration 019,
+  no `organization_id`) — it is not, and cannot act as, a tenant alias layer.
+
+**Determination.** `ARCHITECTURE_GAP-2` is **not required for ATM-001 V1 correctness**, and the
+deferred item `M5R.4B1 D2` (tenant/customer alias layer) does **not** create a present isolation
+bypass. **Exact future gate:** the alias layer's architecture must be decided — coordinated with
+Platform Foundation / tenancy — **before any capability that lets a customer attach their own
+terminology to canonical Atiman identity is implemented**. Until then, accommodating customer
+terminology inside the global taxonomy would *violate* the requirement rather than satisfy it.
+
+## 4c. Special review — G1 / G2
+
+- **Expired dates?** No. Neither item carries a date or a deadline. "Dated architectural debt" means
+  the debt was *identified at a known point*; M6.4 §11 expresses both as **event-triggered** revisit
+  conditions, not calendar deadlines.
+- **Explicit completion deadlines?** None exist.
+- **Correctness / security / tenancy consequences in V1?** None, because neither trigger has fired:
+  production holds **0 authored definitions** (G1's trigger: authoring a procedure from a licensed
+  standard or a customer-supplied document whose rights are not established) and **0 safety controls /
+  0 versions** (G2's trigger: asserting a safety-control or applicability claim as type-specific
+  evidenced knowledge). Both were verified by read-only production inspection.
+- **Merely future hardening?** G2 is a granularity limitation (evidence attaches at template XOR step
+  granularity, so safety-control and applicability claims cannot carry their own evidence row); the
+  approved V1 attestation for safety remains the **template-level safety review**, which is enforced —
+  `SAFETY_NOT_ASSESSED` / `SAFETY_STATE_INVALID` / `SAFETY_REVIEW_ATTRIBUTION_MISSING` /
+  `SAFETY_CONTROLS_MISSING`. G1 is a *rights representation* gap that becomes material only when
+  licensed or customer-restricted material is authored from.
+- **Determination:** **neither G1 nor G2 blocks ATM-001 V1.** A passed date would not have been
+  permission to defer again — there is no date to pass. Both remain recorded with their exact future
+  gates, and their triggers are verified un-fired, not assumed un-fired.
+
 ## 5. Outside ATM-001
 
 Named in the product roadmap but belonging to other domains (ATM-000 §23 lists them as *Proposed
@@ -130,9 +217,10 @@ for roadmap transition. No other domain was started.
 
 ## 6. Verification evidence recorded by this ledger
 
-**Production acceptance of the final accepted revision** (read-only, `BEGIN TRANSACTION READ ONLY`):
-deployed revision `209027385ed0…` then `4cb612b70f…` then `6b26c0eb70…`; `/health` and `/api/health`
-200; pre-deploy `[21/21] applying 021_ai_assistance_disclosure.sql ... ok`, `SUCCESS: 21/21`,
+**Production acceptance** (read-only, `BEGIN TRANSACTION READ ONLY`): deployed revisions for this
+campaign — `209027385ed0…` (Step 3B-B), `4cb612b70f…`, `6b26c0eb70…` (record accuracy) and
+`922a0405f3…` (this ledger); `/health` and `/api/health` 200 at each; pre-deploy
+`[21/21] applying 021_ai_assistance_disclosure.sql ... ok`, `SUCCESS: 21/21`,
 `PostgreSQL smoke test PASSED`.
 
 **Production corpus (unchanged throughout):** 846 definitions (ids 1100–1945, contiguous), 3,099
@@ -148,7 +236,18 @@ due-date/scheduled-occurrence column in any knowledge table.
 
 **Gate results at the final revision:** Step 3B-B suite 25/25 · sanctioned native PostgreSQL
 integration 680/680 · `npm test` 138/138 · database-test-guard 80/80 · governed foundation 48/48 ·
-Step 3B-B VUDA 29/29.
+Step 3B-B VUDA 29/29 · **final whole-ATM-001 VUDA 29/29** (fresh, independent: own database, own
+fixtures, areas A–L — knowledge identity, provenance, authoring, approval, versioning, publication,
+Knowledge Packs, tenancy, legacy preservation, migration integrity, product boundary, AI boundary).
+
+**Final production reconciliation (§9 of the closure mission), read-only:** endpoint columns
+`ai_assisted` + `ai_assistance_detail`; `chk_task_templates_ai_assistance_coherence` present;
+13 immutability guards; 1 database-level admission trigger; corpus `846 / 3,099 / 846 applicability /
+0 safety controls / 0 versions / 0 step versions`; origins `846 legacy_generated / 0 authored /
+0 other`; AI disclosure `846 NULL / 0 FALSE / 0 TRUE / 0 detail`; `0 packs / 0 pack versions /
+0 crosswalks / 0 external classifications / 0 crosswalk evidence`; identity range `1100–1945` with
+**0 gaps**; **0 rows of any knowledge table created since the campaign began**; 1 user, 0
+organizations. No unexplained drift.
 
 **Record-accuracy audit:** 9 stale status claims corrected across 6 records (PRs #53, #54); all 22
 hashes asserted in ATM-001 records exist and every stated commit→tree relationship matches; 52
@@ -161,25 +260,78 @@ referenced paths resolve (2 are documented historical paths renamed in M5R.2A); 
 
 | Condition | Status |
 |---|---|
-| Every approved ATM-001 milestone complete **or explicitly governed-deferred** | **NOT MET** — §3 lists four items that are neither |
+| Every approved ATM-001 milestone complete **or explicitly governed-deferred** | **MET** — the 25 executed milestones in §2 are complete; the four previously unresolved concepts are now **OWNER-adjudicated governed deferrals** (§3), and every other open item is adjudicated in §4a–§4c |
 | No BLOCKER remains | MET |
-| No unresolved MAJOR threatens Knowledge Foundation correctness | MET (deferred items are recorded, not latent-defect) |
+| No unresolved MAJOR threatens Knowledge Foundation correctness | MET — deferred items are recorded with evidence, not latent defects; no deferred item contradicts a V1 invariant (§4a) |
 | All required LCQE gates passed | MET |
 | All required milestone VUDAs passed | MET |
-| Final whole-ATM-001 VUDA passes | MET (with the observations in §4) |
-| Production reconciliation passes | MET |
-| Controlled records accurately describe current architecture | MET (verified by the audit in §6) |
-| No unauthorised scope entered the product | MET |
+| Final whole-ATM-001 VUDA passes | MET — 29/29, fresh and independent (§6) |
+| Production reconciliation passes | MET — no drift, no fabrication, no unauthorised content (§6) |
+| Controlled records accurately describe current architecture | MET — record-accuracy audit and remediations (§6); 9 stale claims corrected across 6 records |
+| No unauthorised scope entered the product | MET — product and AI boundaries verified in the final VUDA (K1, L1) |
 
-**Consequence:** the decisive unmet condition is the first. Until the four items in §3 are
-individually either implemented or explicitly deferred by the OWNER, ATM-001 Knowledge Foundation
-cannot be declared complete.
+**Consequence:** every condition is satisfied within the governed V1 boundary recorded in §8. ATM-001
+Knowledge Foundation V1 is complete; see the completion record in §9.
 
 ---
 
-## 8. What this ledger does not do
+## 8. ATM-001 V1 completion boundary
 
-It does not authorise implementation, does not defer anything on its own authority, does not create
-a milestone, does not amend any architecture decision, and does not alter any schema, code or data.
-It records execution, classification and evidence so that the OWNER's remaining decision can be taken
-against a complete and checkable picture.
+**ATM-001 V1 provides the governed foundation for maintenance and engineering knowledge.** The
+boundary below is stated from implemented, verified truth only. No capability is claimed that does not
+exist.
+
+**Within the V1 boundary — implemented, merged, deployed and production-accepted:**
+
+| Capability | What is actually implemented |
+|---|---|
+| **Taxonomy** | Equipment categories / classes / types with a governed identity lifecycle (`equipment_type_identity_resolution`, `equipment_type_term`), identity states `canonical / superseded / retired`, canonical-only import resolution with ambiguity refused, cross-tenant resolution refusals, and a global (untenanted) canonical taxonomy |
+| **Maintenance knowledge** | Task definitions, steps, safety controls, and Equipment-Type applicability as governed first-class knowledge |
+| **Applicable inspection knowledge** | Governed via the same substrate; `INSPECTION_TEMPLATE` is a seeded knowledge type — no separate inspection governance stack exists or is claimed |
+| **Safety knowledge** | Safety controls with an explicit attributed safety-review state (`not_assessed`, `reviewed_no_control_required`, `reviewed_controls_defined`) and admission rules enforcing the attestation; per-control provenance is explicitly out of scope (G2) |
+| **Provenance** | `knowledge_sources` → `knowledge_source_versions` authority+edition registry with tenant/global isolation (`UNIQUE NULLS NOT DISTINCT (organization_id, source_code)`), source categories, publication/effective dates, content hash |
+| **Evidence** | Working (`knowledge_template_evidence`) and frozen (`knowledge_template_version_evidence`) evidence with confidence and supporting-role vocabularies, exactly-one-subject enforcement, tenant-scope guards, immutable frozen rows, and `ON DELETE RESTRICT` accountability linkage |
+| **Governed authoring** | Draft-only authoring primitive: explicit accountable actor (absent / inactive / foreign refused), organization ownership verified against resulting state, `FOR UPDATE` locking, whitelist-only writable columns, draft completeness reporting, and an explicit refusal to author over legacy/system knowledge |
+| **Legacy protection** | Immutable `content_origin`, accountable legacy clearance, legacy-generated knowledge exempt from the disclosure requirement, and no historical rewrite anywhere |
+| **Approval** | Review state machine `draft → under_review → approved / rejected`, mandatory attributed reviewer/approver, segregation of duties, and approval bound to a content fingerprint |
+| **Semantic fingerprints** | One canonical fingerprint over material governed fields (including the AI disclosure) plus applicability; changing any material field stales the approval; no parallel approval mechanism exists |
+| **Versioning** | Immutable published versions with monotonic per-definition version numbers, sealed step sets, frozen evidence and applicability, and historical versions provably unrewritten |
+| **Immutable publication** | Publication admission that fails closed with every reason before the first irreversible write, mirrored by a database-level admission trigger, with 13 immutability guards across the frozen tables |
+| **Knowledge Packs** | Pack identity and versions, immutable membership guarded by a locking guard, scope compatibility, publication admission requiring every member to be an already-published immutable version |
+| **AI-assistance disclosure** | Declaration on the working definition, frozen into the version and every step version, `NULL ≠ FALSE` preserved, participation in the approval fingerprint, and a publish-time refusal of the retired parameters |
+| **Organization / tenant governance as implemented** | `shared` / `customer` scope with explicit organization binding, cross-tenant create/edit/read refusals, and provenance-layer global/tenant isolation for sources |
+
+**Explicitly NOT within the V1 boundary (governed deferrals — see §3 and §4):** knowledge-version
+effective dates; Knowledge Pack adoption records; knowledge-to-knowledge dependency resolution;
+contribution-request entity; the tenant/customer terminology alias layer; the executable OWNER
+authority-registration mechanism; decomposition architecture; `knowledge_governance_events` and the
+ATM-013D2-deferred tables; marketplace; and the event-triggered debt G1/G2.
+
+---
+
+## 9. ATM-001 V1 completion record
+
+# ATM-001 KNOWLEDGE FOUNDATION V1 — COMPLETE
+
+| Element | Record |
+|---|---|
+| **Completion date** | 2026-09-27 |
+| **Accepted production revision** | `922a0405f3bbfa52d2d34d46368912c3295eea94` |
+| **Migration endpoint** | `021_ai_assistance_disclosure.sql` — chain 001–021, forward-only, idempotent under the established convention (no applied-migrations ledger; every file re-applied and verified `21/21` in production) |
+| **Corpus reconciliation** | 846 definitions (ids 1100–1945, contiguous, 0 gaps) · 3,099 steps · 846 applicability anchors · 846 `legacy_generated` · **0 authored** · **0 published versions** · 0 packs · 0 crosswalks · `ai_assisted` **NULL ×846, FALSE ×0** · 0 knowledge rows created by any deployment |
+| **Milestone ledger** | §2 — 25 executed milestones (M1 → M6.4 Step 3B-B, plus two record-accuracy remediations), each with merge revision and completion evidence |
+| **LCQE result** | PASS at each implementation candidate, including the final closure-record review |
+| **Final VUDA result** | **29/29 PASS** — fresh whole-ATM-001 VUDA across areas A–L (§6) |
+| **Governed deferrals** | The four OWNER-adjudicated deferrals (§3) plus every explicitly recorded deferral (§4, §4a–§4c) |
+| **Future architectural triggers** | Recorded per deferred item: Knowledge Services/consumption capability (effective dates); ATM-002 / §10.3 (pack adoption); approved capability requiring graph/compatibility semantics (dependencies); knowledge-evolution/collaboration capability (contribution requests); Platform Foundation/tenancy-coordinated decision (tenant alias layer); first crosswalk population (OWNER registration mechanism); first licensed or customer-restricted authored procedure (G1); first type-specific evidenced safety/applicability claim (G2) |
+
+**The foundation is complete within its explicitly governed V1 boundary.** No deferred capability is
+complete, and none is claimed to be. The deferrals are governed decisions that remain discoverable for
+future architectural adjudication through the triggers above.
+
+## 10. What this ledger does not do
+
+The ledger document itself authorises no implementation, creates no milestone, amends no architecture
+decision, and alters no schema, code or data. The deferrals recorded in §3 are **OWNER decisions
+recorded here**; the completion statement in §9 records the outcome of the OWNER's V1 closure
+adjudication against the evidence assembled in this ledger.
