@@ -673,7 +673,20 @@ class TaskTemplate extends BaseModel {
     );
     const steps = Array.isArray(rawSteps) ? rawSteps : [];
 
-    return { template, steps };
+    // ATM-001 M6.3: the declared Equipment-Type applicability set is part of the
+    // material content an approver endorses, so it is loaded together with the
+    // content it binds. Ordered by identity; the fingerprint sorts it anyway, so
+    // membership changes register while reordering never fabricates a change.
+    const rawApplicability = await runner.query(
+      `SELECT equipment_type_id, is_primary
+         FROM task_template_equipment_types
+        WHERE task_template_id = ?
+        ORDER BY equipment_type_id`,
+      [templateId]
+    );
+    const applicability = Array.isArray(rawApplicability) ? rawApplicability : [];
+
+    return { template, steps, applicability };
   }
 
   /**
@@ -714,7 +727,7 @@ class TaskTemplate extends BaseModel {
    * after approval cannot be published under the stale approval.
    */
   async approveTemplate(templateId, userId, organizationId) {
-    const { template, steps } = await this.loadWorkingContent(templateId, organizationId);
+    const { template, steps, applicability } = await this.loadWorkingContent(templateId, organizationId);
 
     if (template.review_state !== 'under_review') {
       throw Object.assign(
@@ -723,7 +736,7 @@ class TaskTemplate extends BaseModel {
       );
     }
 
-    const contentSha = computeContentSha(template, steps);
+    const contentSha = computeContentSha(template, steps, applicability);
 
     await this.query(
       `UPDATE task_templates

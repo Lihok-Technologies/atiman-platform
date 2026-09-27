@@ -47,11 +47,47 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   // ATM-001 M5R.4B2: governed taxonomy application (disposable database).
   'tests/taxonomy-application.test.js',
   // ATM-001 M6.3: governed knowledge foundation (migration 020, disposable databases).
-  'tests/governed-knowledge-foundation.test.js'
+  'tests/governed-knowledge-foundation.test.js',
+  // ATM-001 M6.3 VUDA R1: remediation regression coverage (cross-tenant pack
+  // access, approval identity, frozen applicability, member scope, pack ownership).
+  'tests/m6r3-r1-remediation.test.js'
 ];
+
+/**
+ * Build the environment for the disposable test processes.
+ *
+ * ATM-001 M6.3 R1 finding: nested processes (the migration runner, the knowledge
+ * bootstrap, and anything else a suite spawns) resolve connection configuration
+ * with libpq-style PG* variables taking precedence over DB_*. An inherited
+ * PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD therefore silently overrides the
+ * disposable database a suite intended to use — and the bootstrap is destructive.
+ *
+ * Every libpq connection variable is stripped here, at the boundary where
+ * disposable processes are launched, so no ambient value can redirect a
+ * destructive test. The TEST_DB_* gate above is unchanged and remains the only
+ * source of disposable connection configuration.
+ */
+const LIBPQ_ENV_NAMES = [
+  'PGHOST', 'PGPORT', 'PGDATABASE', 'PGUSER', 'PGPASSWORD', 'PGPASSFILE',
+  'PGSSLMODE', 'PGSSLROOTCERT', 'PGSSLCERT', 'PGSSLKEY', 'PGOPTIONS',
+  'PGSERVICE', 'PGSERVICEFILE', 'PGCONNECT_TIMEOUT', 'PGAPPNAME', 'PGCLIENTENCODING',
+  'PGTARGETSESSIONATTRS', 'PGREQUIRESSL', 'PGKRBSRVNAME', 'PGGSSLIB', 'PGCHANNELBINDING',
+  // Non-test connection configuration must not leak into disposable processes
+  // either: a suite that spawns a child without the test gate would otherwise
+  // fall through to DB_* and reach a real database.
+  'DB_HOST', 'DB_PORT', 'DB_NAME', 'DB_USER', 'DB_PASSWORD', 'DB_SSL',
+  'DB_SSL_REJECT_UNAUTHORIZED', 'DATABASE_URL', 'PGURL', 'POSTGRES_URL'
+];
+
+function disposableChildEnv() {
+  const env = { ...process.env };
+  for (const name of LIBPQ_ENV_NAMES) delete env[name];
+  delete env.NODE_TEST_CONTEXT;
+  return { ...env, NODE_ENV: 'test', RUN_DB_TESTS: 'true' };
+}
 
 const result = spawnSync(process.execPath, ['--test', ...SANCTIONED_POSTGRES_INTEGRATION_SUITES], {
   stdio: 'inherit',
-  env: { ...process.env, NODE_ENV: 'test', RUN_DB_TESTS: 'true' }
+  env: disposableChildEnv()
 });
 process.exit(result.status ?? 1);

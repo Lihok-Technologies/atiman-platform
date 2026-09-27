@@ -41,8 +41,47 @@ const MATERIAL_TEMPLATE_FIELDS = Object.freeze([
   'template_code', 'template_name', 'maintenance_type', 'task_kind', 'task_scope',
   'description', 'frequency_value', 'frequency_unit', 'estimated_duration_minutes',
   'required_skills', 'required_tools', 'priority', 'activity_code_id',
-  'equipment_type_id', 'industry_id'
+  'equipment_type_id', 'industry_id',
+  // ---- ATM-001 M6.3 governed semantics -------------------------------------
+  // Approval binds the governed state the approver actually endorsed, so every
+  // ratified M6.3 semantic field is material: changing any of them changes what
+  // would publish while a stale approval would otherwise still describe the old
+  // claim. Excluded deliberately: legacy_clearance_by_user_id / _at / _rationale.
+  // Those record an accountable provenance act over legacy material rather than
+  // knowledge content, are write-once, and are enforced separately by publication
+  // admission, so they are not part of what the approver endorses.
+  'knowledge_type_id', 'task_family_id', 'maintenance_strategy',
+  'trigger_mechanism', 'trigger_condition_parameter', 'trigger_condition_operator',
+  'trigger_condition_value', 'trigger_condition_unit', 'trigger_condition_context',
+  'trigger_event_description', 'trigger_basis_source_version_id',
+  'knowledge_scope', 'content_origin', 'organization_id'
 ]);
+
+/**
+ * Canonical Equipment-Type applicability for fingerprinting.
+ *
+ * Applicability is a SET of Equipment Type identities, so it is sorted by
+ * identity before hashing: reordering the same membership never registers as a
+ * change, while adding, removing, or retargeting a member always does. An absent
+ * set and an empty set fingerprint alike, because neither is declared
+ * applicability. Ids normalise through Number so 1 and "1" fingerprint alike,
+ * mirroring how step numbers are treated.
+ */
+function canonicalApplicability(applicability) {
+  return [...(applicability || [])]
+    .map((entry) => {
+      const rawId = entry === null || entry === undefined ? null : entry.equipment_type_id;
+      const numeric = Number(rawId);
+      return {
+        equipment_type_id: rawId !== null && Number.isFinite(numeric) ? numeric : rawId,
+        is_primary: Boolean(entry && entry.is_primary)
+      };
+    })
+    .sort((a, b) => {
+      if (a.equipment_type_id === b.equipment_type_id) return 0;
+      return a.equipment_type_id < b.equipment_type_id ? -1 : 1;
+    });
+}
 
 const MATERIAL_STEP_FIELDS = Object.freeze([
   'step_no', 'step_type', 'instruction', 'data_type', 'expected_value',
@@ -58,16 +97,21 @@ const SUPPORTED_STEP_DATA_TYPES = Object.freeze([
 /**
  * Deterministic fingerprint of the material knowledge content.
  *
- * Any change to a material template field, to the step set, or to the ordering
- * or content of steps changes the fingerprint. It is captured at approval and
- * recomputed at publication, so an approval can never be applied to content the
- * approver did not see.
+ * Any change to a material template field, to the step set, to the ordering or
+ * content of steps, or to the declared Equipment-Type applicability set changes
+ * the fingerprint. It is captured at approval and recomputed at publication, so
+ * an approval can never be applied to content the approver did not see.
+ *
+ * Applicability participates because it is a material governed claim — it states
+ * which Equipment Types the procedure applies to — and it is represented
+ * order-independently so reordering never fabricates a change.
  *
  * @param {Object} template - working template row
  * @param {Array<Object>} steps - working steps, ordered by step_no
+ * @param {Array<Object>} [applicability] - declared Equipment Type applicability
  * @returns {string} sha256 hex digest
  */
-function computeContentSha(template, steps) {
+function computeContentSha(template, steps, applicability) {
   const canonicalTemplate = {};
   for (const field of MATERIAL_TEMPLATE_FIELDS) {
     canonicalTemplate[field] = template[field] === undefined ? null : template[field];
@@ -91,7 +135,11 @@ function computeContentSha(template, steps) {
 
   return crypto
     .createHash('sha256')
-    .update(JSON.stringify({ template: canonicalTemplate, steps: canonicalSteps }))
+    .update(JSON.stringify({
+      template: canonicalTemplate,
+      steps: canonicalSteps,
+      applicability: canonicalApplicability(applicability)
+    }))
     .digest('hex');
 }
 
@@ -297,7 +345,7 @@ function validatePublicationAdmission(input) {
   // Approval applies to the content the approver saw. If the material content
   // changed after approval, the approval no longer describes what would publish.
   if (template.review_state === 'approved') {
-    const currentSha = computeContentSha(template, steps);
+    const currentSha = computeContentSha(template, steps, applicability);
     if (!template.approved_content_sha) {
       failures.push(failure('APPROVED_CONTENT_UNBOUND', 'Approval is not bound to content; re-approval required'));
     } else if (template.approved_content_sha !== currentSha) {

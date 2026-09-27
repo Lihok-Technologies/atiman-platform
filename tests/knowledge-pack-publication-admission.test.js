@@ -1113,7 +1113,7 @@ describe('Knowledge Pack Publication Admission (ATM-001 M4)', { skip: DB_TEST_SK
              (knowledge_pack_version_id, task_template_version_id, added_by_user_id)
            VALUES (?, ?, ?)`,
           [version.id, tenantVersion.versionId, REVIEWER])),
-        (error) => /shared pack version .* may not contain customer knowledge/i
+        (error) => /may not contain customer knowledge: an M6\.3 pack member must be globally applicable \(shared\) knowledge/i
           .test(error.message || ''),
         'migration 020 must refuse the incompatible member scope at COMMIT'
       );

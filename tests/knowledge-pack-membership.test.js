@@ -94,16 +94,15 @@ let packSeq = 0;
 async function createPackVersion(lifecycleState = 'draft') {
   packSeq += 1;
   return withConn(async (conn) => {
-    // M6.3 governed knowledge: a pack has an explicit ownership scope, and a
-    // customer pack may contain shared knowledge plus customer knowledge of its
-    // own organization (a shared pack may contain shared knowledge only). The
-    // pack fixture is therefore customer-owned by the same organization that
-    // owns the member template versions, so the pack and its members agree on
-    // ownership. Nothing in this suite asserts the pack's scope itself.
+    // ATM-001 M6.3 ratifies a single member rule: a Pack member must be globally
+    // applicable (shared) knowledge. A shared Pack therefore holds shared
+    // members, which is exactly the M4 premise this suite was accepted against.
+    // Customer-owned Packs may exist, but customer ownership does not authorize
+    // customer-scoped members during M6.3 (migration 020's membership guard).
     const [pack] = await query(conn,
-      `INSERT INTO knowledge_packs (pack_code, pack_name, knowledge_scope, organization_id)
-       VALUES (?, ?, 'customer', ?) RETURNING id`,
-      [`M2-PACK-${Date.now()}-${packSeq}`, 'M2 Test Pack', ORG]);
+      `INSERT INTO knowledge_packs (pack_code, pack_name, knowledge_scope)
+       VALUES (?, ?, 'shared') RETURNING id`,
+      [`M2-PACK-${Date.now()}-${packSeq}`, 'M2 Test Pack']);
 
     const governed = ['published', 'superseded', 'retired'].includes(lifecycleState);
     const attributionColumns = governed
@@ -150,9 +149,9 @@ async function createPublishedTemplateVersion() {
     const [template] = await query(conn,
       `INSERT INTO task_templates (equipment_type_id, organization_id, template_code, template_name,
          maintenance_type, task_kind, frequency_value, frequency_unit, estimated_duration_minutes, priority, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, content_origin)
-       VALUES (?, ?, ?, 'M2 Governed Template', 'preventive', 'inspection', NULL, NULL, 30, 'medium', (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', 'customer', 'authored')
+       VALUES (?, ?, ?, 'M2 Governed Template', 'preventive', 'inspection', NULL, NULL, 30, 'medium', (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', 'shared', 'authored')
        RETURNING id`,
-      [EQUIPMENT_TYPE, ORG, `M2-${Date.now()}-${templateSeq}`]);
+      [EQUIPMENT_TYPE, null, `M2-${Date.now()}-${templateSeq}`]);
     // M6.3 governed knowledge: a governed definition must declare at least one
     // Equipment Type of applicability, and publication copies the working
     // declaration into the immutable version junction. The declared type is the
@@ -168,11 +167,13 @@ async function createPublishedTemplateVersion() {
        VALUES (?, 1, 'instruction', 'Inspect the asset for abnormal condition', true)`,
       [template.id]);
 
-    // Evidence is required by the M1 admission gate.
+    // Evidence is required by the M1 admission gate. A shared (globally
+    // applicable) definition is supported by a global source: migration 011
+    // refuses a tenant-scoped source for a definition that has no organization.
     const [source] = await query(conn,
       `INSERT INTO knowledge_sources (source_code, source_category, default_title, organization_id)
-       VALUES (?, 'engineering_standard', 'M2 Source', ?) RETURNING id`,
-      [`M2-SRC-${Date.now()}-${templateSeq}`, ORG]);
+       VALUES (?, 'engineering_standard', 'M2 Source', NULL) RETURNING id`,
+      [`M2-SRC-${Date.now()}-${templateSeq}`]);
     const [sourceVersion] = await query(conn,
       `INSERT INTO knowledge_source_versions (knowledge_source_id, version_designation, title)
        VALUES (?, '1.0', 'M2 Source Version') RETURNING id`, [source.id]);
@@ -204,9 +205,9 @@ async function createUnpublishedWorkingTemplate() {
     const [template] = await query(conn,
       `INSERT INTO task_templates (equipment_type_id, organization_id, template_code, template_name,
          maintenance_type, task_kind, frequency_value, frequency_unit, estimated_duration_minutes, priority, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, content_origin)
-       VALUES (?, ?, ?, 'M2 Unpublished Working Template', 'preventive', 'inspection', NULL, NULL, 30, 'medium', (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', 'customer', 'authored')
+       VALUES (?, ?, ?, 'M2 Unpublished Working Template', 'preventive', 'inspection', NULL, NULL, 30, 'medium', (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', 'shared', 'authored')
        RETURNING id`,
-      [EQUIPMENT_TYPE, ORG, `M2-UNPUB-${Date.now()}-${templateSeq}`]);
+      [EQUIPMENT_TYPE, null, `M2-UNPUB-${Date.now()}-${templateSeq}`]);
     await query(conn,
       `INSERT INTO task_template_steps (task_template_id, step_no, step_type, instruction, is_required)
        VALUES (?, 1, 'instruction', 'Working step that was never published', true)`,

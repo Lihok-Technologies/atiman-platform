@@ -57,6 +57,8 @@ const DB_MUTATING_SUITES = [
   'taxonomy-application.test.js',
   // ATM-001 M6.3: governed knowledge foundation (migration 020; creates disposable databases).
   'governed-knowledge-foundation.test.js',
+  // ATM-001 M6.3 VUDA R1: remediation regression coverage for the seven R1 findings.
+  'm6r3-r1-remediation.test.js',
   'step6-access-control.test.js',
   'step6-coverage-e2e.test.js',
   'step6-performance.test.js',
@@ -83,7 +85,8 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'taxonomy-identity-lifecycle.test.js',
   'asset-import-resolver-safety.test.js',
   'taxonomy-application.test.js',
-  'governed-knowledge-foundation.test.js'
+  'governed-knowledge-foundation.test.js',
+  'm6r3-r1-remediation.test.js'
 ];
 
 const REPO_ROOT = path.resolve(__dirname, '..');

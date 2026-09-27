@@ -64,14 +64,40 @@ function respondToError(error, res, next) {
   return next(error);
 }
 
-/** Resolve the Pack addressed by the route, or respond 404. */
+/**
+ * The authenticated caller's organization, or null when the principal carries
+ * none. Always derived from the session, never from the request body or query.
+ */
+const callerOrganizationId = (req) =>
+  (req.user && req.user.organization_id !== undefined && req.user.organization_id !== null
+    ? req.user.organization_id
+    : null);
+
+/**
+ * Resolve the Pack addressed by the route, enforcing M6.3 tenant access.
+ *
+ * ATM-001 M6.3 R1: every Pack-addressed operation funnels through here — reads,
+ * nested reads, version creation, membership operations and lifecycle actions —
+ * so organization-aware access is enforced once at the authorization boundary
+ * instead of being re-implemented per route.
+ *
+ * The organization is ALWAYS the authenticated caller's own context. A
+ * caller-supplied organization identifier is never trusted: honouring one would
+ * let any authenticated user read or mutate another tenant's governed Pack merely
+ * by naming that tenant in the request.
+ *
+ * A Pack the caller cannot reach is reported as not found, exactly as a Pack that
+ * does not exist, so the response discloses nothing about other tenants.
+ */
 async function requirePack(req, res) {
   const packId = asInt(req.params.packId);
   if (packId === null) {
     res.status(400).json({ success: false, message: 'A valid pack id is required' });
     return null;
   }
-  const pack = await KnowledgePack.findPackById(packId);
+  const pack = await KnowledgePack.findPackById(packId, {
+    organizationId: callerOrganizationId(req)
+  });
   if (!pack) {
     res.status(404).json({ success: false, message: 'Knowledge pack not found' });
     return null;
@@ -139,9 +165,13 @@ exports.createPack = async (req, res, next) => {
 
 exports.listPacks = async (req, res, next) => {
   try {
+    // ATM-001 M6.3 R1: listing is tenant-aware. Shared packs stay visible to
+    // everyone; another organization's customer packs are not disclosed. The
+    // organization comes from the session, never from the query string.
     const packs = await KnowledgePack.listPacks({
       limit: req.query.limit,
-      offset: req.query.offset
+      offset: req.query.offset,
+      organizationId: callerOrganizationId(req)
     });
     return res.json({ success: true, data: packs });
   } catch (error) {

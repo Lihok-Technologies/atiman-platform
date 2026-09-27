@@ -3113,7 +3113,13 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       `SELECT * FROM task_templates WHERE id = $1`, [template.id]);
     const workingSteps = await conn.query(
       `SELECT * FROM task_template_steps WHERE task_template_id = $1 ORDER BY step_no`, [template.id]);
-    const contentSha = computeContentSha(workingTemplate, workingSteps);
+    // ATM-001 M6.3 R1: approval identity covers the declared Equipment-Type
+    // applicability set, exactly as the product computes it, so the approval this
+    // fixture records is bound to the same material content it then publishes.
+    const workingApplicability = await conn.query(
+      `SELECT equipment_type_id, is_primary FROM task_template_equipment_types
+        WHERE task_template_id = $1 ORDER BY equipment_type_id`, [template.id]);
+    const contentSha = computeContentSha(workingTemplate, workingSteps, workingApplicability);
 
     await conn.query(`
       UPDATE task_templates

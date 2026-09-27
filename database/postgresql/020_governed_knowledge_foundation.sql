@@ -746,12 +746,32 @@ CREATE CONSTRAINT TRIGGER trg_task_template_version_publication_admission
 -- ---------------------------------------------------------------------------
 -- A governed pack version must record an explicit scope, and the pack identity
 -- must have established its ownership before any governed version exists.
+--
+-- R1 REMEDIATION: a Pack version's scope is a SNAPSHOT of the ownership its Pack
+-- already declared, so the two can never legitimately disagree — at any lifecycle
+-- state, not only at publication. The consistency check below therefore runs
+-- unconditionally (before the governed-state early return), because an
+-- inconsistent draft snapshot could otherwise be carried into a governed state,
+-- and because a version must never assert an ownership its Pack does not have.
 
 CREATE OR REPLACE FUNCTION knowledge_pack_version_scope_governed_check()
 RETURNS TRIGGER AS $$
 DECLARE
     pack_scope TEXT;
 BEGIN
+    SELECT p.knowledge_scope INTO pack_scope
+      FROM knowledge_packs p WHERE p.id = NEW.knowledge_pack_id;
+
+    -- The snapshot must equal the Pack's established ownership. Written as a
+    -- null-safe comparison so that an unscoped Pack accepts only an unscoped
+    -- draft, and a scoped Pack never accepts an unscoped or different snapshot.
+    IF NEW.knowledge_scope IS DISTINCT FROM pack_scope THEN
+        RAISE EXCEPTION 'knowledge_pack_version % declares knowledge scope % but its pack % has established %',
+            NEW.id, COALESCE(NEW.knowledge_scope, 'NULL'), NEW.knowledge_pack_id,
+            COALESCE(pack_scope, 'no scope')
+            USING ERRCODE = 'check_violation';
+    END IF;
+
     IF NEW.lifecycle_state NOT IN ('published','superseded','retired') THEN
         RETURN NULL;
     END IF;
@@ -760,9 +780,6 @@ BEGIN
         RAISE EXCEPTION 'knowledge_pack_version % cannot be governed: no explicit knowledge scope',
             NEW.id USING ERRCODE = 'check_violation';
     END IF;
-
-    SELECT p.knowledge_scope INTO pack_scope
-      FROM knowledge_packs p WHERE p.id = NEW.knowledge_pack_id;
 
     IF pack_scope IS NULL THEN
         RAISE EXCEPTION 'knowledge_pack_version % cannot be governed: pack % has no established ownership scope',
@@ -787,23 +804,35 @@ CREATE CONSTRAINT TRIGGER trg_knowledge_pack_version_scope_governed
 -- Shared packs may contain only shared knowledge. Customer packs may contain
 -- shared knowledge plus customer knowledge of the same organization. Marketplace
 -- packs cannot exist under the assignability guard.
+--
+-- R1 REMEDIATION: the rule above was too permissive and disagreed with the
+-- application service. ATM-001 M6.3 ratifies a single member rule — a Pack member
+-- must be globally applicable (shared) knowledge. A customer-owned Pack may
+-- exist (it is a tenant's curated pack identity), but customer ownership of the
+-- Pack does NOT authorize customer-scoped member knowledge during M6.3:
+--
+--   shared Pack   -> shared member    permitted
+--   customer Pack -> shared member    permitted
+--   customer Pack -> customer member  REFUSED
+--   marketplace                       not assignable, hence unreachable
+--
+-- Storage now enforces the same rule the service enforces, so a direct SQL write
+-- can no longer compose a pack the service would refuse. The tighter rule is
+-- adopted by storage; the service is not weakened.
 
 CREATE OR REPLACE FUNCTION knowledge_pack_membership_scope_compatibility()
 RETURNS TRIGGER AS $$
 DECLARE
     pack_scope TEXT;
-    pack_org INTEGER;
     member_scope TEXT;
-    member_org INTEGER;
 BEGIN
-    SELECT v.knowledge_scope, p.organization_id
-      INTO pack_scope, pack_org
+    SELECT v.knowledge_scope
+      INTO pack_scope
       FROM knowledge_pack_versions v
-      JOIN knowledge_packs p ON p.id = v.knowledge_pack_id
      WHERE v.id = NEW.knowledge_pack_version_id;
 
-    SELECT tv.knowledge_scope, tv.organization_id
-      INTO member_scope, member_org
+    SELECT tv.knowledge_scope
+      INTO member_scope
       FROM task_template_versions tv
      WHERE tv.id = NEW.task_template_version_id;
 
@@ -812,20 +841,9 @@ BEGIN
             USING ERRCODE = 'check_violation';
     END IF;
 
-    IF pack_scope = 'shared' AND member_scope <> 'shared' THEN
-        RAISE EXCEPTION 'shared pack version % may not contain % knowledge',
+    IF member_scope <> 'shared' THEN
+        RAISE EXCEPTION 'pack version % may not contain % knowledge: an M6.3 pack member must be globally applicable (shared) knowledge',
             NEW.knowledge_pack_version_id, member_scope USING ERRCODE = 'check_violation';
-    END IF;
-
-    IF pack_scope = 'customer' THEN
-        IF member_scope = 'customer' AND member_org IS DISTINCT FROM pack_org THEN
-            RAISE EXCEPTION 'customer pack version % (organization %) may not contain customer knowledge of organization %',
-                NEW.knowledge_pack_version_id, pack_org, member_org USING ERRCODE = 'check_violation';
-        END IF;
-        IF member_scope NOT IN ('shared','customer') THEN
-            RAISE EXCEPTION 'customer pack version % may not contain % knowledge',
-                NEW.knowledge_pack_version_id, member_scope USING ERRCODE = 'check_violation';
-        END IF;
     END IF;
 
     RETURN NULL;
@@ -846,6 +864,115 @@ CREATE CONSTRAINT TRIGGER trg_kpvtv_scope_compatibility_update
     DEFERRABLE INITIALLY DEFERRED
     FOR EACH ROW
     EXECUTE FUNCTION knowledge_pack_membership_scope_compatibility();
+
+-- ===========================================================================
+-- PART 9b — R1 remediation: durable storage guards
+-- ===========================================================================
+-- Three defects allowed direct SQL to mutate governed state that must be
+-- durable. Each guard below mirrors a mechanism the architecture already
+-- expresses elsewhere (migration 011's frozen-evidence immutability, migration
+-- 009's sealed step-set, migration 020's own content_origin immutability), so no
+-- new governance concept is introduced.
+
+-- ---------------------------------------------------------------------------
+-- 9b.1 Frozen Equipment-Type applicability is immutable once the version is sealed.
+-- ---------------------------------------------------------------------------
+-- Migration 009 seals a version's step set; migration 011 refuses to attach
+-- provenance to an already-sealed version. The frozen applicability set is the
+-- third component of the same frozen boundary — it is what a published procedure
+-- applies to — so it is closed by the same seal:
+--
+--   * INSERT is refused once the parent version is sealed (construction is
+--     unaffected: the publication path writes applicability before sealing);
+--   * UPDATE and DELETE are refused unconditionally, because a frozen
+--     applicability row may never be retargeted or removed.
+--
+-- Applicability rows are immutable precisely as frozen evidence rows are, and for
+-- the same reason: the frozen set is a governance claim, not a mutable join.
+
+CREATE OR REPLACE FUNCTION task_template_version_applicability_insert_guard()
+RETURNS TRIGGER AS $$
+DECLARE
+    sealed BOOLEAN;
+BEGIN
+    SELECT v.is_step_set_sealed INTO sealed
+      FROM task_template_versions v
+     WHERE v.id = NEW.task_template_version_id;
+
+    IF sealed IS TRUE THEN
+        RAISE EXCEPTION 'cannot add Equipment-Type applicability to sealed task_template_version %',
+            NEW.task_template_version_id USING ERRCODE = 'insufficient_privilege';
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION task_template_version_applicability_immutable_check()
+RETURNS TRIGGER AS $$
+BEGIN
+    RAISE EXCEPTION 'task_template_version_equipment_types is immutable and cannot be %', TG_OP
+        USING ERRCODE = 'insufficient_privilege';
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_ttvet_insert_before_seal ON task_template_version_equipment_types;
+DROP TRIGGER IF EXISTS trg_ttvet_immutable ON task_template_version_equipment_types;
+
+CREATE TRIGGER trg_ttvet_insert_before_seal
+    BEFORE INSERT ON task_template_version_equipment_types
+    FOR EACH ROW
+    EXECUTE FUNCTION task_template_version_applicability_insert_guard();
+
+CREATE TRIGGER trg_ttvet_immutable
+    BEFORE UPDATE OR DELETE ON task_template_version_equipment_types
+    FOR EACH ROW
+    EXECUTE FUNCTION task_template_version_applicability_immutable_check();
+
+-- ---------------------------------------------------------------------------
+-- 9b.2 Pack ownership is durable once a Pack version exists.
+-- ---------------------------------------------------------------------------
+-- A Pack version snapshots the ownership its Pack declared, and a published
+-- version is immutable. If the Pack identity's ownership could still be rewritten,
+-- the frozen snapshot would silently describe an ownership the Pack no longer
+-- has — the version would keep asserting one thing while its parent said another.
+-- Ownership may therefore be corrected only while the Pack has no versions at all,
+-- which is the window in which nothing yet depends on it.
+--
+-- This does not introduce a general licensing mechanism: it fixes exactly one
+-- column pair, on exactly one table, for exactly as long as a version depends on it.
+
+CREATE OR REPLACE FUNCTION knowledge_pack_ownership_durability_check()
+RETURNS TRIGGER AS $$
+DECLARE
+    version_count INTEGER;
+BEGIN
+    IF NEW.knowledge_scope IS NOT DISTINCT FROM OLD.knowledge_scope
+       AND NEW.organization_id IS NOT DISTINCT FROM OLD.organization_id THEN
+        RETURN NEW;
+    END IF;
+
+    SELECT count(*) INTO version_count
+      FROM knowledge_pack_versions v
+     WHERE v.knowledge_pack_id = OLD.id;
+
+    IF version_count > 0 THEN
+        RAISE EXCEPTION 'knowledge_pack % ownership is durable: % version(s) already snapshot it (was scope %, attempted %)',
+            OLD.id, version_count, COALESCE(OLD.knowledge_scope, 'NULL'),
+            COALESCE(NEW.knowledge_scope, 'NULL')
+            USING ERRCODE = 'insufficient_privilege';
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_knowledge_packs_ownership_durable ON knowledge_packs;
+
+CREATE TRIGGER trg_knowledge_packs_ownership_durable
+    BEFORE UPDATE ON knowledge_packs
+    FOR EACH ROW
+    EXECUTE FUNCTION knowledge_pack_ownership_durability_check();
 
 -- ===========================================================================
 -- PART 10 — legacy corpus classification and applicability backfill
@@ -1719,6 +1846,7 @@ DECLARE
         '1945:WINDER_MOTOR_TESTING';
     v_manifest_count INTEGER;
     v_matched_count INTEGER;
+    v_present_id_count INTEGER;
     v_classified INTEGER;
     v_applicability INTEGER;
 BEGIN
@@ -1745,6 +1873,23 @@ BEGIN
     END IF;
 
     -- 2. how much of the corpus is present?
+    --
+    -- Two distinct counts are needed, and conflating them was a defect: "how many
+    -- frozen identities are present by ID" and "how many match the frozen identity
+    -- EXACTLY (id AND code)". A corpus whose rows all sit on frozen manifest IDs
+    -- but whose codes do not match produces an exact-match count of zero — which
+    -- is indistinguishable from a genuinely absent corpus if only the exact count
+    -- is consulted. That let a tampered or systematically mis-coded corpus be
+    -- silently treated as absent: the migration reported success, classified
+    -- nothing, and backfilled no applicability.
+    --
+    -- Presence is therefore decided by ID, and exactness by the full identity.
+    SELECT count(*) INTO v_present_id_count
+      FROM task_templates t
+      JOIN (SELECT DISTINCT split_part(elem, ':', 1)::INTEGER AS template_id
+              FROM unnest(string_to_array(v_manifest, ',')) AS mf(elem)) m
+        ON m.template_id = t.id;
+
     SELECT count(*) INTO v_matched_count
       FROM task_templates t
       JOIN (SELECT split_part(elem, ':', 1)::INTEGER AS template_id,
@@ -1753,9 +1898,20 @@ BEGIN
         ON m.template_id = t.id
        AND m.template_code = t.template_code;
 
-    IF v_matched_count = 0 THEN
+    -- Genuinely absent corpus: no frozen manifest identity is present at all.
+    -- Rows outside the manifest (ids that are not ratified identities) are none of
+    -- this migration's business and are tolerated and preserved untouched.
+    IF v_present_id_count = 0 THEN
         RAISE NOTICE 'M6.3: reconciled legacy corpus absent - no origin classification performed (allowed no-op)';
         RETURN;
+    END IF;
+
+    -- Any frozen identity present without its ratified code is an identity
+    -- collision at a reserved identity: presence and identity disagree, so the
+    -- migration refuses and rolls back rather than guessing which is right.
+    IF v_matched_count <> v_present_id_count THEN
+        RAISE EXCEPTION 'M6.3 legacy corpus is INCONSISTENT: % ratified identity id(s) present but only % match the frozen identity exactly. A reserved identity carries a non-ratified code. Refusing to classify.',
+            v_present_id_count, v_matched_count USING ERRCODE = 'check_violation';
     END IF;
 
     IF v_matched_count <> v_manifest_count THEN

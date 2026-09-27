@@ -91,6 +91,21 @@ function dbEnv(database, extra = {}) {
     'TEST_DB_PASSWORD', 'NODE_ENV', 'RUN_DB_TESTS']) {
     delete env[key];
   }
+  // ATM-001 M6.3 R1 finding: the migration runner and the bootstrap resolve
+  // connection configuration with libpq-style PG* variables taking precedence
+  // over DB_*. An inherited PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD therefore
+  // silently redirects these disposable subprocesses — and the bootstrap is
+  // destructive — away from the database named here. Every libpq variable is
+  // stripped so that DB_* below is unambiguous, and non-test connection
+  // variables are stripped too so nothing ambient can leak through.
+  for (const key of [
+    'PGHOST', 'PGPORT', 'PGDATABASE', 'PGUSER', 'PGPASSWORD', 'PGPASSFILE',
+    'PGSSLMODE', 'PGSSLROOTCERT', 'PGSSLCERT', 'PGSSLKEY', 'PGOPTIONS',
+    'PGSERVICE', 'PGSERVICEFILE', 'PGCONNECT_TIMEOUT', 'PGAPPNAME', 'PGCLIENTENCODING',
+    'DB_SSL', 'DB_SSL_REJECT_UNAUTHORIZED', 'DATABASE_URL', 'PGURL', 'POSTGRES_URL'
+  ]) {
+    delete env[key];
+  }
   return {
     ...env,
     DB_HOST: SERVER.host, DB_PORT: String(SERVER.port), DB_NAME: database,
@@ -606,7 +621,11 @@ describe('Governed knowledge foundation (ATM-001 M6.3, migration 020)',
         try {
           await pool.query("UPDATE task_templates SET template_code = 'TAMPERED' WHERE id = 1600");
           await assert.rejects(() => apply020(pool), (err) => {
-            assert.match(messageOf(err), /PARTIAL or INCONSISTENT/);
+            // R1 remediation made the message precise: one reserved identity is
+            // present but does not match exactly, which is distinct from a partial
+            // corpus. The invariant under test — refuse and classify nothing — is
+            // unchanged.
+            assert.match(messageOf(err), /INCONSISTENT/);
             return true;
           });
           const r = await pool.query(`
@@ -642,6 +661,170 @@ describe('Governed knowledge foundation (ATM-001 M6.3, migration 020)',
           assert.strictEqual(r.rows[0].junction, 0);
         } finally {
           await pool.end();
+        }
+      });
+
+      it('fails closed when a frozen identity is present with a non-ratified code and nothing matches exactly', async () => {
+        // ATM-001 M6.3 VUDA R1 finding: presence used to be decided by the count
+        // of EXACT (id, code) matches. A corpus consisting of a reserved identity
+        // whose code had been altered therefore produced an exact-match count of
+        // zero, which was indistinguishable from a genuinely absent corpus — so
+        // the migration reported success, classified nothing, and backfilled no
+        // applicability. Presence is now decided by identity id, and exactness by
+        // the full identity, so this case fails closed.
+        const name = uniqueDbName();
+        const pool = await provisionBare019(name);
+        try {
+          await pool.query(SEED_SQL);
+          const [[firstId]] = manifestFromMigration();
+
+          // Exactly one frozen identity, with a code that is not its ratified one.
+          await pool.query(
+            `INSERT INTO task_templates (id, equipment_type_id, template_code, template_name,
+               maintenance_type, task_kind)
+             VALUES ($1, 1, 'NOT_THE_RATIFIED_CODE', 'Tampered reserved identity',
+               'preventive', 'inspection')`, [firstId]);
+
+          await assert.rejects(() => apply020(pool), (err) => {
+            assert.match(messageOf(err), /INCONSISTENT/);
+            assert.match(messageOf(err), /reserved identity carries a non-ratified code/);
+            return true;
+          });
+
+          // Rollback: the whole file is one transaction, so a refused
+          // classification must leave the schema and the corpus exactly as they
+          // were. The column check comes first and on its own: `content_origin` not
+          // existing IS the rollback proof, so it cannot be referenced in the same
+          // statement that asserts its absence.
+          const col = await pool.query(`
+            SELECT count(*)::int AS n FROM information_schema.columns
+             WHERE table_name='task_templates' AND column_name='content_origin'`);
+          assert.strictEqual(col.rows[0].n, 0,
+            'a refused classification must roll back the schema change entirely');
+
+          const corpus = await pool.query(`SELECT count(*)::int AS n FROM task_templates`);
+          assert.strictEqual(corpus.rows[0].n, 1,
+            'the corpus itself must be untouched by a refused classification');
+        } finally {
+          await pool.end();
+        }
+      });
+
+      it('fails closed when every present identity carries a non-ratified code', async () => {
+        // The systemic form of the same defect: a corpus that sits entirely on
+        // reserved identities whose codes were all altered. An exact-match-only
+        // presence test would again see zero and silently no-op.
+        const name = uniqueDbName();
+        const pool = await provisionPre020(name);
+        try {
+          await pool.query(
+            `UPDATE task_templates SET template_code = template_code || '_ALTERED'`);
+
+          await assert.rejects(() => apply020(pool), (err) => {
+            assert.match(messageOf(err), /INCONSISTENT|PARTIAL or INCONSISTENT/);
+            return true;
+          });
+
+          const r = await pool.query(`
+            SELECT (SELECT count(*)::int FROM information_schema.columns
+                     WHERE table_name='task_templates' AND column_name='content_origin') col,
+                   (SELECT count(*)::int FROM task_templates) templates`);
+          assert.strictEqual(r.rows[0].col, 0, 'the schema change must roll back entirely');
+          assert.strictEqual(r.rows[0].templates, EXPECTED.manifest,
+            'the corpus must be untouched by a refused classification');
+        } finally {
+          await pool.end();
+        }
+      });
+
+      it('still treats a genuinely absent corpus as an allowed no-op', async () => {
+        // The counterpart of the two tests above: the absent-corpus no-op must
+        // remain valid, so the fix distinguishes absence from inconsistency rather
+        // than refusing everything that is not a complete corpus.
+        const name = uniqueDbName();
+        const pool = await provisionBare019(name);
+        try {
+          await pool.query(SEED_SQL);
+          await apply020(pool);
+
+          const r = await pool.query(`
+            SELECT (SELECT count(*)::int FROM task_templates) templates,
+                   (SELECT count(*)::int FROM task_template_equipment_types) junction`);
+          assert.strictEqual(r.rows[0].templates, 0, 'no corpus was present');
+          assert.strictEqual(r.rows[0].junction, 0, 'no applicability may be backfilled');
+        } finally {
+          await pool.end();
+        }
+      });
+
+      it('does not let inherited libpq configuration redirect disposable subprocesses', async () => {
+        // ATM-001 M6.3 VUDA R1 finding: the migration runner and the knowledge
+        // bootstrap resolve configuration with PG* taking precedence over DB_*.
+        // An inherited PGDATABASE therefore redirected these disposable
+        // subprocesses — and the bootstrap is destructive — away from the database
+        // they were given.
+        //
+        // A canary database stands in for the ambient target. The test proves the
+        // canary is never touched, so no hostile target is ever contacted in
+        // effect: the assertion is that its contents are unchanged.
+        const canary = uniqueDbName();
+        await createDatabase(canary);
+        const canaryPool = new Pool({ ...SERVER, database: canary, max: 1 });
+        const canaryBefore = await canaryPool.query(`
+          SELECT count(*)::int AS n FROM information_schema.tables WHERE table_schema='public'`);
+        await canaryPool.end();
+
+        const hostile = {
+          PGHOST: SERVER.host,
+          PGPORT: String(SERVER.port),
+          PGDATABASE: canary,
+          PGUSER: SERVER.user,
+          PGPASSWORD: SERVER.password
+        };
+        const saved = {};
+        for (const key of Object.keys(hostile)) saved[key] = process.env[key];
+
+        try {
+          Object.assign(process.env, hostile);
+
+          // 1. Structural: the disposable environment carries no libpq variable,
+          //    so DB_* below is unambiguous.
+          const env = dbEnv('some_intended_database');
+          for (const key of Object.keys(hostile)) {
+            assert.strictEqual(env[key], undefined,
+              `${key} must not be inherited by a disposable subprocess`);
+          }
+          assert.strictEqual(env.DB_NAME, 'some_intended_database');
+
+          // 2. Functional: a spawned runner still targets the database it was
+          //    given, and the ambient target is left untouched.
+          const intended = uniqueDbName();
+          await createDatabase(intended);
+          const result = runRunner(intended);
+          assert.strictEqual(result.status, 0,
+            `the runner must succeed against the database it was given:\n${result.stderr}`);
+
+          const check = new Pool({ ...SERVER, database: canary, max: 1 });
+          const canaryAfter = await check.query(`
+            SELECT count(*)::int AS n FROM information_schema.tables WHERE table_schema='public'`);
+          await check.end();
+          assert.strictEqual(canaryAfter.rows[0].n, canaryBefore.rows[0].n,
+            'inherited libpq configuration must not redirect a disposable subprocess');
+
+          // 3. And the intended database really was migrated, so the run above is
+          //    not a vacuous success.
+          const intendedCheck = new Pool({ ...SERVER, database: intended, max: 1 });
+          const migrated = await intendedCheck.query(`
+            SELECT count(*)::int AS n FROM information_schema.columns
+             WHERE table_name='task_templates' AND column_name='content_origin'`);
+          await intendedCheck.end();
+          assert.strictEqual(migrated.rows[0].n, 1,
+            'the intended disposable database must have received the migration');
+        } finally {
+          for (const key of Object.keys(hostile)) {
+            if (saved[key] === undefined) delete process.env[key];
+            else process.env[key] = saved[key];
+          }
         }
       });
 

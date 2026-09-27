@@ -128,8 +128,26 @@ class KnowledgePack extends BaseModel {
     return this.findPackById(rows[0].id);
   }
 
-  async findPackById(id) {
-    const rows = await this.query('SELECT * FROM knowledge_packs WHERE id = ?', [id]);
+  /**
+   * Look up a Pack identity.
+   *
+   * ATM-001 M6.3 R1: when an authenticated organization is supplied, the lookup
+   * is organization-aware in SQL. A `shared` Pack belongs to no tenant and stays
+   * visible to everyone; a `customer` Pack is visible only to the organization
+   * that owns it. The organization is never read from the request body — it is
+   * the authenticated caller's own context — so a caller cannot widen its own
+   * access by supplying a tenant identifier.
+   */
+  async findPackById(id, { organizationId = null } = {}) {
+    if (organizationId === null || organizationId === undefined) {
+      const rows = await this.query('SELECT * FROM knowledge_packs WHERE id = ?', [id]);
+      return rows[0] || null;
+    }
+    const rows = await this.query(
+      `SELECT * FROM knowledge_packs
+        WHERE id = ? AND (organization_id IS NULL OR organization_id = ?)`,
+      [id, organizationId]
+    );
     return rows[0] || null;
   }
 
@@ -138,10 +156,28 @@ class KnowledgePack extends BaseModel {
     return rows[0] || null;
   }
 
-  async listPacks({ limit = 50, offset = 0 } = {}) {
+  /**
+   * List Pack identities visible to one organization.
+   *
+   * Shared Packs are visible to every caller; customer Packs only to their owner.
+   * Pack codes are globally unique, so listing is filtered rather than partitioned.
+   */
+  async listPacks({ limit = 50, offset = 0, organizationId = null } = {}) {
+    const take = parseInt(limit, 10) || 50;
+    const skip = parseInt(offset, 10) || 0;
+
+    if (organizationId === null || organizationId === undefined) {
+      return this.query(
+        `SELECT * FROM knowledge_packs ORDER BY id LIMIT ? OFFSET ?`,
+        [take, skip]
+      );
+    }
+
     return this.query(
-      `SELECT * FROM knowledge_packs ORDER BY id LIMIT ? OFFSET ?`,
-      [parseInt(limit, 10) || 50, parseInt(offset, 10) || 0]
+      `SELECT * FROM knowledge_packs
+        WHERE organization_id IS NULL OR organization_id = ?
+        ORDER BY id LIMIT ? OFFSET ?`,
+      [organizationId, take, skip]
     );
   }
 
