@@ -2,12 +2,41 @@
 
 **Document ID:** ATM-000  
 **Title:** Atiman Product Vision & Architecture  
-**Status:** Controlled Architecture Document — Draft for Review  
-**Repository:** `/Users/gcb/Documents/GitHub/ODM-CMMS`  
-**Branch:** `atm-000-product-architecture`  
-**Date:** 2026-08-10  
+**Status:** **RATIFIED — Atiman Product Constitution.** The document's substance is the highest
+product authority (see *Authority* below).  
+**Repository:** `/Users/gcb/Documents/GitHub/ODM-CMMS` *(historical drafting location — this document
+was drafted before the repository moved; the metadata block below is historical, not a statement of
+current location)*  
+**Branch:** `atm-000-product-architecture` *(historical)*  
+**Date:** 2026-08-10 *(drafting date; see Authority for ratification)*  
 **Author:** Implementation Architect  
 **Reviewer:** Chief Architect / Product Architect
+
+## Authority
+
+The authoritative **ATIMAN_PROJECT_SOURCE** establishes the following chain, which this document
+records rather than creates:
+
+1. The **Atiman Product Constitution** is the highest product authority. This document **is** that
+   constitution.
+2. **Project Sources are authoritative.** Conversations are exploratory and do not, by themselves,
+   change this document.
+3. **Approved architecture outranks implementation.** Where implementation diverges from an approved
+   architecture record, the record governs and the implementation is the defect.
+4. The constitutional axioms (§5), core product principles (§6), experience philosophy (§16), AI
+   philosophy (§17), product boundaries (§13) and the permanent architecture (§14) are binding on
+   every downstream milestone.
+
+**Status-history correction (2026-09-27).** The header previously read *"Controlled Architecture
+Document — Draft for Review"*, and this document ended with *"Awaiting ChatGPT architectural
+review."* Both statements were **stale relative to the higher Project Source authority**, not
+statements that the constitution's substance was unapproved. The constitution has governed
+downstream work throughout — ATM-001 Knowledge Foundation V1 was ratified, implemented, deployed and
+production-accepted against it, and its axioms (Knowledge Before Transactions; Findings Before Work
+Orders; Operators Are the First Sensors; Integrate Rather Than Replace; AI Augments Human Judgment;
+Evidence Before Assumption; Experience Follows Work) are cited as binding by OWNER missions. The
+former wording is retained in this note as history rather than silently deleted; **no constitutional
+substance is changed by this correction.**
 
 ---
 
@@ -645,4 +674,7 @@ When a future decision is uncertain, apply these rules in order:
 
 This document is implementation preparation only.  
 No code, no migrations, no UI redesign, and no production changes have been made.  
-Awaiting ChatGPT architectural review.
+
+*(The former closing line — "Awaiting ChatGPT architectural review." — was stale: review by the
+OWNER / Chief Architect occurred, and the constitution is ratified. See **Authority** at the head of
+this document. The line is retained here as history.)*
