@@ -38,9 +38,9 @@ const DB_TEST_SKIP_REASON = isIntegrationTest()
 // Disposable fixtures, disjoint from every other suite's namespace.
 const ORG = 996001;
 const ORG_B = 996002;
-const ADMIN = 996101;        // can author (TASKS.CREATE / TASKS.UPDATE are admin-only)
-const SUPERVISOR = 996102;   // may review knowledge, but cannot author provenance
-const OPERATOR = 996103;     // read-only
+const ADMIN = 996101;        // holds knowledge.author (legacy bundle: admin)
+const SUPERVISOR = 996102;   // holds knowledge.author (legacy bundle) — may accession and cite
+const OPERATOR = 996103;     // no knowledge.author; reads provenance only
 const FOREIGN_ADMIN = 996104; // admin of ORG_B
 const CATEGORY = 996201;
 const CLASS = 996202;
@@ -206,11 +206,19 @@ describe('Knowledge Provenance Authoring (ATM-001 M3)', { skip: DB_TEST_SKIP_REA
       assert.strictEqual(res.status, 401);
     });
 
-    it('rejects source creation by a supervisor (no TASKS.CREATE capability)', async () => {
+    // RECONCILED BY ATM-001-K3. This test previously read 'rejects source creation
+    // by a supervisor (no TASKS.CREATE capability)' and expected 403. It recorded
+    // the defect as expected behaviour: the seam was TASKS.CREATE (admin-only)
+    // while the same supervisor already held knowledge.author on the task-template
+    // authoring routes. M3 recorded that inconsistency and reserved the alignment;
+    // K3 performed it. The assertion is inverted rather than deleted, so the
+    // accession entry point remains under test.
+    it('allows source creation by a supervisor holding knowledge.author', async () => {
       const res = await call('POST', '/api/knowledge-provenance/sources', {
         userId: SUPERVISOR, body: sourcePayload()
       });
-      assert.strictEqual(res.status, 403, `expected 403, got ${res.status}: ${JSON.stringify(res.body)}`);
+      assert.strictEqual(res.status, 201, `expected 201, got ${res.status}: ${JSON.stringify(res.body)}`);
+      assert.strictEqual(Number(res.body.data.source.created_by_user_id), SUPERVISOR);
     });
 
     it('rejects source creation by an operator', async () => {
@@ -220,14 +228,17 @@ describe('Knowledge Provenance Authoring (ATM-001 M3)', { skip: DB_TEST_SKIP_REA
       assert.strictEqual(res.status, 403);
     });
 
-    it('rejects evidence attachment by a supervisor (no TASKS.UPDATE capability)', async () => {
+    // RECONCILED BY ATM-001-K3, for the same reason as the source-creation test
+    // above: 'no TASKS.UPDATE capability' recorded the defect rather than the
+    // intended authority. Inverted, not deleted.
+    it('allows evidence attachment by a supervisor holding knowledge.author', async () => {
       const templateId = await createWorkingTemplate();
       const { versionId } = await authorSourceAndVersion();
       const res = await call('POST', `/api/knowledge-provenance/templates/${templateId}/evidence`, {
         userId: SUPERVISOR,
         body: { knowledgeSourceVersionId: versionId, sectionOrClause: 'S1' }
       });
-      assert.strictEqual(res.status, 403);
+      assert.strictEqual(res.status, 201, `expected 201, got ${res.status}: ${JSON.stringify(res.body)}`);
     });
 
     it('allows knowledge reading by a supervisor (KNOWLEDGE.VIEW)', async () => {

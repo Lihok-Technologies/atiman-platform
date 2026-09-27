@@ -10,13 +10,29 @@
  *
  * Authorization
  * -------------
- * Writes reuse the repository's existing capability model rather than adding a
- * new one:
- *   TASKS.CREATE  creating a new knowledge source identity (authoring knowledge)
- *   TASKS.UPDATE  creating a source version, and attaching/detaching WORKING evidence
- * Both are admin-only in src/config/permissions.js, so this path is narrower
- * than the existing task-template routes, which use requireAdmin
- * (admin + supervisor). Nothing is granted to generic authenticated users.
+ * Writes require the capability `knowledge.author`. M3 authored these routes and
+ * recorded the authority question as a KNOWN INCONSISTENCY rather than silently
+ * resolving it:
+ *
+ *   "task-template authoring routes use requireAdmin (admin + supervisor) while
+ *    this path uses the stricter admin-only capability. Aligning them is a
+ *    separate decision."
+ *
+ * ATM-001-K3 is that separate decision. M3's own rationale fixes the capability:
+ * "provenance authoring is an act of authoring working maintenance knowledge,
+ * which is what the TASKS authoring capabilities already govern" — and
+ * `knowledge.author` is the accountable capability for authoring working
+ * knowledge (ATM-003-R1 §3.1: "Create and edit a draft definition"; `created_by`;
+ * draft-only). M3 explicitly refused a new capability ("not a new governance
+ * vocabulary"), so no accession-specific capability is introduced here.
+ *
+ * Consequence, stated rather than left to be inferred: a principal holding
+ * `knowledge.author` may now reach this entry point. Under the legacy
+ * compatibility bundles that is admin and supervisor, so the supervisor gains
+ * these four routes and the operator does not; under EXPLICIT_GRANTS the grant is
+ * the authority. Nothing here confers knowledge.review, knowledge.approve,
+ * knowledge.safety_review or knowledge.publish, and the evidence separation of
+ * duties is unchanged.
  *
  * Reads reuse KNOWLEDGE.VIEW, consistent with how knowledge is already readable.
  *
@@ -28,6 +44,7 @@ const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
 const { requirePermission } = require('../middleware/rbac');
+const { requireCapability } = require('../middleware/capability.middleware');
 const provenanceController = require('../controllers/knowledge-provenance.controller');
 
 // All routes require authentication.
@@ -36,9 +53,9 @@ router.use(authenticate);
 /**
  * @route   POST /api/knowledge-provenance/sources
  * @desc    Create a tenant-scoped knowledge source identity
- * @access  Private (TASKS.CREATE)
+ * @access  Private (knowledge.author)
  */
-router.post('/sources', requirePermission('TASKS', 'CREATE'), provenanceController.createSource);
+router.post('/sources', requireCapability('knowledge.author'), provenanceController.createSource);
 
 /**
  * @route   GET /api/knowledge-provenance/sources
@@ -50,9 +67,9 @@ router.get('/sources', requirePermission('KNOWLEDGE', 'VIEW'), provenanceControl
 /**
  * @route   POST /api/knowledge-provenance/sources/:id/versions
  * @desc    Create an immutable source version
- * @access  Private (TASKS.UPDATE)
+ * @access  Private (knowledge.author)
  */
-router.post('/sources/:id/versions', requirePermission('TASKS', 'UPDATE'), provenanceController.createSourceVersion);
+router.post('/sources/:id/versions', requireCapability('knowledge.author'), provenanceController.createSourceVersion);
 
 /**
  * @route   GET /api/knowledge-provenance/sources/:id/versions
@@ -71,15 +88,15 @@ router.get('/templates/:templateId/evidence', requirePermission('KNOWLEDGE', 'VI
 /**
  * @route   POST /api/knowledge-provenance/templates/:templateId/evidence
  * @desc    Attach an immutable source version as WORKING evidence
- * @access  Private (TASKS.UPDATE)
+ * @access  Private (knowledge.author)
  */
-router.post('/templates/:templateId/evidence', requirePermission('TASKS', 'UPDATE'), provenanceController.attachEvidence);
+router.post('/templates/:templateId/evidence', requireCapability('knowledge.author'), provenanceController.attachEvidence);
 
 /**
  * @route   DELETE /api/knowledge-provenance/templates/:templateId/evidence/:evidenceId
  * @desc    Detach WORKING evidence (frozen evidence is unreachable here)
- * @access  Private (TASKS.UPDATE)
+ * @access  Private (knowledge.author)
  */
-router.delete('/templates/:templateId/evidence/:evidenceId', requirePermission('TASKS', 'UPDATE'), provenanceController.detachEvidence);
+router.delete('/templates/:templateId/evidence/:evidenceId', requireCapability('knowledge.author'), provenanceController.detachEvidence);
 
 module.exports = router;
