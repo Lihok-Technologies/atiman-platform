@@ -55,7 +55,10 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'tests/knowledge-authoring.test.js',
   // ATM-001 M6.4 Step 3B-B: AI-assistance disclosure (migration 021) across the
   // schema, authoring, approval, publication and legacy-exemption boundaries.
-  'tests/ai-assistance-disclosure.test.js'
+  'tests/ai-assistance-disclosure.test.js',
+  // ATM-003 capability grant foundation (migration 022): tenant-scoped,
+  // attributed, revocable grant storage with no authority backfill.
+  'tests/capability-grants.test.js'
 ];
 
 /**
