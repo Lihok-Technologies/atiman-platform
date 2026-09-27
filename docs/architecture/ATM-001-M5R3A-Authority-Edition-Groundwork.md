@@ -3,6 +3,7 @@
 **Status: READINESS RECORD — EXISTING MODEL SUFFICIENT. NO SCHEMA CHANGE.**
 **Not the crosswalk implementation.** No crosswalk table, external-classification entity, trigger, index,
 API or mapping is created by this record. The M5R.3 architecture remains **APPROVED — NOT IMPLEMENTED**.
+*Correction (ATM-001 record-accuracy R1): the trailing clause was accurate when this record was written and is now stale. The M5R.3 architecture was implemented after M5R.3A by migrations `016`–`018` (PRs **#39**–**#41**) and the crosswalk application layer (PR **#42**), all merged into `main` and applied in production. The readiness finding of this record — that the authority/edition model already suffices and required no schema change of its own — is unaffected and remains accurate. The original wording is retained above as history.*
 
 **Governance decision recorded (§3.2): global external authority / source registration IS a
 system/OWNER-governed knowledge-administration operation, NOT ordinary tenant authoring.** The existing

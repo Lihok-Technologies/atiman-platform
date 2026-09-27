@@ -4,6 +4,7 @@
 **NOT IMPLEMENTED.** No schema, migration, model, service, API or data change accompanies this record.
 **APPROVED ARCHITECTURE ≠ IMPLEMENTED ARCHITECTURE.** The schema and API material below remains an approved
 design specification only; no crosswalk table, trigger, index, route or mapping exists.
+*Correction (ATM-001 record-accuracy R1): the statements above were accurate when this record was written. The first sentence remains literally true — this record accompanied no change — but the architecture has since been implemented and is no longer 'not implemented': migration `016` (PR **#39**), `017` (PR **#40**), `018` (PR **#41**) and the governed application layer (PR **#42**) are merged into `main` and applied in production, so crosswalk tables, triggers, constraints, indexes and API routes DO exist. The approved design specification below is unchanged and remains the authority for that implementation; the original status wording is retained above as history.*
 
 | | |
 |---|---|

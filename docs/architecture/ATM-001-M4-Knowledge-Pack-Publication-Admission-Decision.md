@@ -1,6 +1,7 @@
 # ATM-001 M4 — Knowledge Pack Publication Admission Decision
 
 Status: implemented on branch `atm-001-m4-pack-publication-admission`; **not merged**.
+*Correction (ATM-001 record-accuracy R1): that status was true when this record was written and is now stale. M4 WAS merged — feature commit `a44ff82` reached `main` via PR **#33** (`dec7a7b`), carrying `015_knowledge_pack_publication_governance.sql`. The migration runner re-applies the entire chain on every deployment and currently reports 21/21, so `015` — and every migration after it — is applied in production. The original wording is retained above as history rather than rewritten.*
 Baseline: `origin/main` = `2caef23bd13a149abefbecb620b19ceafa2ced17` (M3 merged).
 
 ## Decision

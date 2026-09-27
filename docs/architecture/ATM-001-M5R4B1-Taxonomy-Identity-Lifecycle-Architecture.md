@@ -1,6 +1,7 @@
 # ATM-001 M5R.4B1 — Taxonomy Identity Lifecycle Architecture (Discovery)
 
 **Status:** **OWNER-RATIFIED ARCHITECTURE — FROZEN.** Established by M5R.4B1, corrected by M5R.4B1-R1, **ratified by the OWNER in M5R.4B1-R2**. **Not merged; not implemented.**
+*Correction (ATM-001 record-accuracy R1): the closing clause '**Not merged; not implemented.**' was accurate when this record was written and is now stale. This record WAS merged as PR **#44** (`82c6613`), and the ratified architecture was subsequently authorised and implemented by M5R.4B2: migration `019_taxonomy_identity_lifecycle.sql` (PR **#45**, `f07c916`) plus the canonical-only import resolver (PR **#46**) and the governed taxonomy application (PR **#47**), all in `main` and applied in production. The ratification note below correctly records that the RATIFICATION itself authorised no implementation — implementation came from the later, separate M5R.4B2 authorisation. The original wording is retained above as history rather than rewritten.*
 **Baseline:** `origin/main` = `abfd6c8be83ee3201b8deea8f0c08a25952e4cda`, tree `0dbadf1c9bfcc951f6f08e1a90bf7c3e8efbd83a` (the M5R.4A merge).
 
 > **Owner ratification (M5R.4B1-R2).** *"I ratify the M5R.4B1-R1 taxonomy decisions as recommended."*
