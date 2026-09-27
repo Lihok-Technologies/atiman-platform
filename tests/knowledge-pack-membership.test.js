@@ -94,8 +94,14 @@ let packSeq = 0;
 async function createPackVersion(lifecycleState = 'draft') {
   packSeq += 1;
   return withConn(async (conn) => {
+    // ATM-001 M6.3 ratifies a single member rule: a Pack member must be globally
+    // applicable (shared) knowledge. A shared Pack therefore holds shared
+    // members, which is exactly the M4 premise this suite was accepted against.
+    // Customer-owned Packs may exist, but customer ownership does not authorize
+    // customer-scoped members during M6.3 (migration 020's membership guard).
     const [pack] = await query(conn,
-      `INSERT INTO knowledge_packs (pack_code, pack_name) VALUES (?, ?) RETURNING id`,
+      `INSERT INTO knowledge_packs (pack_code, pack_name, knowledge_scope)
+       VALUES (?, ?, 'shared') RETURNING id`,
       [`M2-PACK-${Date.now()}-${packSeq}`, 'M2 Test Pack']);
 
     const governed = ['published', 'superseded', 'retired'].includes(lifecycleState);
@@ -109,19 +115,19 @@ async function createPackVersion(lifecycleState = 'draft') {
     if (lifecycleState === 'superseded') {
       const [successor] = await query(conn,
         `INSERT INTO knowledge_pack_versions
-           (knowledge_pack_id, version_number, lifecycle_state, published_at${attributionColumns})
-         VALUES (?, '2.0.0', 'published', NOW()${attributionValues}) RETURNING id`, [pack.id]);
+           (knowledge_pack_id, version_number, lifecycle_state, published_at${attributionColumns}, knowledge_scope)
+         VALUES (?, '2.0.0', 'published', NOW()${attributionValues}, (SELECT knowledge_scope FROM knowledge_packs WHERE id = $1)) RETURNING id`, [pack.id]);
       const [version] = await query(conn,
         `INSERT INTO knowledge_pack_versions
-           (knowledge_pack_id, version_number, lifecycle_state, published_at, superseded_by_version_id${attributionColumns})
-         VALUES (?, '1.0.0', 'superseded', NOW(), ?${attributionValues}) RETURNING id`, [pack.id, successor.id]);
+           (knowledge_pack_id, version_number, lifecycle_state, published_at, superseded_by_version_id${attributionColumns}, knowledge_scope)
+         VALUES (?, '1.0.0', 'superseded', NOW(), ?${attributionValues}, (SELECT knowledge_scope FROM knowledge_packs WHERE id = $1)) RETURNING id`, [pack.id, successor.id]);
       return version.id;
     }
 
     const [version] = await query(conn,
       `INSERT INTO knowledge_pack_versions
-         (knowledge_pack_id, version_number, lifecycle_state, published_at${attributionColumns})
-       VALUES (?, '1.0.0', ?, ?${attributionValues}) RETURNING id`,
+         (knowledge_pack_id, version_number, lifecycle_state, published_at${attributionColumns}, knowledge_scope)
+       VALUES (?, '1.0.0', ?, ?${attributionValues}, (SELECT knowledge_scope FROM knowledge_packs WHERE id = $1)) RETURNING id`,
       [pack.id, lifecycleState,
         ['published', 'retired'].includes(lifecycleState) ? new Date() : null]);
     return version.id;
@@ -142,20 +148,32 @@ async function createPublishedTemplateVersion() {
   const templateId = await withConn(async (conn) => {
     const [template] = await query(conn,
       `INSERT INTO task_templates (equipment_type_id, organization_id, template_code, template_name,
-         maintenance_type, task_kind, frequency_value, frequency_unit, estimated_duration_minutes, priority)
-       VALUES (?, ?, ?, 'M2 Governed Template', 'preventive', 'inspection', 1, 'month', 30, 'medium')
+         maintenance_type, task_kind, frequency_value, frequency_unit, estimated_duration_minutes, priority, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, content_origin)
+       VALUES (?, ?, ?, 'M2 Governed Template', 'preventive', 'inspection', NULL, NULL, 30, 'medium', (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', 'shared', 'authored')
        RETURNING id`,
-      [EQUIPMENT_TYPE, ORG, `M2-${Date.now()}-${templateSeq}`]);
+      [EQUIPMENT_TYPE, null, `M2-${Date.now()}-${templateSeq}`]);
+    // M6.3 governed knowledge: a governed definition must declare at least one
+    // Equipment Type of applicability, and publication copies the working
+    // declaration into the immutable version junction. The declared type is the
+    // fixture's own equipment type: applicability is never inferred, so the
+    // fixture states it explicitly.
+    await query(conn,
+      `INSERT INTO task_template_equipment_types
+         (task_template_id, equipment_type_id, is_primary, added_by_user_id)
+       VALUES (?, ?, true, ?)`,
+      [template.id, EQUIPMENT_TYPE, REVIEWER]);
     await query(conn,
       `INSERT INTO task_template_steps (task_template_id, step_no, step_type, instruction, is_required)
        VALUES (?, 1, 'instruction', 'Inspect the asset for abnormal condition', true)`,
       [template.id]);
 
-    // Evidence is required by the M1 admission gate.
+    // Evidence is required by the M1 admission gate. A shared (globally
+    // applicable) definition is supported by a global source: migration 011
+    // refuses a tenant-scoped source for a definition that has no organization.
     const [source] = await query(conn,
       `INSERT INTO knowledge_sources (source_code, source_category, default_title, organization_id)
-       VALUES (?, 'engineering_standard', 'M2 Source', ?) RETURNING id`,
-      [`M2-SRC-${Date.now()}-${templateSeq}`, ORG]);
+       VALUES (?, 'engineering_standard', 'M2 Source', NULL) RETURNING id`,
+      [`M2-SRC-${Date.now()}-${templateSeq}`]);
     const [sourceVersion] = await query(conn,
       `INSERT INTO knowledge_source_versions (knowledge_source_id, version_designation, title)
        VALUES (?, '1.0', 'M2 Source Version') RETURNING id`, [source.id]);
@@ -186,10 +204,10 @@ async function createUnpublishedWorkingTemplate() {
   return withConn(async (conn) => {
     const [template] = await query(conn,
       `INSERT INTO task_templates (equipment_type_id, organization_id, template_code, template_name,
-         maintenance_type, task_kind, frequency_value, frequency_unit, estimated_duration_minutes, priority)
-       VALUES (?, ?, ?, 'M2 Unpublished Working Template', 'preventive', 'inspection', 1, 'month', 30, 'medium')
+         maintenance_type, task_kind, frequency_value, frequency_unit, estimated_duration_minutes, priority, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, content_origin)
+       VALUES (?, ?, ?, 'M2 Unpublished Working Template', 'preventive', 'inspection', NULL, NULL, 30, 'medium', (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', 'shared', 'authored')
        RETURNING id`,
-      [EQUIPMENT_TYPE, ORG, `M2-UNPUB-${Date.now()}-${templateSeq}`]);
+      [EQUIPMENT_TYPE, null, `M2-UNPUB-${Date.now()}-${templateSeq}`]);
     await query(conn,
       `INSERT INTO task_template_steps (task_template_id, step_no, step_type, instruction, is_required)
        VALUES (?, 1, 'instruction', 'Working step that was never published', true)`,
@@ -532,13 +550,28 @@ describe('Knowledge Pack Membership', { skip: DB_TEST_SKIP_REASON }, () => {
         'knowledge_pack_version_id', 'task_template_version_id'
       ], 'no item_type, no tenant field, no change_summary, no duplicated content');
 
-      // The guard function and its triggers are what make the invariant real.
+      // The guard functions and their triggers are what make the invariant real.
+      //
+      // The M1 membership guards are the three insert/update/delete triggers from
+      // migrations 014/015. Migration 020 (M6.3 governed knowledge) adds two more
+      // triggers on this same table, which enforce governed scope compatibility
+      // between a pack version and the template version it references. All five
+      // must remain installed, so the expected set is asserted by name rather than
+      // by count alone: a bare count would also accept an unrelated trigger
+      // silently replacing one of the guards.
       const guard = await withConn((conn) => query(conn,
-        `SELECT COUNT(*)::int AS n FROM pg_trigger t
+        `SELECT t.tgname AS name FROM pg_trigger t
            JOIN pg_class c ON c.oid = t.tgrelid
           WHERE c.relname = 'knowledge_pack_version_task_template_versions'
-            AND NOT t.tgisinternal`));
-      assert.strictEqual(guard[0].n, 3, 'insert, update and delete guards must all be installed');
+            AND NOT t.tgisinternal
+          ORDER BY t.tgname`));
+      assert.deepStrictEqual(guard.map((row) => row.name), [
+        'trg_kpvtv_membership_guard_delete',
+        'trg_kpvtv_membership_guard_insert',
+        'trg_kpvtv_membership_guard_update',
+        'trg_kpvtv_scope_compatibility_insert',
+        'trg_kpvtv_scope_compatibility_update'
+      ], 'insert, update and delete guards plus governed scope compatibility must all be installed');
     });
   });
 });

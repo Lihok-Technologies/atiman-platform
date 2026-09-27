@@ -673,7 +673,20 @@ class TaskTemplate extends BaseModel {
     );
     const steps = Array.isArray(rawSteps) ? rawSteps : [];
 
-    return { template, steps };
+    // ATM-001 M6.3: the declared Equipment-Type applicability set is part of the
+    // material content an approver endorses, so it is loaded together with the
+    // content it binds. Ordered by identity; the fingerprint sorts it anyway, so
+    // membership changes register while reordering never fabricates a change.
+    const rawApplicability = await runner.query(
+      `SELECT equipment_type_id, is_primary
+         FROM task_template_equipment_types
+        WHERE task_template_id = ?
+        ORDER BY equipment_type_id`,
+      [templateId]
+    );
+    const applicability = Array.isArray(rawApplicability) ? rawApplicability : [];
+
+    return { template, steps, applicability };
   }
 
   /**
@@ -714,7 +727,7 @@ class TaskTemplate extends BaseModel {
    * after approval cannot be published under the stale approval.
    */
   async approveTemplate(templateId, userId, organizationId) {
-    const { template, steps } = await this.loadWorkingContent(templateId, organizationId);
+    const { template, steps, applicability } = await this.loadWorkingContent(templateId, organizationId);
 
     if (template.review_state !== 'under_review') {
       throw Object.assign(
@@ -723,7 +736,7 @@ class TaskTemplate extends BaseModel {
       );
     }
 
-    const contentSha = computeContentSha(template, steps);
+    const contentSha = computeContentSha(template, steps, applicability);
 
     await this.query(
       `UPDATE task_templates
@@ -957,7 +970,15 @@ class TaskTemplate extends BaseModel {
             ) ORDER BY id)
             FROM knowledge_template_evidence
             WHERE task_template_step_id IN (SELECT id FROM task_template_steps WHERE task_template_id = t.id)
-              AND task_template_id IS NULL), '[]'::jsonb) AS step_evidence
+              AND task_template_id IS NULL), '[]'::jsonb) AS step_evidence,
+          -- ATM-001 M6.3: the working Equipment-Type applicability set is part of
+          -- the atomic publication boundary, exactly as the ordered step set is.
+          COALESCE((SELECT jsonb_agg(jsonb_build_object(
+              'equipment_type_id', equipment_type_id,
+              'is_primary', is_primary
+            ) ORDER BY is_primary DESC, equipment_type_id)
+            FROM task_template_equipment_types
+            WHERE task_template_id = t.id), '[]'::jsonb) AS applicability
         FROM task_templates t
         WHERE t.id = $1
       `, [templateId]);
@@ -985,6 +1006,12 @@ class TaskTemplate extends BaseModel {
 
       const versionNumber = snapshot.next_version_number;
 
+      // ATM-001 M6.3: the working Equipment-Type applicability set is part of the
+      // atomic publication boundary. Its presence and every governed-field
+      // requirement are enforced by the admission validator below, which runs
+      // before the first irreversible write and fails closed.
+      const applicability = snapshot.applicability || [];
+
       // ---- ATM-001 M1: publication admission gate -------------------------
       // Everything below this point writes to the database. The admission
       // validator therefore runs here, before the first irreversible write, so
@@ -1010,6 +1037,7 @@ class TaskTemplate extends BaseModel {
         steps,
         safetyControls: snapshot.safety_controls || [],
         evidence: allEvidence,
+        applicability,
         publisherUserId: userId,
         validActivityCodeIds: new Set(activityCodes.map((row) => Number(row.id))),
         validSourceVersionIds: new Set(scopedSourceVersions.map((row) => Number(row.id)))
@@ -1034,7 +1062,12 @@ class TaskTemplate extends BaseModel {
           ai_assisted, ai_assistance_detail,
           reviewer_user_id, reviewed_at, approver_user_id, approved_at,
           approved_content_sha, safety_reviewed_by_user_id, safety_reviewed_at,
-          safety_review_state
+          safety_review_state,
+          knowledge_type_id, task_family_id, maintenance_strategy,
+          trigger_mechanism, trigger_condition_parameter, trigger_condition_operator,
+          trigger_condition_value, trigger_condition_unit, trigger_condition_context,
+          trigger_event_description, trigger_basis_source_version_id,
+          knowledge_scope, organization_id
         ) VALUES (
           $1, $2, $3, $4,
           $5, $6, $7, $8,
@@ -1046,7 +1079,10 @@ class TaskTemplate extends BaseModel {
           $23, $24,
           $25, $26, $27, $28,
           $29, $30, $31,
-          $32
+          $32,
+          $33, $34, $35,
+          $36, $37, $38, $39, $40, $41, $42, $43,
+          $44, $45
         )
         RETURNING id
       `, [
@@ -1061,10 +1097,32 @@ class TaskTemplate extends BaseModel {
         template.approver_user_id, template.approved_at,
         template.approved_content_sha,
         template.safety_reviewed_by_user_id, template.safety_reviewed_at,
-        template.safety_review_state
+        template.safety_review_state,
+        // ATM-001 M6.3: freeze the ratified governed fields from the working
+        // definition verbatim. No value here is inferred or defaulted.
+        template.knowledge_type_id, template.task_family_id, template.maintenance_strategy,
+        template.trigger_mechanism, template.trigger_condition_parameter,
+        template.trigger_condition_operator, template.trigger_condition_value,
+        template.trigger_condition_unit, template.trigger_condition_context,
+        template.trigger_event_description, template.trigger_basis_source_version_id,
+        template.knowledge_scope, template.organization_id
       ]);
 
       const versionId = versionHeader.id;
+
+      // 1b. Freeze the working Equipment-Type applicability set into the immutable
+      // version. Explicit Equipment Type identities only: no taxonomy remapping,
+      // no inheritance, and the primary anchor is preserved. The frozen set does
+      // not follow the working set afterwards.
+      let applicabilityCount = 0;
+      for (const app of applicability) {
+        await conn.query(`
+          INSERT INTO task_template_version_equipment_types (
+            task_template_version_id, equipment_type_id, is_primary
+          ) VALUES ($1, $2, $3)
+        `, [versionId, app.equipment_type_id, app.is_primary]);
+        applicabilityCount += 1;
+      }
 
       // 2. Insert step versions and build a map from working step id to version step id.
       const stepVersionMap = new Map();
@@ -1155,6 +1213,7 @@ class TaskTemplate extends BaseModel {
         versionId,
         versionNumber,
         stepCount: steps.length,
+        applicabilityCount,
         safetyControlVersionCount,
         templateEvidenceCount,
         stepEvidenceCount,

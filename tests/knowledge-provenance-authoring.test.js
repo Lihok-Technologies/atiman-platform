@@ -98,10 +98,19 @@ async function createWorkingTemplate(orgId = ORG) {
   return withConn(async (conn) => {
     const [template] = await query(conn,
       `INSERT INTO task_templates (equipment_type_id, organization_id, template_code, template_name,
-         maintenance_type, task_kind, frequency_value, frequency_unit, estimated_duration_minutes, priority)
-       VALUES (?, ?, ?, 'M3 Working Template', 'preventive', 'inspection', 1, 'month', 30, 'medium')
+         maintenance_type, task_kind, frequency_value, frequency_unit, estimated_duration_minutes, priority, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, content_origin)
+       VALUES (?, ?, ?, 'M3 Working Template', 'preventive', 'inspection', NULL, NULL, 30, 'medium', (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', 'customer', 'authored')
        RETURNING id`,
       [EQUIPMENT_TYPE, orgId, `M3-${uniq()}`]);
+    // M6.3 governed knowledge: a governed definition must declare at least one
+    // Equipment Type of applicability. Applicability is never inferred, and the
+    // production publication path copies this working declaration into the
+    // immutable version junction, so the fixture states it explicitly.
+    await query(conn,
+      `INSERT INTO task_template_equipment_types
+         (task_template_id, equipment_type_id, is_primary, added_by_user_id)
+       VALUES (?, ?, true, ?)`,
+      [template.id, EQUIPMENT_TYPE, ADMIN]);
     await query(conn,
       `INSERT INTO task_template_steps (task_template_id, step_no, step_type, instruction, is_required)
        VALUES (?, 1, 'instruction', 'Working step', true)`, [template.id]);
