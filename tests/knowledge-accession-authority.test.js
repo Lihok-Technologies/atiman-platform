@@ -50,18 +50,23 @@ const DB_TEST_SKIP_REASON = isIntegrationTest()
     + 'test-database credentials are used instead of runtime credentials; '
     + 'run it via `npm run test:integration`';
 
-// Disposable fixtures, disjoint from every other suite's namespace.
-const ORG = 997001;
-const ORG_B = 997002;
-const ADMIN = 997101;         // legacy bundle: knowledge.author
-const SUPERVISOR = 997102;    // legacy bundle: knowledge.author — gains the four routes
-const OPERATOR = 997103;      // legacy bundle: no knowledge.author
-const SME = 997104;           // operator role + EXPLICIT knowledge.author grant
-const FOREIGN_SME = 997105;   // ORG_B operator + EXPLICIT knowledge.author grant
-const FOREIGN_ADMIN = 997106; // ORG_B admin, grantor of FOREIGN_SME
-const CATEGORY = 997201;
-const CLASS = 997202;
-const EQUIPMENT_TYPE = 997203;
+// Disposable fixtures. The id block MUST stay disjoint from every other suite's:
+// the sanctioned runner executes suites in PARALLEL PROCESSES against ONE shared
+// database, and every fixture uses `ON CONFLICT (id) DO NOTHING`, so a colliding
+// id is not an error — it is a silent substitution of another suite's principal,
+// with another suite's role and organization. `9994xx` is unused corpus-wide, and
+// R12 asserts that mechanically so the collision cannot return unnoticed.
+const ORG = 999401;
+const ORG_B = 999402;
+const ADMIN = 999411;         // legacy bundle: knowledge.author
+const SUPERVISOR = 999412;    // legacy bundle: knowledge.author — gains the four routes
+const OPERATOR = 999413;      // legacy bundle: no knowledge.author
+const SME = 999414;           // operator role + EXPLICIT knowledge.author grant
+const FOREIGN_SME = 999415;   // ORG_B operator + EXPLICIT knowledge.author grant
+const FOREIGN_ADMIN = 999416; // ORG_B admin, grantor of FOREIGN_SME
+const CATEGORY = 999421;
+const CLASS = 999422;
+const EQUIPMENT_TYPE = 999423;
 
 const JWT_SECRET = 'test-only-jwt-secret-not-for-production-000000';
 const ROUTES_FILE = path.join(__dirname, '..', 'src', 'routes', 'knowledge-provenance.routes.js');
@@ -445,6 +450,32 @@ describe('Knowledge Accession Authority (ATM-001-K3)', { skip: DB_TEST_SKIP_REAS
       'the operator bundle must not hold knowledge.author');
     assert.ok(LEGACY_COMPATIBILITY_BUNDLES.admin.includes('knowledge.author'),
       'the admin bundle must hold knowledge.author');
+
+    // Fixture-namespace disjointness, asserted mechanically.
+    //
+    // The sanctioned runner executes suites in PARALLEL PROCESSES against ONE
+    // shared database, and every fixture here uses `ON CONFLICT (id) DO NOTHING`.
+    // A colliding id is therefore NOT an error: the other suite's row survives and
+    // this suite silently resolves a principal with another suite's role and
+    // organization. CI caught exactly that — 997001/997002/997101-997104 and
+    // 997201-997203 were already taken by other suites, so a "supervisor" resolved
+    // into another tenant and an "operator" resolved an admin-shaped bundle. This
+    // assertion makes that class of defect impossible to reintroduce unnoticed.
+    const fixtureIds = [ORG, ORG_B, ADMIN, SUPERVISOR, OPERATOR, SME, FOREIGN_SME,
+      FOREIGN_ADMIN, CATEGORY, CLASS, EQUIPMENT_TYPE];
+    const self = path.basename(__filename);
+    const siblings = fs.readdirSync(__dirname)
+      .filter((name) => name.endsWith('.test.js') && name !== self);
+    assert.ok(siblings.length > 10, 'expected a populated test corpus to check against');
+
+    for (const id of fixtureIds) {
+      for (const name of siblings) {
+        const text = fs.readFileSync(path.join(__dirname, name), 'utf8');
+        assert.ok(!new RegExp(`\\b${id}\\b`).test(text),
+          `fixture id ${id} is already used by ${name}; the shared-database corpus `
+          + 'requires a disjoint id block');
+      }
+    }
   });
 
   it('R13 — revoking the grant closes the entry point again', async () => {
