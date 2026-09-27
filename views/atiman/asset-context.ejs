@@ -1,0 +1,128 @@
+<%#
+  Atiman asset context (ATM-002-I2C).
+
+  Rendered only from the trusted resolver's owned projection. The page states what
+  the server actually resolved and nothing more: there is no inspection history, no
+  pass/fail verdict, no work-order action, no inspection or reporting action and no
+  EAM identifier, because Atiman cannot currently substantiate any of them.
+
+  Identifiers are shown as text, never interpolated into a URL, and the manual-entry
+  form is the recovery path ATM-002-R7 §10.3 requires for every scan failure.
+%>
+<div class="atiman-stack">
+
+  <% if (state === 'RESOLVED') { %>
+
+    <section class="atiman-card" aria-labelledby="asset-identity-heading">
+      <h2 class="atiman-card__title" id="asset-identity-heading"><%= asset.name || 'Unnamed asset' %></h2>
+      <p class="atiman-card__note">
+        <span class="atiman-badge"><%= asset.code || 'No recorded code' %></span>
+        <% if (asset.status) { %>
+          <span class="atiman-badge"><%= asset.status %></span>
+        <% } %>
+        <% if (asset.criticality) { %>
+          <span class="atiman-badge">Criticality: <%= asset.criticality %></span>
+        <% } %>
+      </p>
+    </section>
+
+    <section class="atiman-card" aria-labelledby="asset-context-heading">
+      <h2 class="atiman-card__title" id="asset-context-heading">Operating context</h2>
+      <ul class="atiman-list">
+        <li class="atiman-list__item">
+          <div>Facility</div>
+          <div class="atiman-list__meta">
+            <%= asset.facility ? (asset.facility.name || asset.facility.code || 'Recorded without a name') : 'Not recorded for this asset' %>
+          </div>
+        </li>
+        <li class="atiman-list__item">
+          <div>Classification</div>
+          <div class="atiman-list__meta">
+            <%= asset.taxonomy ? asset.taxonomy.label : 'Not classified' %>
+          </div>
+        </li>
+        <li class="atiman-list__item">
+          <div>Operating status</div>
+          <div class="atiman-list__meta"><%= asset.status || 'Not recorded' %></div>
+        </li>
+      </ul>
+    </section>
+
+  <% } else { %>
+
+    <section class="atiman-card" aria-labelledby="asset-unresolved-heading">
+      <h2 class="atiman-card__title" id="asset-unresolved-heading">Asset not available</h2>
+
+      <% if (state === 'AMBIGUOUS_INPUT') { %>
+        <p class="atiman-note">
+          Supply either a scanned code or a link token, not both. Use one field and
+          try again.
+        </p>
+      <% } else if (outcome === 'FOREIGN_TENANT') { %>
+        <p class="atiman-note">
+          This asset belongs to another organization. Atiman does not show another
+          organization's asset details.
+        </p>
+      <% } else if (outcome === 'UNOWNED_ASSET') { %>
+        <p class="atiman-note">
+          This asset is not registered to an organization, so it cannot be opened
+          for operational work.
+        </p>
+      <% } else if (outcome === 'AMBIGUOUS_IDENTIFIER') { %>
+        <p class="atiman-note">
+          This identifier matches more than one asset record, so Atiman will not
+          guess which one you meant. Report the identifier to your administrator.
+        </p>
+      <% } else if (outcome === 'INVALID_IDENTIFIER') { %>
+        <p class="atiman-note">
+          That identifier is not in a form Atiman can look up. Check the code on the
+          asset label and try again.
+        </p>
+      <% } else if (outcome === 'ORGANIZATION_REQUIRED') { %>
+        <p class="atiman-note">
+          Your account is not associated with an organization, so no asset can be
+          resolved. Ask an administrator to complete your account setup.
+        </p>
+      <% } else { %>
+        <p class="atiman-note">
+          No asset is registered under that code. Check the label and try again, or
+          ask your administrator whether the asset has been registered.
+        </p>
+      <% } %>
+    </section>
+
+  <% } %>
+
+  <section class="atiman-card" aria-labelledby="asset-entry-heading">
+    <h2 class="atiman-card__title" id="asset-entry-heading">Open an asset</h2>
+    <p class="atiman-card__note">
+      Enter the asset code printed on the label. Scanning a label opens this same
+      page.
+    </p>
+    <form class="atiman-stack" method="get" action="/atiman/asset">
+      <label class="atiman-action__label" for="asset-code">Asset code</label>
+      <input class="atiman-input" id="asset-code" name="code" type="text"
+             inputmode="text" autocomplete="off" spellcheck="false"
+             maxlength="100" required>
+      <button class="atiman-action" type="submit">
+        <span>
+          <span class="atiman-action__label">Look up asset</span>
+          <span class="atiman-action__hint">Resolves inside your organization only</span>
+        </span>
+        <span aria-hidden="true">›</span>
+      </button>
+    </form>
+  </section>
+
+  <section class="atiman-card" aria-labelledby="asset-boundary-heading">
+    <h2 class="atiman-card__title" id="asset-boundary-heading">What Atiman does not do here</h2>
+    <p class="atiman-note">
+      This page shows asset identity and operating context only. Inspection
+      execution and finding reporting are approved Atiman capabilities but are not
+      implemented yet, so they are not offered here. Atiman does not read or record
+      inspection history, does not pass or fail an asset, and does not plan or
+      execute maintenance work: that stays with your enterprise maintenance system.
+    </p>
+  </section>
+
+</div>

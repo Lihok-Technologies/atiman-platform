@@ -184,6 +184,30 @@ body.atiman {
   border-top: 3px solid var(--atiman-action);
 }
 
+/* ---- Text entry ----------------------------------------------------------- */
+/* Field input for the manual identifier path (ATM-002-I2C). Sized to the same
+   minimum touch target as every other field control, and never smaller than
+   --atiman-font-size-md so the text stays legible at 200% zoom and under system
+   text scaling (ATM-002-R7 §4). */
+.atiman-input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: var(--atiman-target-min);
+  padding: var(--atiman-space-2) var(--atiman-space-3);
+  border: var(--atiman-border-width) solid var(--atiman-border-strong);
+  border-radius: var(--atiman-radius-sm);
+  background: var(--atiman-surface);
+  color: var(--atiman-text);
+  font: inherit;
+  font-size: var(--atiman-font-size-md);
+}
+
+.atiman-input:focus-visible {
+  outline: var(--atiman-focus-width) solid var(--atiman-focus);
+  outline-offset: 2px;
+}
+
 /* ---- Focus: always visible (ATM-002-R4 §5) -------------------------------- */
 .atiman a:focus-visible,
 .atiman button:focus-visible,
