@@ -59,6 +59,8 @@ const DB_MUTATING_SUITES = [
   'governed-knowledge-foundation.test.js',
   // ATM-001 M6.3 VUDA R1: remediation regression coverage for the seven R1 findings.
   'm6r3-r1-remediation.test.js',
+  // ATM-001 M6.4: governed draft authoring primitive.
+  'knowledge-authoring.test.js',
   'step6-access-control.test.js',
   'step6-coverage-e2e.test.js',
   'step6-performance.test.js',
@@ -86,7 +88,8 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'asset-import-resolver-safety.test.js',
   'taxonomy-application.test.js',
   'governed-knowledge-foundation.test.js',
-  'm6r3-r1-remediation.test.js'
+  'm6r3-r1-remediation.test.js',
+  'knowledge-authoring.test.js'
 ];
 
 const REPO_ROOT = path.resolve(__dirname, '..');

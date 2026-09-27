@@ -50,7 +50,9 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'tests/governed-knowledge-foundation.test.js',
   // ATM-001 M6.3 VUDA R1: remediation regression coverage (cross-tenant pack
   // access, approval identity, frozen applicability, member scope, pack ownership).
-  'tests/m6r3-r1-remediation.test.js'
+  'tests/m6r3-r1-remediation.test.js',
+  // ATM-001 M6.4: governed draft authoring primitive (draft-only authoring seam).
+  'tests/knowledge-authoring.test.js'
 ];
 
 /**
