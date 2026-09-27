@@ -6,11 +6,30 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate, requireAdmin } = require('../middleware/auth');
-const { requirePermission } = require('../middleware/rbac');
+const { requireCapability } = require('../middleware/capability.middleware');
 const taskTemplateController = require('../controllers/task-template.controller');
 
 // All routes require authentication
 router.use(authenticate);
+
+/**
+ * ATM-003 milestone 6 — capability authorization for the governed knowledge
+ * lifecycle (proof integration).
+ *
+ * WHO MAY ATTEMPT is now answered by capabilities; WHETHER THE OPERATION IS VALID
+ * remains entirely with the ATM-001 domain services behind these handlers
+ * (approval state machine, publication admission, safety attestation,
+ * separation of duties, immutability). No business rule was moved or duplicated.
+ *
+ * Effective authority is unchanged for every legacy role: each mapping below was
+ * verified against the guard it replaces, and the parity is asserted by
+ * tests/capability-grants.test.js (see the proof-integration block).
+ *
+ * Deliberately NOT migrated: GET /stats keeps requireAdmin. There is no
+ * accountable act behind reading aggregate statistics, so no capability exists
+ * for it; mapping it to an authenticated-only read would WIDEN access to
+ * operators, which the parity rule forbids.
+ */
 
 /**
  * @route   GET /api/task-templates
@@ -66,35 +85,35 @@ router.get('/:id', taskTemplateController.getById);
  * @desc    Clone a system template to organization
  * @access  Private (Admin/Supervisor)
  */
-router.post('/:id/clone', requireAdmin, taskTemplateController.clone);
+router.post('/:id/clone', requireCapability('knowledge.author'), taskTemplateController.clone);
 
 /**
  * @route   POST /api/task-templates
  * @desc    Create new task template
  * @access  Private (Admin/Supervisor)
  */
-router.post('/', requireAdmin, taskTemplateController.create);
+router.post('/', requireCapability('knowledge.author'), taskTemplateController.create);
 
 /**
  * @route   PUT /api/task-templates/:id
  * @desc    Update task template
  * @access  Private (Admin/Supervisor)
  */
-router.put('/:id', requireAdmin, taskTemplateController.update);
+router.put('/:id', requireCapability('knowledge.author'), taskTemplateController.update);
 
 /**
  * @route   DELETE /api/task-templates/:id
  * @desc    Delete task template
  * @access  Private (Admin/Supervisor)
  */
-router.delete('/:id', requireAdmin, taskTemplateController.remove);
+router.delete('/:id', requireCapability('knowledge.author'), taskTemplateController.remove);
 
 /**
  * @route   POST /api/task-templates/:id/publish
  * @desc    Publish a working task template as an immutable version
  * @access  Private (Admin/Supervisor)
  */
-router.post('/:id/publish', requireAdmin, taskTemplateController.publish);
+router.post('/:id/publish', requireCapability('knowledge.publish'), taskTemplateController.publish);
 
 /**
  * ATM-001 M1 — Knowledge Foundation governance lifecycle.
@@ -110,34 +129,34 @@ router.post('/:id/publish', requireAdmin, taskTemplateController.publish);
  * @desc    Submit a draft template for governance review
  * @access  Private (KNOWLEDGE.REVIEW)
  */
-router.post('/:id/submit-for-review', requirePermission('KNOWLEDGE', 'REVIEW'), taskTemplateController.submitForReview);
+router.post('/:id/submit-for-review', requireCapability('knowledge.review'), taskTemplateController.submitForReview);
 
 /**
  * @route   POST /api/task-templates/:id/approve
  * @desc    Approve a template under review (binds approval to its content)
  * @access  Private (KNOWLEDGE.APPROVE)
  */
-router.post('/:id/approve', requirePermission('KNOWLEDGE', 'APPROVE'), taskTemplateController.approve);
+router.post('/:id/approve', requireCapability('knowledge.approve'), taskTemplateController.approve);
 
 /**
  * @route   POST /api/task-templates/:id/reject
  * @desc    Reject a template under review; a reason is required
  * @access  Private (KNOWLEDGE.REVIEW)
  */
-router.post('/:id/reject', requirePermission('KNOWLEDGE', 'REVIEW'), taskTemplateController.reject);
+router.post('/:id/reject', requireCapability('knowledge.review'), taskTemplateController.reject);
 
 /**
  * @route   POST /api/task-templates/:id/reopen
  * @desc    Return a rejected template to draft for rework
  * @access  Private (KNOWLEDGE.REVIEW)
  */
-router.post('/:id/reopen', requirePermission('KNOWLEDGE', 'REVIEW'), taskTemplateController.reopenForRework);
+router.post('/:id/reopen', requireCapability('knowledge.review'), taskTemplateController.reopenForRework);
 
 /**
  * @route   POST /api/task-templates/:id/safety-review
  * @desc    Record an explicit safety review of the working template
  * @access  Private (KNOWLEDGE.SAFETY_REVIEW)
  */
-router.post('/:id/safety-review', requirePermission('KNOWLEDGE', 'SAFETY_REVIEW'), taskTemplateController.recordSafetyReview);
+router.post('/:id/safety-review', requireCapability('knowledge.safety_review'), taskTemplateController.recordSafetyReview);
 
 module.exports = router;
