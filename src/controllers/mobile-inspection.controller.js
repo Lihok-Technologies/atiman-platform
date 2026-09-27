@@ -17,90 +17,48 @@ const {
   MaintainableItem,
   SapCatalogService
 } = require('../models');
+const {
+  resolveAsset,
+  IDENTIFIER_TYPES,
+  RESOLUTION_OUTCOMES
+} = require('../services/asset-context.service');
 
 /**
  * Get asset page data for mobile (via QR code)
  * Entry point for QR-based inspection flow
+ *
+ * DEFECT B (ATM-002-I2A) — this handler previously read the asset with the
+ * unscoped `Equipment.getByQRToken(token)` and then applied its tenant check only
+ * `if (organizationId && ...)`, so an anonymous caller skipped it and received the
+ * asset, its ISO classification, its SAP references, its recent findings and its
+ * recent inspections. It also read the template list with no organization argument
+ * and returned five raw Finding rows.
+ *
+ * It now resolves through the single authoritative tenant-safe resolver and
+ * returns that resolver's owned projection and nothing else: no SAP reference, no
+ * finding, no inspection result, no applicable-template list. A resolution that is
+ * not RESOLVED returns a non-disclosing refusal carrying no asset field at all.
  */
 const getAssetPage = async (req, res, next) => {
   try {
     const { token } = req.params;
-    const organizationId = req.user?.organization_id;
-    
-    // Get asset by QR token
-    const asset = await Equipment.getByQRToken(token);
-    
-    if (!asset) {
+    const organizationId = req.user?.organization_id ?? null;
+
+    const resolution = await resolveAsset(
+      { organizationId },
+      { type: IDENTIFIER_TYPES.QR_TOKEN, value: token }
+    );
+
+    if (resolution.outcome !== RESOLUTION_OUTCOMES.RESOLVED) {
       return res.status(404).json({
         success: false,
         message: 'Invalid QR code or asset not found'
       });
     }
-    
-    // Check organization access if user is authenticated
-    if (organizationId && asset.organization_id !== organizationId) {
-      return res.status(403).json({
-        success: false,
-        message: 'Access denied'
-      });
-    }
-    
-    // Get applicable templates for this asset
-    let templates = [];
-    if (asset.equipment_type_id) {
-      templates = await TaskTemplate.getTemplatesForAsset(
-        asset.equipment_type_id, 
-        asset.organization_id
-      );
-    }
-    
-    // Get recent findings for this asset
-    const findings = await Finding.getByAsset(asset.id, asset.organization_id);
-    const recentFindings = findings.slice(0, 5); // Last 5 findings
-    
-    // Get recent inspection results
-    const inspectionResults = await InspectionResult.getByAsset(
-      asset.id, 
-      asset.organization_id, 
-      { limit: 5 }
-    );
-    
+
     res.json({
       success: true,
-      data: {
-        asset: {
-          id: asset.id,
-          name: asset.name,
-          code: asset.code,
-          status: asset.status,
-          criticality: asset.criticality,
-          location: asset.location,
-          facility: {
-            id: asset.facility_id,
-            name: asset.facility_name,
-            facility_type: asset.facility_type
-          },
-          iso_classification: {
-            category: asset.category_name,
-            class: asset.class_name,
-            type: asset.type_name,
-            full: asset.iso_classification
-          },
-          sap_references: {
-            equipment_reference: asset.sap_equipment_reference,
-            floc_hint: asset.sap_floc_hint,
-            facility_sap_ref: asset.facility_sap_ref
-          }
-        },
-        applicable_templates: templates,
-        recent_findings: recentFindings,
-        recent_inspections: inspectionResults,
-        quick_actions: [
-          { action: 'inspect', label: 'Run Inspection', icon: 'clipboard-check' },
-          { action: 'finding', label: 'Record Finding', icon: 'exclamation-triangle' },
-          { action: 'history', label: 'View History', icon: 'history' }
-        ]
-      }
+      data: { asset: resolution.asset }
     });
   } catch (error) {
     next(error);

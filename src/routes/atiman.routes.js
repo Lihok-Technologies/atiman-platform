@@ -10,6 +10,7 @@
 const express = require('express');
 const { authenticate } = require('../middleware/auth');
 const { getToday } = require('../controllers/atiman.controller');
+const { getAssetContext } = require('../controllers/asset-context.controller');
 
 const router = express.Router();
 
@@ -46,5 +47,13 @@ const requireWebSession = (req, res, next) => {
 // Canonical authenticated work entry.
 router.get('/', requireWebSession, (req, res) => res.redirect('/today'));
 router.get('/today', requireWebSession, getToday);
+
+// Asset context (ATM-002-I2C). Reached by scanning a printed label or by manual
+// entry, never from navigation: asset context is not a work destination
+// (ATM-002-R7 §10.1). Reading asset context is not an accountable capability act,
+// so an authenticated principal with a resolved tenant is the whole requirement —
+// no capability and no role is consulted here, and the trusted tenant comes from
+// the session alone.
+router.get('/asset', requireWebSession, getAssetContext);
 
 module.exports = router;

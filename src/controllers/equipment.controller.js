@@ -4,6 +4,11 @@
  */
 
 const { Equipment } = require('../models');
+const {
+  resolveAsset,
+  IDENTIFIER_TYPES,
+  RESOLUTION_OUTCOMES
+} = require('../services/asset-context.service');
 const qrLabelService = require('../services/qr-label.service');
 
 /**
@@ -313,24 +318,39 @@ const generateQRToken = async (req, res, next) => {
 };
 
 /**
- * Lookup equipment by QR token
+ * Lookup equipment by QR token.
+ *
+ * DEFECT A (ATM-002-I2A) — this handler called `Equipment.getByQRToken(token)`,
+ * whose query is `WHERE e.qr_token = ?` with no organization predicate, and then
+ * performed no organization comparison of its own. Any authenticated principal of
+ * any tenant holding a token received another tenant's full equipment row,
+ * including its SAP references.
+ *
+ * It now resolves through the single authoritative tenant-safe resolver. The
+ * payload is the resolver's owned Atiman asset-context projection rather than the
+ * database row, and every outcome other than RESOLVED is refused with the same
+ * non-disclosing response, so this endpoint cannot be used to establish whether a
+ * token exists in another organization.
  */
 const lookupByQRToken = async (req, res, next) => {
   try {
     const { token } = req.params;
-    
-    const equipment = await Equipment.getByQRToken(token);
-    
-    if (!equipment) {
+
+    const resolution = await resolveAsset(
+      { organizationId: req.user?.organization_id ?? null },
+      { type: IDENTIFIER_TYPES.QR_TOKEN, value: token }
+    );
+
+    if (resolution.outcome !== RESOLUTION_OUTCOMES.RESOLVED) {
       return res.status(404).json({
         success: false,
         message: 'Invalid QR code or equipment not found'
       });
     }
-    
+
     res.json({
       success: true,
-      data: { equipment }
+      data: { equipment: resolution.asset }
     });
   } catch (error) {
     next(error);

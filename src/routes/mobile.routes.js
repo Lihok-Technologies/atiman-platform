@@ -402,64 +402,25 @@ router.get('/inspection/adhoc', requireAuth, blockAdminInspection, (req, res) =>
  * QR and Asset Routes
  */
 
-// QR Asset Context
-router.get('/asset', requireAuth, async (req, res) => {
-  try {
-    const qrCode = req.query.code;
-    const { Equipment } = require('../models');
-    
-    // Lookup asset by QR code or asset code
-    const asset = await Equipment.getByQRCode(qrCode);
-    
-    if (!asset) {
-      return renderMobile(res, 'qr-error', {
-        title: 'Asset Not Found',
-        showBack: true,
-        showNav: false,
-        activeNav: '',
-        qrCode: qrCode,
-        message: 'No asset found with this QR code'
-      }, req);
-    }
-    
-    const data = {
-      title: asset.name || 'Asset',
-      showBack: true,
-      showNav: false,
-      activeNav: '',
-      asset: {
-        id: asset.id,
-        name: asset.name,
-        equipmentType: asset.equipment_type || 'Unknown',
-        equipmentTypeId: asset.equipment_type_id || '',
-        facility: asset.facility_name || 'Unknown',
-        facilityId: asset.facility_id,
-        code: asset.code,
-        qrCode: qrCode || asset.code,
-        status: asset.status || 'active'
-      },
-      openWorkOrders: [],
-      hasOverdue: false,
-      overdueWorkOrder: null,
-      lastInspection: {
-        date: 'N/A',
-        by: 'N/A',
-        result: 'pass',
-        findingsCount: 0
-      }
-    };
-    renderMobile(res, 'asset-context', data, req);
-  } catch (error) {
-    console.error('Asset lookup error:', error);
-    renderMobile(res, 'qr-error', {
-      title: 'Error',
-      showBack: true,
-      showNav: false,
-      activeNav: '',
-      qrCode: req.query.code,
-      message: 'Failed to lookup asset'
-    }, req);
-  }
+// QR Asset Context.
+//
+// DEFECT C (ATM-002-I2A) — this route previously called
+// `Equipment.getByQRCode(qrCode)`, an unscoped `WHERE qr_code = ? OR code = ?`
+// with no organization predicate and no organization comparison in the route. Any
+// authenticated principal of any tenant could therefore enumerate another
+// tenant's assets by their human-readable code.
+//
+// The disposition is a pure hand-off, not a patched lookup: the route performs NO
+// query, holds NO tenant logic and renders NO asset data, so it has nothing left
+// to leak. Resolution happens exactly once, in the single authoritative resolver,
+// on the Atiman asset-context page. This preserves every printed QR label, which
+// encodes `/mobile/asset?code={asset.code}` (services/qr-label.service.js), and
+// keeps the manual-entry and scan entry points on one implementation.
+router.get('/asset', (req, res) => {
+  const code = typeof req.query.code === 'string' ? req.query.code : null;
+  return res.redirect(
+    code ? `/atiman/asset?code=${encodeURIComponent(code)}` : '/atiman/asset'
+  );
 });
 
 // Equipment List - with role-based facility filtering

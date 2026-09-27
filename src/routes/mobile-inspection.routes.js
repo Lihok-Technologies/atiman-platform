@@ -5,7 +5,7 @@
 
 const express = require('express');
 const router = express.Router();
-const { authenticate, optionalAuth } = require('../middleware/auth');
+const { authenticate } = require('../middleware/auth');
 const { requirePermission } = require('../middleware/rbac');
 const mobileInspectionController = require('../controllers/mobile-inspection.controller');
 
@@ -23,12 +23,19 @@ const preventAdminInspection = (req, res, next) => {
   next();
 };
 
-// QR Asset Page - supports both authenticated and public (QR scan) access
-// If token is valid, show asset info even without auth
-router.get('/asset/:token', optionalAuth, mobileInspectionController.getAssetPage);
-
-// All other routes require authentication
+// Every route in this router requires authentication.
+//
+// DEFECT B (ATM-002-I2A) — `GET /asset/:token` was previously mounted ABOVE this
+// line behind `optionalAuth`, and its handler skipped its organization comparison
+// entirely whenever no principal was present. An anonymous caller holding a token
+// therefore received the asset, its classification, its SAP references, its recent
+// findings and its recent inspections. There is no such thing as an anonymous
+// Atiman asset context, so the route now sits behind the same authentication as
+// every other route here and delegates to the authoritative tenant-safe resolver.
 router.use(authenticate);
+
+// QR Asset Page — authenticated, tenant-scoped asset context.
+router.get('/asset/:token', mobileInspectionController.getAssetPage);
 
 // Facility and Asset browsing
 router.get('/facilities', requirePermission('INSPECTIONS', 'VIEW'), mobileInspectionController.getFacilitiesList);

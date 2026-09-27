@@ -64,7 +64,10 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'tests/atiman-shell.test.js',
   // ATM-002-I2B: observation operational foundation (migration 023) — the
   // capture-before-obligation primitive, tenant-authoritative and fail-closed.
-  'tests/observation-foundation.test.js'
+  'tests/observation-foundation.test.js',
+  // ATM-002-I2C: trustworthy asset context — the single tenant-safe resolver and
+  // the closure of the three legacy cross-tenant asset lookup defects.
+  'tests/asset-context.test.js'
 ];
 
 /**
