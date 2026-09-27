@@ -67,6 +67,9 @@ const DB_MUTATING_SUITES = [
   'capability-grants.test.js',
   // ATM-002-I1 Atiman shell (resolves real capabilities, reads real product state).
   'atiman-shell.test.js',
+  // ATM-002-I2B observation operational foundation (migration 023; creates
+  // disposable databases to prove 023 alters no existing table).
+  'observation-foundation.test.js',
   'step6-access-control.test.js',
   'step6-coverage-e2e.test.js',
   'step6-performance.test.js',
@@ -98,7 +101,8 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'knowledge-authoring.test.js',
   'ai-assistance-disclosure.test.js',
   'capability-grants.test.js',
-  'atiman-shell.test.js'
+  'atiman-shell.test.js',
+  'observation-foundation.test.js'
 ];
 
 const REPO_ROOT = path.resolve(__dirname, '..');

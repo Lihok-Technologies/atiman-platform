@@ -61,7 +61,10 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'tests/capability-grants.test.js',
   // ATM-002-I1: Atiman application shell, capability-composed work navigation
   // and the canonical Today entry.
-  'tests/atiman-shell.test.js'
+  'tests/atiman-shell.test.js',
+  // ATM-002-I2B: observation operational foundation (migration 023) — the
+  // capture-before-obligation primitive, tenant-authoritative and fail-closed.
+  'tests/observation-foundation.test.js'
 ];
 
 /**
