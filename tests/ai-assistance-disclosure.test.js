@@ -21,10 +21,11 @@
  * never run against runtime credentials.
  */
 
-const { describe, it, before } = require('node:test');
+const { describe, it, before, after } = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
+const { Pool } = require('pg');
 const { getConnection, isIntegrationTest } = require('../src/config/database');
 const { TaskTemplate } = require('../src/models');
 const authoring = require('../src/services/knowledge-authoring.service');
@@ -56,8 +57,58 @@ const CATEGORY = 999201;
 const CLASS = 999202;
 const EQUIPMENT_TYPE = 999203;
 
-const MIGRATIONS_DIR = path.join(__dirname, '..', 'database', 'postgresql');
+const REPO_ROOT = path.resolve(__dirname, '..');
+const MIGRATIONS_DIR = path.join(REPO_ROOT, 'database', 'postgresql');
 const MIGRATION_021 = path.join(MIGRATIONS_DIR, '021_ai_assistance_disclosure.sql');
+
+/**
+ * Disposable-database plumbing for the executable upgrade-path test.
+ *
+ * The upgrade test must observe a database that is genuinely at migration 020
+ * before migration 021 runs, so it cannot use the shared suite database (already
+ * migrated). It creates and drops its own database on the sanctioned test server,
+ * using only the TEST_DB_* credentials — the same technique the governed
+ * foundation suite uses for its own disposable databases.
+ */
+const SERVER = {
+  host: process.env.TEST_DB_HOST,
+  port: Number(process.env.TEST_DB_PORT),
+  user: process.env.TEST_DB_USER,
+  password: process.env.TEST_DB_PASSWORD
+};
+
+let upgradeDbCounter = 0;
+const createdDatabases = [];
+const uniqueUpgradeDbName = () => `atiman_3bb_upgrade_${process.pid}_${++upgradeDbCounter}`;
+
+const migrationFiles = () => fs.readdirSync(MIGRATIONS_DIR)
+  .filter((name) => /^\d{3}_.*\.sql$/.test(name)).sort();
+
+async function serverPool(database) {
+  return new Pool({ ...SERVER, database, max: 2 });
+}
+
+async function createUpgradeDatabase(name) {
+  const pool = await serverPool('postgres');
+  try {
+    await pool.query(`CREATE DATABASE ${name}`);
+    createdDatabases.push(name);
+  } finally {
+    await pool.end();
+  }
+}
+
+async function dropUpgradeDatabase(name) {
+  const pool = await serverPool('postgres');
+  try {
+    await pool.query(
+      'SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()',
+      [name]);
+    await pool.query(`DROP DATABASE IF EXISTS ${name}`);
+  } finally {
+    await pool.end();
+  }
+}
 
 let knowledgeTypeId;
 let taskFamilyId;
@@ -131,7 +182,15 @@ async function ensureFixture() {
  * supplies a default, so tests can observe what the primitive does with an
  * undeclared disclosure.
  */
-function authoredInput(overrides = {}) {
+function authoredInput(overrides = {}, stepCount = 1) {
+  const steps = [];
+  for (let stepNo = 1; stepNo <= stepCount; stepNo += 1) {
+    steps.push({
+      step_no: stepNo,
+      step_type: 'instruction',
+      instruction: `Synthetic disclosure step ${stepNo}`
+    });
+  }
   return {
     templateName: 'AI Disclosure Fixture',
     templateCode: uniq('AID'),
@@ -145,21 +204,27 @@ function authoredInput(overrides = {}) {
     triggerMechanism: 'no_fixed_interval',
     knowledgeScope: 'customer',
     organizationId: ORG,
-    steps: [{ step_no: 1, step_type: 'instruction', instruction: 'Synthetic disclosure step' }],
+    steps,
     safetyControls: [],
     applicability: [{ equipment_type_id: EQUIPMENT_TYPE, is_primary: true }],
     ...overrides
   };
 }
 
-async function createDefinition(overrides = {}) {
-  return authoring.createAuthoredDefinition(authoredInput(overrides), { actorUserId: ACTOR, organizationId: ORG });
+/**
+ * Create a definition. `stepCount` controls the fixture's step set, so the
+ * freezing tests can prove "EVERY step version" on a genuinely multi-step
+ * definition rather than inferring it from a one-step case.
+ */
+async function createDefinition(overrides = {}, stepCount = 1) {
+  return authoring.createAuthoredDefinition(authoredInput(overrides, stepCount),
+    { actorUserId: ACTOR, organizationId: ORG });
 }
 
 async function rawDefinitionRow(templateId) {
   return withConn(async (conn) => {
     const [row] = await conn.query(
-      `SELECT ai_assisted, ai_assistance_detail FROM task_templates WHERE id = ?`,
+      `SELECT content_origin, ai_assisted, ai_assistance_detail FROM task_templates WHERE id = ?`,
       [templateId]
     );
     return row;
@@ -212,11 +277,58 @@ async function frozenDisclosure(versionId) {
       [versionId]
     );
     const steps = await conn.query(
-      `SELECT ai_assisted, ai_assistance_detail FROM task_template_step_versions
+      `SELECT step_no, ai_assisted, ai_assistance_detail FROM task_template_step_versions
         WHERE task_template_version_id = ? ORDER BY step_no`,
       [versionId]
     );
     return { header, steps };
+  });
+}
+
+/**
+ * Construct a genuine legacy_generated definition without going through the
+ * authoring primitive.
+ *
+ * This is the production shape: the row is created unclassified (as the legacy
+ * corpus was), then classified exactly once with the accountable clearance that
+ * classification requires, which is the only way `content_origin` may become
+ * `legacy_generated`. It exists so the legacy compatibility boundary can be proven
+ * by an actual publication rather than by a synthesized admission snapshot.
+ */
+async function createLegacyDefinition({ stepCount = 2 } = {}) {
+  return withConn(async (conn) => {
+    const [row] = await conn.query(
+      `INSERT INTO task_templates (equipment_type_id, template_code, template_name,
+         maintenance_type, task_kind, priority, knowledge_type_id, task_family_id,
+         maintenance_strategy, trigger_mechanism, knowledge_scope, organization_id, content_origin)
+       VALUES (?, ?, ?, 'preventive', 'inspection', 'medium', ?, ?, 'preventive',
+               'no_fixed_interval', 'customer', ?, NULL)
+       RETURNING id`,
+      [EQUIPMENT_TYPE, uniq('AID-LEG'), 'Legacy-generated disclosure fixture',
+        knowledgeTypeId, taskFamilyId, ORG]
+    );
+    await conn.query(
+      `UPDATE task_templates
+          SET content_origin = 'legacy_generated',
+              legacy_clearance_by_user_id = ?,
+              legacy_clearance_at = NOW(),
+              legacy_clearance_rationale = 'AI-disclosure suite legacy fixture clearance'
+        WHERE id = ?`,
+      [REVIEWER, row.id]
+    );
+    for (let stepNo = 1; stepNo <= stepCount; stepNo += 1) {
+      await conn.query(
+        `INSERT INTO task_template_steps (task_template_id, step_no, step_type, instruction, is_required)
+         VALUES (?, ?, 'instruction', ?, true)`,
+        [row.id, stepNo, `Legacy step ${stepNo}`]
+      );
+    }
+    await conn.query(
+      `INSERT INTO task_template_equipment_types (task_template_id, equipment_type_id, is_primary, added_by_user_id)
+       VALUES (?, ?, true, ?)`,
+      [row.id, EQUIPMENT_TYPE, ACTOR]
+    );
+    return row.id;
   });
 }
 
@@ -257,6 +369,14 @@ async function attemptWrite(conn, statement, params = []) {
 describe('AI Assistance Disclosure (ATM-001 M6.4 Step 3B-B)', { skip: DB_TEST_SKIP_REASON }, () => {
   before(async () => {
     await ensureFixture();
+  });
+
+  // The executable upgrade-path test creates its own disposable database; drop it
+  // even when the test fails, so a red run leaves no residue behind.
+  after(async () => {
+    for (const name of createdDatabases.splice(0)) {
+      try { await dropUpgradeDatabase(name); } catch { /* best effort */ }
+    }
   });
 
   // -------------------------------------------------------------------------
@@ -337,6 +457,126 @@ describe('AI Assistance Disclosure (ATM-001 M6.4 Step 3B-B)', { skip: DB_TEST_SK
           assert.strictEqual(outcome.accepted, true, `${label} must be accepted (${outcome.rule})`);
         }
       });
+    });
+
+    it('leaves pre-existing rows at NULL across the 020 -> 021 upgrade, and never backfills FALSE', async () => {
+      // Executable upgrade-path evidence, replacing source-text-only confidence.
+      // A database is built to exactly migration 020, representative rows are
+      // inserted, and only then is migration 021 applied. This is the only test
+      // that can prove the ratified claim "legacy rows backfill NULL, never FALSE"
+      // against real pre-existing data rather than against the migration file.
+      const name = uniqueUpgradeDbName();
+      await createUpgradeDatabase(name);
+      const pool = await serverPool(name);
+      try {
+        const chain = migrationFiles();
+        const before021 = chain.filter((file) => file.slice(0, 3) < '021');
+        assert.ok(before021.length >= 20, 'the chain below 021 must be discoverable');
+
+        // 1. database at migration 020 — and, first, the fact the M6.3 correction
+        //    records: the working definition has no AI disclosure column yet.
+        for (const file of before021) {
+          await pool.query(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8'));
+        }
+        const preColumns = await pool.query(
+          `SELECT column_name FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'task_templates'
+              AND column_name IN ('ai_assisted', 'ai_assistance_detail')`
+        );
+        assert.strictEqual(preColumns.rowCount, 0,
+          'before migration 021 the working definition carries no AI disclosure column');
+
+        // 2. representative existing rows, in the shapes the corpus actually holds:
+        //    a legacy row that predates the origin regime, a classified
+        //    legacy_generated row with accountable clearance, and an authored row.
+        await pool.query(
+          `INSERT INTO equipment_categories (id, category_code, category_name)
+           VALUES (9998011, 'UPGCAT', 'Upgrade Category')`);
+        await pool.query(
+          `INSERT INTO equipment_classes (id, category_id, class_code, class_name)
+           VALUES (9998012, 9998011, 'UPGCLS', 'Upgrade Class')`);
+        await pool.query(
+          `INSERT INTO equipment_types (id, class_id, type_code, type_name)
+           VALUES (9998013, 9998012, 'UPGTYPE', 'Upgrade Type')`);
+        await pool.query(
+          `INSERT INTO task_templates (id, equipment_type_id, template_code, template_name,
+             maintenance_type, knowledge_type_id, task_family_id, maintenance_strategy,
+             trigger_mechanism, knowledge_scope, content_origin)
+           SELECT 9998021, 9998013, 'UPG-UNCLASSIFIED', 'Pre-origin legacy definition',
+             'preventive', (SELECT id FROM knowledge_types WHERE type_code = 'MAINTENANCE_PROCEDURE'),
+             (SELECT id FROM task_families WHERE family_code = 'inspect'),
+             'preventive', 'no_fixed_interval', 'shared', NULL`);
+        await pool.query(
+          `INSERT INTO users (id, username, email, password_hash, full_name, role, is_active)
+           VALUES (9998091, 'upgrade-clearer', 'upgrade-clearer@test.local', 'x',
+                   'Upgrade Clearer', 'supervisor', true)`);
+        await pool.query(
+          `INSERT INTO task_templates (id, equipment_type_id, template_code, template_name,
+             maintenance_type, knowledge_type_id, task_family_id, maintenance_strategy,
+             trigger_mechanism, knowledge_scope, content_origin)
+           SELECT 9998022, 9998013, 'UPG-AUTHORED', 'Pre-021 authored definition',
+             'preventive', (SELECT id FROM knowledge_types WHERE type_code = 'MAINTENANCE_PROCEDURE'),
+             (SELECT id FROM task_families WHERE family_code = 'inspect'),
+             'preventive', 'no_fixed_interval', 'shared', 'authored'`);
+        await pool.query(
+          `INSERT INTO task_templates (id, equipment_type_id, template_code, template_name,
+             maintenance_type, knowledge_type_id, task_family_id, maintenance_strategy,
+             trigger_mechanism, knowledge_scope, content_origin,
+             legacy_clearance_by_user_id, legacy_clearance_at, legacy_clearance_rationale)
+           SELECT 9998023, 9998013, 'UPG-LEGACY', 'Pre-021 cleared legacy definition',
+             'preventive', (SELECT id FROM knowledge_types WHERE type_code = 'MAINTENANCE_PROCEDURE'),
+             (SELECT id FROM task_families WHERE family_code = 'inspect'),
+             'preventive', 'no_fixed_interval', 'shared', 'legacy_generated',
+             9998091, NOW(), 'upgrade-path fixture clearance'`);
+        const before = await pool.query(
+          `SELECT id FROM task_templates WHERE id IN (9998021, 9998022, 9998023) ORDER BY id`);
+        assert.strictEqual(before.rowCount, 3, 'all three representative rows must exist before 021');
+
+        // 3. apply migration 021 exactly as committed, then re-apply it twice: the
+        //    runner keeps no applied-migrations ledger, so re-application is the
+        //    normal case rather than an edge case.
+        const sql021 = fs.readFileSync(MIGRATION_021, 'utf8');
+        for (let application = 1; application <= 3; application += 1) {
+          await pool.query(sql021);
+
+          // 4. every pre-existing row still carries NULL/NULL …
+          const rows = await pool.query(
+            `SELECT id, ai_assisted, ai_assistance_detail FROM task_templates
+              WHERE id IN (9998021, 9998022, 9998023) ORDER BY id`);
+          assert.strictEqual(rows.rowCount, 3);
+          for (const row of rows.rows) {
+            assert.strictEqual(row.ai_assisted, null,
+              `row ${row.id} must stay NULL after application ${application}`);
+            assert.strictEqual(row.ai_assistance_detail, null,
+              `row ${row.id} must have no detail after application ${application}`);
+          }
+
+          // 5. and NOT ONE historical row anywhere became FALSE.
+          const falsified = await pool.query(
+            `SELECT count(*)::int AS count FROM task_templates WHERE ai_assisted IS FALSE`);
+          assert.strictEqual(falsified.rows[0].count, 0,
+            `application ${application} must not fabricate a single FALSE declaration`);
+
+          // 6. re-application remains safe and does not duplicate the constraint.
+          const constraints = await pool.query(
+            `SELECT count(*)::int AS count FROM pg_constraint
+              WHERE conname = 'chk_task_templates_ai_assistance_coherence'`);
+          assert.strictEqual(constraints.rows[0].count, 1,
+            `application ${application} must leave exactly one coherence constraint`);
+        }
+
+        // The coherence rule the upgrade installed is live on the upgraded rows.
+        const coerced = await pool.query(
+          `UPDATE task_templates SET ai_assisted = TRUE WHERE id = 9998021`)
+          .then(() => null, (error) => error);
+        assert.ok(coerced, 'the constraint must be enforced on rows that predate it');
+        assert.match(coerced.message, /chk_task_templates_ai_assistance_coherence/);
+      } finally {
+        await pool.end();
+        await dropUpgradeDatabase(name);
+        const index = createdDatabases.indexOf(name);
+        if (index >= 0) createdDatabases.splice(index, 1);
+      }
     });
 
     it('migration 021 is guarded, backfills nothing, and rewrites no content origin', async () => {
@@ -605,9 +845,12 @@ describe('AI Assistance Disclosure (ATM-001 M6.4 Step 3B-B)', { skip: DB_TEST_SK
       assert.strictEqual(versions[0].count, 0, 'a refused publication writes no version');
     });
 
-    it('freezes an AI-assisted declaration into the version header and every step version', async () => {
-      const detail = { model: 'synthetic', assisted: 'drafted both steps' };
-      const created = await createDefinition({ aiAssisted: true, aiAssistanceDetail: detail });
+    it('freezes an AI-assisted declaration into the version header and EVERY step version', async () => {
+      // Three steps on purpose: "every step version carries the disclosure" cannot
+      // be proven by a one-step fixture, which passes even if the loop only ever
+      // handled its first iteration.
+      const detail = { model: 'synthetic', assisted: 'drafted all three steps' };
+      const created = await createDefinition({ aiAssisted: true, aiAssistanceDetail: detail }, 3);
       await attachEvidence(created.id);
       await approveDefinition(created.id);
 
@@ -616,15 +859,17 @@ describe('AI Assistance Disclosure (ATM-001 M6.4 Step 3B-B)', { skip: DB_TEST_SK
 
       assert.strictEqual(frozen.header.ai_assisted, true);
       assert.deepStrictEqual(frozen.header.ai_assistance_detail, detail);
-      assert.strictEqual(frozen.steps.length, 1);
+      assert.strictEqual(frozen.steps.length, 3, 'all three step versions must be frozen');
+      assert.deepStrictEqual(frozen.steps.map((s) => s.step_no), [1, 2, 3]);
       for (const step of frozen.steps) {
-        assert.strictEqual(step.ai_assisted, true);
-        assert.deepStrictEqual(step.ai_assistance_detail, detail);
+        assert.strictEqual(step.ai_assisted, true, `step ${step.step_no} must disclose assistance`);
+        assert.deepStrictEqual(step.ai_assistance_detail, detail,
+          `step ${step.step_no} must carry the approved detail verbatim`);
       }
     });
 
-    it('freezes a human declaration as FALSE with no detail', async () => {
-      const created = await createDefinition({ aiAssisted: false });
+    it('freezes a human declaration as FALSE with no detail, on every step version', async () => {
+      const created = await createDefinition({ aiAssisted: false }, 2);
       await attachEvidence(created.id);
       await approveDefinition(created.id);
 
@@ -633,8 +878,9 @@ describe('AI Assistance Disclosure (ATM-001 M6.4 Step 3B-B)', { skip: DB_TEST_SK
 
       assert.strictEqual(frozen.header.ai_assisted, false);
       assert.strictEqual(frozen.header.ai_assistance_detail, null);
+      assert.strictEqual(frozen.steps.length, 2);
       for (const step of frozen.steps) {
-        assert.strictEqual(step.ai_assisted, false);
+        assert.strictEqual(step.ai_assisted, false, `step ${step.step_no} must carry FALSE`);
         assert.strictEqual(step.ai_assistance_detail, null);
       }
     });
@@ -707,7 +953,7 @@ describe('AI Assistance Disclosure (ATM-001 M6.4 Step 3B-B)', { skip: DB_TEST_SK
       });
     }
 
-    it('exempts legacy-generated knowledge and never fabricates its declaration', async () => {
+    it('exempts legacy-generated knowledge at the admission rule, and never fabricates its declaration', async () => {
       const created = await createDefinition({ aiAssisted: false });
       await attachEvidence(created.id);
 
@@ -740,6 +986,50 @@ describe('AI Assistance Disclosure (ATM-001 M6.4 Step 3B-B)', { skip: DB_TEST_SK
       const declaredRules = validatePublicationAdmission(legacyDeclared).map((f) => f.rule);
       assert.ok(!declaredRules.includes('AI_DISCLOSURE_MISSING'),
         'a truthful legacy declaration is not second-guessed');
+    });
+
+    it('publishes a genuine legacy_generated definition with NULL disclosure, frozen as NULL on every step', async () => {
+      // End-to-end proof of the compatibility boundary. The rule-level test above
+      // shows what admission decides about a snapshot; this one shows what the
+      // governed publication path actually writes for a real legacy-classified
+      // definition: NULL stays NULL — never FALSE — in the header and in EVERY
+      // step version, and no AI_DISCLOSURE_MISSING is raised.
+      const templateId = await createLegacyDefinition({ stepCount: 3 });
+      const atRest = await rawDefinitionRow(templateId);
+      // State the premise instead of leaving it inferable: this really is
+      // legacy-generated knowledge, and it really is undeclared at rest.
+      assert.strictEqual(atRest.content_origin, 'legacy_generated');
+      assert.strictEqual(atRest.ai_assisted, null);
+      assert.strictEqual(atRest.ai_assistance_detail, null);
+
+      await attachEvidence(templateId);
+      await approveDefinition(templateId);
+
+      const result = await publishDefinition(templateId);
+      const frozen = await frozenDisclosure(result.versionId);
+
+      assert.strictEqual(frozen.header.ai_assisted, null,
+        'legacy publication must not fabricate a disclosure');
+      assert.strictEqual(frozen.header.ai_assistance_detail, null);
+      assert.strictEqual(frozen.steps.length, 3, 'all legacy step versions must be frozen');
+      for (const step of frozen.steps) {
+        assert.strictEqual(step.ai_assisted, null,
+          `legacy step ${step.step_no} must stay NULL, not FALSE`);
+        assert.strictEqual(step.ai_assistance_detail, null);
+      }
+
+      const fabricated = await withConn((conn) => conn.query(
+        `SELECT
+           (SELECT count(*)::int FROM task_template_versions
+             WHERE id = ? AND ai_assisted IS FALSE) AS header_false,
+           (SELECT count(*)::int FROM task_template_step_versions
+             WHERE task_template_version_id = ? AND ai_assisted IS FALSE) AS step_false`,
+        [result.versionId, result.versionId]
+      ));
+      assert.strictEqual(fabricated[0].header_false, 0,
+        'the frozen legacy header must not carry a fabricated FALSE');
+      assert.strictEqual(fabricated[0].step_false, 0,
+        'no frozen legacy step version may carry a fabricated FALSE');
     });
 
     it('raises no disclosure failure for any declared definition', async () => {
