@@ -1073,8 +1073,9 @@ describe('Governed Crosswalk Application Layer (ATM-001 M5R.3E)', { skip: DB_TES
 
       // ATM-001 M5R.4B later appended the governed taxonomy identity-lifecycle
       // mechanism as 019, ATM-001 M6.3 appended the governed knowledge foundation
-      // as 020, and ATM-001 M6.4 Step 3B-B appended the AI-assistance disclosure
-      // columns on the working definition as 021. M5R.3E itself still added no
+      // as 020, ATM-001 M6.4 Step 3B-B appended the AI-assistance disclosure
+      // columns on the working definition as 021, and ATM-003 appended the
+      // capability-grant foundation as 022. M5R.3E itself still added no
       // migration, which is what the original assertion was protecting. The chain
       // is therefore asserted as an ATTRIBUTED tail rather than a bare count: each
       // migration after the accepted chain is still named explicitly, so a future
@@ -1083,7 +1084,8 @@ describe('Governed Crosswalk Application Layer (ATM-001 M5R.3E)', { skip: DB_TES
       assert.deepStrictEqual(files.slice(18), [
         '019_taxonomy_identity_lifecycle.sql',
         '020_governed_knowledge_foundation.sql',
-        '021_ai_assistance_disclosure.sql'
+        '021_ai_assistance_disclosure.sql',
+        '022_capability_grant_foundation.sql'
       ], 'every migration after the accepted chain is an appended, attributed milestone');
     });
 
