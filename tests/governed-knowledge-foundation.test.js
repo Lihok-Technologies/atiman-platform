@@ -434,7 +434,18 @@ describe('Governed knowledge foundation (ATM-001 M6.3, migration 020)',
         try {
           const run = runRunner(name);
           assert.strictEqual(run.status, 0, `fresh chain must succeed:\n${run.stdout}\n${run.stderr}`);
-          assert.match(run.stdout, /SUCCESS: 20\/20 migration\(s\) applied\./);
+          // ATM-001 M6.4 Step 3B-B amended this ONE assertion. It hard-coded the
+          // chain length ("SUCCESS: 20/20"), which every later forward-only
+          // migration necessarily breaks even though nothing in 001-020 changes.
+          // The substance is unchanged — the complete discovered chain, in order,
+          // must apply cleanly on a fresh database — so the count is derived from
+          // the directory and the M6.3 migration is asserted by name. No M6.3
+          // behaviour, schema or expectation is otherwise touched.
+          const chainLength = migrationFiles().length;
+          assert.match(run.stdout,
+            new RegExp(`SUCCESS: ${chainLength}\\/${chainLength} migration\\(s\\) applied\\.`));
+          assert.ok(run.stdout.includes('020_governed_knowledge_foundation.sql'),
+            'the M6.3 governed migration must be part of the applied chain');
 
           const tables = await pool.query(
             `SELECT tablename FROM pg_tables WHERE schemaname='public' AND tablename IN

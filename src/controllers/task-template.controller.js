@@ -546,11 +546,7 @@ const publish = async (req, res, next) => {
     const { id } = req.params;
     const userId = req.user.id;
     const organizationId = req.user.organization_id;
-    const {
-      change_rationale,
-      ai_assisted,
-      ai_assistance_detail
-    } = req.body || {};
+    const { change_rationale } = req.body || {};
 
     // Route ID validation: must be a positive integer.
     const templateId = parseInt(id, 10);
@@ -561,33 +557,23 @@ const publish = async (req, res, next) => {
       });
     }
 
-    // ai_assisted validation: omitted defaults to false; if supplied, must be a JSON boolean.
-    let normalizedAiAssisted;
-    if (ai_assisted === undefined) {
-      normalizedAiAssisted = false;
-    } else if (typeof ai_assisted !== 'boolean') {
+    // ATM-001 M6.4 Step 3B-B: AI-assistance disclosure is governed state on the
+    // working definition, not a publication parameter. It is declared by the
+    // accountable author while the definition is a draft — so a human reviewer and
+    // approver can see it — and publication freezes that already-approved value.
+    // Accepting it here would let a publisher assert an attribution the approver
+    // never approved, so supplying it at publication is refused outright rather
+    // than silently ignored.
+    if (req.body && (req.body.ai_assisted !== undefined || req.body.ai_assistance_detail !== undefined)) {
       return res.status(400).json({
         success: false,
-        message: 'ai_assisted must be a boolean'
+        message: 'AI-assistance disclosure is declared on the working definition while it is a draft and is frozen at publication; it cannot be supplied when publishing',
+        code: 'AI_DISCLOSURE_NOT_A_PUBLICATION_PARAMETER'
       });
-    } else {
-      normalizedAiAssisted = ai_assisted;
-    }
-
-    // ai_assistance_detail validation: explicit null or undefined is allowed; otherwise must be a plain object.
-    if (ai_assistance_detail !== undefined && ai_assistance_detail !== null) {
-      if (typeof ai_assistance_detail !== 'object' || Array.isArray(ai_assistance_detail)) {
-        return res.status(400).json({
-          success: false,
-          message: 'ai_assistance_detail must be an object'
-        });
-      }
     }
 
     const result = await TaskTemplate.publishVersion(templateId, userId, {
       changeRationale: change_rationale,
-      aiAssisted: normalizedAiAssisted,
-      aiAssistanceDetail: ai_assistance_detail,
       publishedByOrganizationId: organizationId
     });
 

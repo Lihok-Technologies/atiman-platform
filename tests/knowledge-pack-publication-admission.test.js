@@ -186,8 +186,12 @@ async function createGovernedTemplateVersion({ organizationId = null, lifecycleS
 
   return withConn(async (conn) => {
     const [template] = await query(conn,
-      `INSERT INTO task_templates (equipment_type_id, organization_id, template_code, template_name, maintenance_type, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, content_origin)
-       VALUES (?, ?, ?, 'M4 Governed Template', 'preventive', (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', ?, 'authored') RETURNING id`,
+      // ATM-001 M6.4 Step 3B-B: authored knowledge must declare whether AI
+      // materially assisted, and publication freezes that declaration. This fixture
+      // is hand-written, so it declares FALSE; NULL would mean "never captured" and
+      // is refused at publication.
+      `INSERT INTO task_templates (equipment_type_id, organization_id, template_code, template_name, maintenance_type, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, content_origin, ai_assisted, ai_assistance_detail)
+       VALUES (?, ?, ?, 'M4 Governed Template', 'preventive', (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', ?, 'authored', FALSE, NULL) RETURNING id`,
       [EQUIPMENT_TYPE, organizationId, uniq('M4T'), knowledgeScope]);
     const [step] = await query(conn,
       `INSERT INTO task_template_steps (task_template_id, step_no, step_type, instruction, is_required)
@@ -228,8 +232,12 @@ async function createGovernedTemplateVersion({ organizationId = null, lifecycleS
 async function createSupersededTemplateVersion() {
   return withConn(async (conn) => {
     const [template] = await query(conn,
-      `INSERT INTO task_templates (equipment_type_id, organization_id, template_code, template_name, maintenance_type, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, content_origin)
-       VALUES (?, NULL, ?, 'M4 Superseded Template', 'preventive', (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', 'shared', 'authored') RETURNING id`,
+      // ATM-001 M6.4 Step 3B-B: authored knowledge must declare whether AI
+      // materially assisted, and publication freezes that declaration. This fixture
+      // is hand-written, so it declares FALSE; NULL would mean "never captured" and
+      // is refused at publication.
+      `INSERT INTO task_templates (equipment_type_id, organization_id, template_code, template_name, maintenance_type, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, content_origin, ai_assisted, ai_assistance_detail)
+       VALUES (?, NULL, ?, 'M4 Superseded Template', 'preventive', (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', 'shared', 'authored', FALSE, NULL) RETURNING id`,
       [EQUIPMENT_TYPE, uniq('M4S')]);
     const [step] = await query(conn,
       `INSERT INTO task_template_steps (task_template_id, step_no, step_type, instruction, is_required)
@@ -716,8 +724,12 @@ describe('Knowledge Pack Publication Admission (ATM-001 M4)', { skip: DB_TEST_SK
       // refusal then proves the version-only contract, not an id collision.
       const workingOnly = await withConn(async (conn) => {
         await query(conn,
-          `INSERT INTO task_templates (id, equipment_type_id, template_code, template_name, maintenance_type, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, content_origin)
-           VALUES (?, ?, 'M4-WORKING-ONLY', 'M4 Working-Only Template', 'preventive', (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', 'shared', 'authored')
+          // ATM-001 M6.4 Step 3B-B: authored knowledge must declare whether AI
+          // materially assisted, and publication freezes that declaration. This
+          // fixture is hand-written, so it declares FALSE; NULL would mean "never
+          // captured" and is refused at publication.
+          `INSERT INTO task_templates (id, equipment_type_id, template_code, template_name, maintenance_type, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, content_origin, ai_assisted, ai_assistance_detail)
+           VALUES (?, ?, 'M4-WORKING-ONLY', 'M4 Working-Only Template', 'preventive', (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', 'shared', 'authored', FALSE, NULL)
            ON CONFLICT (id) DO NOTHING`,
           [WORKING_ONLY_TEMPLATE_ID, EQUIPMENT_TYPE]);
         const isTemplate = await query(conn,

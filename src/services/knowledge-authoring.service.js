@@ -45,10 +45,14 @@
  *   * Accountable humans — every mutating operation requires an explicit
  *     `actorUserId` that resolves to a real user. There is no "system" actor and
  *     no anonymous authoring.
- *   * AI disclosure — recorded where the schema records it: on the frozen version
- *     (migration 009). The working definition has no AI column, so this primitive
- *     neither accepts nor fabricates a draft-time disclosure, and it never writes
- *     `ai_assisted = false` on an author's behalf.
+ *   * AI disclosure — declared here, on the working definition, because that is
+ *     where an accountable author can state it truthfully and a human approver can
+ *     see it (ATM-001 M6.4 Step 3B-B). The disclosure is a provenance dimension
+ *     independent of `content_origin`: `authored` means accountable-human-authored
+ *     and says nothing about whether AI assisted. The primitive never infers it
+ *     and never writes `ai_assisted = false` on an author's behalf: an undeclared
+ *     disclosure stays NULL, which publication admission refuses for authored
+ *     knowledge.
  *   * Legacy provenance clarity — an authored definition is a NEW identity with
  *     `content_origin = 'authored'`. Legacy (`legacy_generated`) definitions and
  *     system templates are never rewritten through this service, so a generated
@@ -516,6 +520,14 @@ async function validateGovernedState(conn, state, context = {}) {
       { contentOrigin: state.content_origin }));
   }
 
+  // ---- AI-assistance disclosure coherence (ATM-001 M6.4 Step 3B-B) --------
+  // The flag and its detail are a single attribution fact and must not contradict
+  // each other, in either direction — the same rule the governed crosswalk layer
+  // already applies to its own AI disclosure. The database enforces the structural
+  // half; this enforces the semantics ("meaningfully present"), so an author sees a
+  // structured domain error rather than a raw constraint violation.
+  failures.push(...validateAiDisclosure(state));
+
   // ---- trigger coherence (mirrors chk_task_templates_trigger_consistency) --
   failures.push(...validateTriggerCoherence(state));
 
@@ -538,6 +550,102 @@ async function validateGovernedState(conn, state, context = {}) {
 
   // ---- referenced rows must exist ----------------------------------------
   failures.push(...await validateReferences(conn, state, context));
+
+  return failures;
+}
+
+/**
+ * Normalise a disclosure detail for validation.
+ *
+ * The semantic value is a JSON object, but it reaches this primitive in two shapes:
+ * as the caller supplied it, and as the column-shaped state `buildDefinitionFields`
+ * produces, where it is JSON text because that is what a JSONB write takes. The
+ * rules must judge both identically, so JSON text is parsed back first.
+ *
+ * Returns `{ state: 'absent' | 'record' | 'invalid', value }`. `absent` is NULL — the
+ * disclosure was not captured. `invalid` is a supplied value that is not a record.
+ */
+function normaliseDisclosureDetail(detail) {
+  if (detail === null || detail === undefined) return { state: 'absent', value: null };
+  let value = detail;
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (text === '') return { state: 'invalid', value: detail };
+    try {
+      value = JSON.parse(text);
+    } catch {
+      return { state: 'invalid', value: detail };
+    }
+  }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return { state: 'invalid', value };
+  }
+  return { state: 'record', value };
+}
+
+/**
+ * Is a disclosure detail "meaningfully present"?
+ *
+ * The disclosure must SAY what was assisted. A plain object carrying at least one
+ * non-blank value does; `{}`, an array, a scalar, or an object whose values are all
+ * null/blank/empty does not. This mirrors the crosswalk rule that "an AI-assisted
+ * row must say what was assisted".
+ */
+function isMeaningfullyPresentDisclosure(detail) {
+  if (detail === null || detail === undefined) return false;
+  if (typeof detail !== 'object' || Array.isArray(detail)) return false;
+  const values = Object.values(detail);
+  if (values.length === 0) return false;
+  return values.some((value) => {
+    if (value === null || value === undefined) return false;
+    if (typeof value === 'string') return value.trim() !== '';
+    if (Array.isArray(value)) return value.length > 0;
+    if (typeof value === 'object') return Object.keys(value).length > 0;
+    return true;
+  });
+}
+
+/**
+ * AI-assistance disclosure coherence.
+ *
+ *   ai_assisted = TRUE  -> detail must be meaningfully present
+ *   ai_assisted = FALSE -> detail must be absent (NULL)
+ *   ai_assisted = NULL  -> detail must be absent (NULL)
+ *
+ * NULL is not "false": it means the status was not captured under this regime, and
+ * is the truthful state for knowledge that predates it.
+ */
+function validateAiDisclosure(state) {
+  const failures = [];
+  const assisted = state.ai_assisted === undefined ? null : state.ai_assisted;
+  const detail = normaliseDisclosureDetail(state.ai_assistance_detail);
+
+  if (assisted !== null && typeof assisted !== 'boolean') {
+    failures.push(failure('AI_ASSISTED_INVALID',
+      'aiAssisted must be true, false, or absent (never captured)', { aiAssisted: assisted }));
+    return failures;
+  }
+
+  // A supplied detail that is not a record is neither a valid disclosure nor an
+  // absent one. This is stricter than chk_task_templates_ai_assistance_coherence,
+  // which only refuses an EMPTY value; the schema permits any non-empty JSON,
+  // while the governed coherence rule requires the disclosure to be a record.
+  if (detail.state === 'invalid') {
+    failures.push(failure('AI_ASSISTANCE_DETAIL_INVALID',
+      'aiAssistanceDetail must be an object describing what AI materially assisted',
+      { field: 'aiAssistanceDetail' }));
+    return failures;
+  }
+
+  if (assisted === true && !isMeaningfullyPresentDisclosure(detail.value)) {
+    failures.push(failure('AI_ASSISTANCE_DETAIL_REQUIRED',
+      'an AI-assisted definition must record what AI materially assisted'));
+  }
+  if (assisted !== true && detail.state !== 'absent') {
+    failures.push(failure('AI_ASSISTANCE_DETAIL_NOT_ALLOWED',
+      'AI-assistance detail is only meaningful when AI assistance is disclosed; a '
+      + 'non-assisted or undeclared definition must not carry it'));
+  }
 
   return failures;
 }
@@ -919,13 +1027,14 @@ function normaliseGovernedFields(input = {}) {
   take('triggerEventDescription', 'trigger_event_description', trimOrNull);
   take('triggerBasisSourceVersionId', 'trigger_basis_source_version_id', asPositiveInt);
   take('knowledgeScope', 'knowledge_scope', trimOrNull);
-
-  // AI-assistance disclosure is deliberately NOT accepted here. Migration 009
-  // places `ai_assisted` / `ai_assistance_detail` on the FROZEN version tables
-  // (task_template_versions, task_template_step_versions, knowledge_pack_versions),
-  // not on the working definition, so there is no column to hold a draft-time
-  // disclosure. This primitive does not fabricate one, and it does not silently
-  // record `false` on the author's behalf. See the AI-disclosure note below.
+  // AI-assistance disclosure (ATM-001 M6.4 Step 3B-B). Declared explicitly by the
+  // accountable author; never inferred, and never defaulted to false.
+  // An explicitly undefined declaration is "not declared" (NULL), matching the
+  // house convention for optional governed fields and keeping a JSON body spread
+  // from reaching the driver as an unbound parameter.
+  take('aiAssisted', 'ai_assisted', (v) => (v === undefined ? null : v));
+  take('aiAssistanceDetail', 'ai_assistance_detail',
+    (v) => (v === undefined || v === null ? null : JSON.stringify(v)));
 
   // `content_origin` is deliberately absent: it is an invariant of this
   // primitive, never caller input, and never rewritten.
@@ -959,7 +1068,9 @@ function mergeState(row, proposed) {
     trigger_event_description: row.trigger_event_description,
     trigger_basis_source_version_id: row.trigger_basis_source_version_id,
     knowledge_scope: row.knowledge_scope,
-    content_origin: row.content_origin
+    content_origin: row.content_origin,
+    ai_assisted: row.ai_assisted,
+    ai_assistance_detail: row.ai_assistance_detail
   };
   for (const [key, value] of Object.entries(proposed)) {
     state[key] = value;
@@ -975,7 +1086,7 @@ const WRITABLE_DEFINITION_COLUMNS = Object.freeze([
   'trigger_mechanism', 'trigger_condition_parameter', 'trigger_condition_operator',
   'trigger_condition_value', 'trigger_condition_unit', 'trigger_condition_context',
   'trigger_event_description', 'trigger_basis_source_version_id',
-  'knowledge_scope'
+  'knowledge_scope', 'ai_assisted', 'ai_assistance_detail'
 ]);
 
 // ---------------------------------------------------------------------------
@@ -1074,6 +1185,10 @@ async function loadAuthoredDefinition(templateId, { organizationId = null } = {}
         basis_source_version_id: row.trigger_basis_source_version_id
       },
       knowledge_scope: row.knowledge_scope,
+      ai_assistance: {
+        assisted: row.ai_assisted,
+        detail: row.ai_assistance_detail
+      },
       steps,
       safety_controls: safetyControls,
       applicability,
@@ -1114,6 +1229,14 @@ function describeDraftCompleteness(definition) {
   if (definition.steps.length === 0) missing.push('steps');
   if (definition.applicability.length === 0) missing.push('applicability');
   if (definition.evidence.length === 0) missing.push('template_or_step_evidence');
+  // Authored knowledge must declare whether AI materially assisted: publication
+  // admission refuses an undeclared disclosure. Reported here as incompleteness so
+  // an author sees the gap while drafting rather than at publication.
+  if (definition.content_origin === AUTHORED_CONTENT_ORIGIN
+      && (definition.ai_assistance.assisted === null
+          || definition.ai_assistance.assisted === undefined)) {
+    missing.push('ai_assistance_disclosure');
+  }
 
   const trigger = definition.trigger;
   const mechanism = trigger.mechanism;
@@ -1174,7 +1297,8 @@ async function createAuthoredDefinition(input = {}, { actorUserId } = {}) {
       trigger_condition_value: null, trigger_condition_unit: null,
       trigger_condition_context: null, trigger_event_description: null,
       trigger_basis_source_version_id: null, knowledge_scope: null,
-      content_origin: AUTHORED_CONTENT_ORIGIN
+      content_origin: AUTHORED_CONTENT_ORIGIN,
+      ai_assisted: null, ai_assistance_detail: null
     }, fields);
 
     assertValid(await validateGovernedState(conn, state, { parentTemplateId }));
@@ -1193,6 +1317,7 @@ async function createAuthoredDefinition(input = {}, { actorUserId } = {}) {
       'trigger_condition_value', 'trigger_condition_unit', 'trigger_condition_context',
       'trigger_event_description', 'trigger_basis_source_version_id',
       'knowledge_scope', 'content_origin',
+      'ai_assisted', 'ai_assistance_detail',
       'parent_template_id', 'is_system', 'is_editable', 'is_active', 'created_by'
     ];
     const values = [
@@ -1205,6 +1330,7 @@ async function createAuthoredDefinition(input = {}, { actorUserId } = {}) {
       state.trigger_condition_context, state.trigger_event_description,
       state.trigger_basis_source_version_id, state.knowledge_scope,
       AUTHORED_CONTENT_ORIGIN,
+      state.ai_assisted, state.ai_assistance_detail,
       parentTemplateId, false, true, true, actor.id
     ];
     const placeholders = columns.map((_, index) => `$${index + 1}`).join(', ');

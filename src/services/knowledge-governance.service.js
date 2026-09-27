@@ -54,7 +54,14 @@ const MATERIAL_TEMPLATE_FIELDS = Object.freeze([
   'trigger_mechanism', 'trigger_condition_parameter', 'trigger_condition_operator',
   'trigger_condition_value', 'trigger_condition_unit', 'trigger_condition_context',
   'trigger_event_description', 'trigger_basis_source_version_id',
-  'knowledge_scope', 'content_origin', 'organization_id'
+  'knowledge_scope', 'content_origin', 'organization_id',
+  // ---- ATM-001 M6.4 Step 3B-B: AI-assistance disclosure --------------------
+  // The disclosure is governed semantic state, so approval binds it: changing it
+  // after approval stales the approval exactly as any other governed field
+  // does. NULL and FALSE are DISTINCT values here and hash differently, because
+  // they mean different things — "never captured under this regime" versus "AI
+  // assistance was explicitly disclosed as not materially used".
+  'ai_assisted', 'ai_assistance_detail'
 ]);
 
 /**
@@ -245,6 +252,24 @@ function validatePublicationAdmission(input) {
   if (applicability.length === 0) {
     failures.push(failure('APPLICABILITY_MISSING',
       'Publication requires at least one explicit Equipment Type applicability'));
+  }
+
+  // ---- A3. AI-assistance disclosure (ATM-001 M6.4 Step 3B-B) --------------
+  // Authored knowledge must declare whether AI materially assisted its production.
+  // The published version freezes that claim, so a human approver must have been
+  // able to see it before approving; an undeclared disclosure would let an
+  // immutable record assert an attribution nobody reviewed.
+  //
+  // Legacy-generated knowledge is deliberately EXEMPT. The disclosure regime
+  // postdates it, so its NULL means "never captured under this regime" — not
+  // "no AI was used". Requiring a declaration, or rewriting the value to FALSE,
+  // would fabricate historical truth that no controlled artifact establishes.
+  //
+  // This is a single rule raising a single failure for a single condition.
+  if (template.content_origin === 'authored'
+      && (template.ai_assisted === null || template.ai_assisted === undefined)) {
+    failures.push(failure('AI_DISCLOSURE_MISSING',
+      'Authored knowledge must declare whether AI materially assisted its production'));
   }
 
   const stepNos = new Set();

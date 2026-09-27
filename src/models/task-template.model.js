@@ -877,18 +877,20 @@ class TaskTemplate extends BaseModel {
    *
    * @param {number} templateId - Working task_templates.id to publish
    * @param {number} userId - Publisher user id
+   * AI-assistance disclosure is NOT a publication parameter. It belongs to the
+   * governed working definition (ATM-001 M6.4 Step 3B-B), where an accountable
+   * author declares it and a human approver sees it; publication freezes the
+   * already-governed value. A caller may therefore never introduce a disclosure at
+   * publication time that the approver did not approve.
+   *
    * @param {Object} options - Publication options
    * @param {string} options.changeRationale - Optional rationale
-   * @param {boolean} options.aiAssisted - Optional AI assistance flag (default FALSE)
-   * @param {Object} options.aiAssistanceDetail - Optional AI assistance detail JSONB
    * @param {number} options.publishedByOrganizationId - Required organization scope for authorization
    * @returns {Promise<Object>} Publication result with versionId, versionNumber, counts
    */
   async publishVersion(templateId, userId, options = {}) {
     const {
       changeRationale = null,
-      aiAssisted = false,
-      aiAssistanceDetail = null,
       publishedByOrganizationId,
       connection = null
     } = options;
@@ -1092,7 +1094,11 @@ class TaskTemplate extends BaseModel {
         template.estimated_duration_minutes, template.required_skills, template.required_tools,
         template.priority, template.task_kind, template.is_system, template.is_editable, template.parent_template_id,
         userId, changeRationale,
-        aiAssisted, aiAssistanceDetail,
+        // ATM-001 M6.4 Step 3B-B: freeze the disclosure the working definition
+        // carries — the value the approver saw — verbatim. NULL is preserved as
+        // NULL (never coerced to FALSE), so "never captured under this regime" and
+        // "explicitly not AI-assisted" stay distinguishable in history.
+        template.ai_assisted, template.ai_assistance_detail,
         template.reviewer_user_id, template.reviewed_at,
         template.approver_user_id, template.approved_at,
         template.approved_content_sha,
@@ -1134,13 +1140,19 @@ class TaskTemplate extends BaseModel {
             unit, is_required, options, safety_note, is_visual_only,
             requires_equipment_stopped, prohibit_if_running, prohibit_opening_covers,
             ai_assisted, ai_assistance_detail
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, FALSE, NULL)
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
           RETURNING id
         `, [
           versionId, step.step_no, step.id, step.activity_code_id, step.step_type, step.instruction,
           step.data_type, step.expected_value, step.min_value, step.max_value,
           step.unit, step.is_required, step.options, step.safety_note, step.is_visual_only,
-          step.requires_equipment_stopped, step.prohibit_if_running, step.prohibit_opening_covers
+          step.requires_equipment_stopped, step.prohibit_if_running, step.prohibit_opening_covers,
+          // ATM-001 M6.4 Step 3B-B: the disclosure belongs to the version, so every
+          // step version states the SAME value. Without this the frozen record would
+          // contradict itself — a header disclosing AI assistance while every step
+          // version asserted none. Per-step distinct disclosure is not modelled and
+          // is not needed. NULL stays NULL.
+          template.ai_assisted, template.ai_assistance_detail
         ]);
         stepVersionMap.set(step.id, stepVersion.id);
       }

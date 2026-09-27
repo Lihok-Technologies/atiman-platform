@@ -52,7 +52,10 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   // access, approval identity, frozen applicability, member scope, pack ownership).
   'tests/m6r3-r1-remediation.test.js',
   // ATM-001 M6.4: governed draft authoring primitive (draft-only authoring seam).
-  'tests/knowledge-authoring.test.js'
+  'tests/knowledge-authoring.test.js',
+  // ATM-001 M6.4 Step 3B-B: AI-assistance disclosure (migration 021) across the
+  // schema, authoring, approval, publication and legacy-exemption boundaries.
+  'tests/ai-assistance-disclosure.test.js'
 ];
 
 /**

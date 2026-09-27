@@ -147,9 +147,14 @@ async function createPublishedTemplateVersion() {
 
   const templateId = await withConn(async (conn) => {
     const [template] = await query(conn,
+      // ATM-001 M6.4 Step 3B-B: authored knowledge must declare whether AI
+      // materially assisted, and publication freezes that declaration. This fixture
+      // is hand-written, so it declares FALSE; NULL would mean "never captured" and
+      // is refused at publication.
       `INSERT INTO task_templates (equipment_type_id, organization_id, template_code, template_name,
-         maintenance_type, task_kind, frequency_value, frequency_unit, estimated_duration_minutes, priority, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, content_origin)
-       VALUES (?, ?, ?, 'M2 Governed Template', 'preventive', 'inspection', NULL, NULL, 30, 'medium', (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', 'shared', 'authored')
+         maintenance_type, task_kind, frequency_value, frequency_unit, estimated_duration_minutes, priority, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, content_origin,
+         ai_assisted, ai_assistance_detail)
+       VALUES (?, ?, ?, 'M2 Governed Template', 'preventive', 'inspection', NULL, NULL, 30, 'medium', (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', 'shared', 'authored', FALSE, NULL)
        RETURNING id`,
       [EQUIPMENT_TYPE, null, `M2-${Date.now()}-${templateSeq}`]);
     // M6.3 governed knowledge: a governed definition must declare at least one
@@ -203,9 +208,14 @@ async function createUnpublishedWorkingTemplate() {
   templateSeq += 1;
   return withConn(async (conn) => {
     const [template] = await query(conn,
+      // ATM-001 M6.4 Step 3B-B: authored knowledge must declare whether AI
+      // materially assisted, and publication freezes that declaration. This fixture
+      // is hand-written, so it declares FALSE; NULL would mean "never captured" and
+      // is refused at publication.
       `INSERT INTO task_templates (equipment_type_id, organization_id, template_code, template_name,
-         maintenance_type, task_kind, frequency_value, frequency_unit, estimated_duration_minutes, priority, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, content_origin)
-       VALUES (?, ?, ?, 'M2 Unpublished Working Template', 'preventive', 'inspection', NULL, NULL, 30, 'medium', (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', 'shared', 'authored')
+         maintenance_type, task_kind, frequency_value, frequency_unit, estimated_duration_minutes, priority, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, content_origin,
+         ai_assisted, ai_assistance_detail)
+       VALUES (?, ?, ?, 'M2 Unpublished Working Template', 'preventive', 'inspection', NULL, NULL, 30, 'medium', (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', 'shared', 'authored', FALSE, NULL)
        RETURNING id`,
       [EQUIPMENT_TYPE, null, `M2-UNPUB-${Date.now()}-${templateSeq}`]);
     await query(conn,

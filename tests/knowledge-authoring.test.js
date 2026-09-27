@@ -325,27 +325,46 @@ describe('ATM-001 M6.4 governed draft authoring', { skip: DB_TEST_SKIP_REASON },
         'lineage is preserved as lineage only');
     });
 
-    it('does not fabricate AI disclosure the working definition has no column for', async () => {
-      // Migration 009 places ai_assisted / ai_assistance_detail on the FROZEN
-      // version tables, not on the working definition. The primitive therefore
-      // neither accepts nor writes a draft-time disclosure, and it never records
-      // `false` on the author's behalf.
+    it('carries the author AI disclosure and never invents one', async () => {
+      // ATM-001 M6.4 Step 3B-B. Migration 021 added ai_assisted /
+      // ai_assistance_detail to the working definition, so a draft CAN carry the
+      // author's declaration — and publication freezes it. What the primitive
+      // still never does is invent one: an absent declaration is recorded as
+      // NULL ("not captured"), never as FALSE, and a detail is never recorded
+      // without an explicit TRUE.
       const aiColumns = await withConn((conn) => query(conn,
         `SELECT table_name, column_name FROM information_schema.columns
           WHERE table_schema = 'public' AND column_name IN ('ai_assisted', 'ai_assistance_detail')
           ORDER BY table_name, column_name`));
 
-      assert.ok(aiColumns.length > 0, 'AI disclosure columns exist somewhere');
-      assert.ok(aiColumns.every((row) => row.table_name !== 'task_templates'),
-        'the working definition carries no AI disclosure column');
+      assert.ok(aiColumns.some((row) => row.table_name === 'task_templates'),
+        'migration 021 gave the working definition its own disclosure columns');
+      assert.ok(aiColumns.some((row) => row.table_name === 'task_template_versions'),
+        'the frozen version still carries the disclosure');
 
-      const created = await authoring.createAuthoredDefinition(governedInput({
+      const declared = await authoring.createAuthoredDefinition(governedInput({
         aiAssisted: true,
-        aiAssistanceDetail: { tool: 'synthetic' }
+        aiAssistanceDetail: { tool: 'synthetic', assisted: 'drafted step text' }
       }), { actorUserId: ACTOR });
+      assert.deepStrictEqual(declared.ai_assistance, {
+        assisted: true,
+        detail: { tool: 'synthetic', assisted: 'drafted step text' }
+      });
 
-      assert.strictEqual(Object.prototype.hasOwnProperty.call(created, 'ai'), false,
-        'no AI disclosure is reported or invented for a working definition');
+      const human = await authoring.createAuthoredDefinition(governedInput({ aiAssisted: false }),
+        { actorUserId: ACTOR });
+      assert.deepStrictEqual(human.ai_assistance, { assisted: false, detail: null });
+
+      // No declaration at all: the primitive reports NULL, and does not choose for
+      // the author. (Such a definition is refused publication — asserted in
+      // tests/ai-assistance-disclosure.test.js.)
+      const undeclared = await withConn(async (conn) => {
+        const input = governedInput();
+        delete input.aiAssisted;
+        const created = await authoring.createAuthoredDefinition(input, { actorUserId: ACTOR });
+        return created;
+      });
+      assert.deepStrictEqual(undeclared.ai_assistance, { assisted: null, detail: null });
     });
 
     it('does not copy governed semantics, applicability, steps or controls from a lineage parent', async () => {

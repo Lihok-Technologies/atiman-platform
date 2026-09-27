@@ -100,17 +100,25 @@ async function ensureFixture() {
  */
 async function createWorkingTemplate({ scope = 'shared', organizationId = null, legacy = false } = {}) {
   return withConn(async (conn) => {
+    // ATM-001 M6.4 Step 3B-B: this fixture is authored, so publication requires
+    // an explicit AI-assistance declaration. The fixture is hand-written and
+    // declares FALSE. NULL is not a substitute: it means "never captured".
     const [template] = await query(conn,
       `INSERT INTO task_templates (equipment_type_id, organization_id, template_code, template_name,
          maintenance_type, task_kind, frequency_value, frequency_unit, estimated_duration_minutes,
          priority, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism,
-         knowledge_scope, content_origin)
+         knowledge_scope, content_origin,
+         ai_assisted, ai_assistance_detail)
        VALUES (?, ?, ?, 'R1 Governed Template', 'preventive', 'inspection', NULL, NULL, 30, 'medium',
          (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'),
          (SELECT id FROM task_families WHERE family_code='inspect'),
-         'preventive', 'no_fixed_interval', ?, ?)
+         'preventive', 'no_fixed_interval', ?, ?, ?, ?)
        RETURNING id`,
-      [ETYPE_A, organizationId, uniq('R1T'), scope, legacy ? null : 'authored']);
+      [ETYPE_A, organizationId, uniq('R1T'), scope, legacy ? null : 'authored',
+        // A legacy-generated definition is EXEMPT from the disclosure rule and its
+        // disclosure stays NULL — never FALSE, which would fabricate a declaration
+        // nobody made.
+        legacy ? null : false, null]);
 
     if (legacy) {
       // content_origin carries NO default and is immutable once established, so a

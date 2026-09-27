@@ -61,6 +61,8 @@ const DB_MUTATING_SUITES = [
   'm6r3-r1-remediation.test.js',
   // ATM-001 M6.4: governed draft authoring primitive.
   'knowledge-authoring.test.js',
+  // ATM-001 M6.4 Step 3B-B: AI-assistance disclosure (migration 021).
+  'ai-assistance-disclosure.test.js',
   'step6-access-control.test.js',
   'step6-coverage-e2e.test.js',
   'step6-performance.test.js',
@@ -89,7 +91,8 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'taxonomy-application.test.js',
   'governed-knowledge-foundation.test.js',
   'm6r3-r1-remediation.test.js',
-  'knowledge-authoring.test.js'
+  'knowledge-authoring.test.js',
+  'ai-assistance-disclosure.test.js'
 ];
 
 const REPO_ROOT = path.resolve(__dirname, '..');
