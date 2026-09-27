@@ -48,6 +48,31 @@
       </ul>
     </section>
 
+    <section class="atiman-card" aria-labelledby="asset-next-heading">
+      <h2 class="atiman-card__title" id="asset-next-heading">What you can do here</h2>
+      <% if (canReport && reportHref) { %>
+        <div class="atiman-stack">
+          <a class="atiman-action" href="<%= reportHref %>">
+            <span>
+              <span class="atiman-action__label">Report an observation</span>
+              <span class="atiman-action__hint">Record what you observed. No Finding is created.</span>
+            </span>
+            <span aria-hidden="true">&#8250;</span>
+          </a>
+        </div>
+      <% } else { %>
+        <p class="atiman-empty">Your account cannot record observations yet.</p>
+        <p class="atiman-card__note">
+          Recording an observation is an accountable act that requires the reporting
+          authority. Ask an administrator to review your account's capabilities.
+        </p>
+      <% } %>
+      <p class="atiman-note">
+        Inspection execution and finding assessment are approved Atiman capabilities
+        but are not implemented yet, so they are not offered here.
+      </p>
+    </section>
+
   <% } else { %>
 
     <section class="atiman-card" aria-labelledby="asset-unresolved-heading">

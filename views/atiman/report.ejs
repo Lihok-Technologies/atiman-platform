@@ -1,0 +1,247 @@
+<%#
+  Atiman Report — observation capture (ATM-002-I2E).
+
+  One template, one state. The RECORDED state is reachable only when the
+  Observation service returned a persisted identity, and it states explicitly that
+  no Finding has been created. There is no severity, priority, risk, outcome,
+  work-order, EAM, recommendation or AI control anywhere on this page, and no
+  photo, media, file or camera affordance: Atiman has no durable media storage, so
+  a control that could not honour the action is not offered.
+
+  No observed-at field: a naive local datetime cannot be interpreted truthfully on
+  the server for an operator in another timezone, so the recording time is used and
+  the page says so rather than offering a control it would misrepresent.
+%>
+<% const isForm = (state === 'FORM'); %>
+<% const emptyReport = (values.observationText || '').trim() === '' && (values.measuredValue || '').trim() === ''; %>
+
+<div class="atiman-stack">
+
+  <% if (state === 'RECORDED') { %>
+
+    <section class="atiman-card" aria-labelledby="report-recorded-heading">
+      <h2 class="atiman-card__title" id="report-recorded-heading">Observation recorded</h2>
+      <p class="atiman-card__note">
+        Your observation is stored against
+        <strong><%= asset.name || asset.code || 'this asset' %></strong>
+        and is now part of this asset's record.
+      </p>
+      <p class="atiman-note">
+        <strong>No Finding has been created.</strong> Nothing has been assessed,
+        no severity has been set, and no maintenance work has been raised or
+        requested. Atiman records what you observed; deciding what it means is a
+        separate step that is not implemented yet.
+      </p>
+      <ul class="atiman-list">
+        <li class="atiman-list__item">
+          <div>Observation reference</div>
+          <div class="atiman-list__meta">#<%= recorded.id %></div>
+        </li>
+        <% if (recorded.observationText) { %>
+          <li class="atiman-list__item">
+            <div>What you recorded</div>
+            <div class="atiman-list__meta"><%= recorded.observationText %></div>
+          </li>
+        <% } %>
+        <% if (recorded.measuredValue !== null) { %>
+          <li class="atiman-list__item">
+            <div>Measured value</div>
+            <div class="atiman-list__meta"><%= recorded.measuredValue %><%= recorded.unit ? ' ' + recorded.unit : '' %></div>
+          </li>
+        <% } %>
+      </ul>
+      <div class="atiman-stack">
+        <a class="atiman-action" href="/atiman/asset?code=<%= encodeURIComponent(asset.code || '') %>">
+          <span>
+            <span class="atiman-action__label">Back to the asset</span>
+            <span class="atiman-action__hint">Asset context and the option to report again</span>
+          </span>
+          <span aria-hidden="true">›</span>
+        </a>
+        <a class="atiman-action" href="/today">
+          <span>
+            <span class="atiman-action__label">Back to Today</span>
+          </span>
+          <span aria-hidden="true">›</span>
+        </a>
+      </div>
+    </section>
+
+  <% } else if (state === 'ENTRY' || state === 'AMBIGUOUS_INPUT') { %>
+
+    <section class="atiman-card" aria-labelledby="report-entry-heading">
+      <h2 class="atiman-card__title" id="report-entry-heading">Report an observation</h2>
+      <p class="atiman-card__note">
+        Report records what you observed about an asset. It does not diagnose the
+        asset, does not raise work, and does not create a Finding.
+      </p>
+      <% if (state === 'AMBIGUOUS_INPUT') { %>
+        <p class="atiman-note">
+          Supply either a scanned code or a link token, not both. Use one field and
+          try again.
+        </p>
+      <% } %>
+      <form class="atiman-stack" method="get" action="/atiman/report">
+        <label class="atiman-action__label" for="report-asset-code">Asset code</label>
+        <input class="atiman-input" id="report-asset-code" name="code" type="text"
+               inputmode="text" autocomplete="off" spellcheck="false"
+               maxlength="100" required>
+        <button class="atiman-action" type="submit">
+          <span>
+            <span class="atiman-action__label">Continue to this asset</span>
+            <span class="atiman-action__hint">Resolves inside your organization only</span>
+          </span>
+          <span aria-hidden="true">›</span>
+        </button>
+      </form>
+    </section>
+
+  <% } else if (state === 'UNRESOLVED') { %>
+
+    <section class="atiman-card" aria-labelledby="report-unresolved-heading">
+      <h2 class="atiman-card__title" id="report-unresolved-heading">Nothing was recorded</h2>
+      <p class="atiman-note"><%= unresolvedMessage %></p>
+      <% if (!emptyReport) { %>
+        <p class="atiman-card__note">
+          What you entered is shown below so it is not lost. Nothing was stored:
+          an observation can only be recorded against an asset that resolves in
+          your organization.
+        </p>
+        <ul class="atiman-list">
+          <% if ((values.observationText || '').trim() !== '') { %>
+            <li class="atiman-list__item">
+              <div>What you observed</div>
+              <div class="atiman-list__meta"><%= values.observationText %></div>
+            </li>
+          <% } %>
+          <% if ((values.measuredValue || '').trim() !== '') { %>
+            <li class="atiman-list__item">
+              <div>Measured value</div>
+              <div class="atiman-list__meta"><%= values.measuredValue %><%= (values.unit || '').trim() !== '' ? ' ' + values.unit : '' %></div>
+            </li>
+          <% } else if ((values.unit || '').trim() !== '') { %>
+            <li class="atiman-list__item">
+              <div>Unit</div>
+              <div class="atiman-list__meta"><%= values.unit %></div>
+            </li>
+          <% } %>
+        </ul>
+      <% } %>
+    </section>
+
+    <section class="atiman-card" aria-labelledby="report-retry-heading">
+      <h2 class="atiman-card__title" id="report-retry-heading">Try another asset</h2>
+      <form class="atiman-stack" method="get" action="/atiman/report">
+        <label class="atiman-action__label" for="report-retry-code">Asset code</label>
+        <input class="atiman-input" id="report-retry-code" name="code" type="text"
+               inputmode="text" autocomplete="off" spellcheck="false"
+               maxlength="100" required>
+        <button class="atiman-action" type="submit">
+          <span><span class="atiman-action__label">Continue to this asset</span></span>
+          <span aria-hidden="true">›</span>
+        </button>
+      </form>
+    </section>
+
+  <% } else { %>
+
+    <% if (errors.length > 0) { %>
+      <section class="atiman-card" aria-labelledby="report-errors-heading">
+        <h2 class="atiman-card__title" id="report-errors-heading">Nothing was recorded</h2>
+        <div class="atiman-note" role="alert">
+          <ul class="atiman-list">
+            <% errors.forEach(function (error, index) { %>
+              <li class="atiman-list__item">
+                <% if (error.field) { %>
+                  <a href="#<%= error.field %>-error"><%= error.message %></a>
+                <% } else { %>
+                  <%= error.message %>
+                <% } %>
+              </li>
+            <% }); %>
+          </ul>
+        </div>
+      </section>
+    <% } %>
+
+    <section class="atiman-card" aria-labelledby="report-asset-heading">
+      <h2 class="atiman-card__title" id="report-asset-heading"><%= asset.name || 'Unnamed asset' %></h2>
+      <p class="atiman-card__note">
+        <span class="atiman-badge"><%= asset.code || 'No recorded code' %></span>
+        <% if (asset.facility) { %>
+          <span class="atiman-badge"><%= asset.facility.name || asset.facility.code %></span>
+        <% } %>
+        <% if (asset.status) { %>
+          <span class="atiman-badge"><%= asset.status %></span>
+        <% } %>
+      </p>
+      <% if (asset.taxonomy) { %>
+        <p class="atiman-list__meta"><%= asset.taxonomy.label %></p>
+      <% } %>
+    </section>
+
+    <section class="atiman-card" aria-labelledby="report-capture-heading">
+      <h2 class="atiman-card__title" id="report-capture-heading">What did you observe?</h2>
+      <p class="atiman-card__note">
+        Record what you saw, heard or measured. You do not have to describe the
+        asset for anyone to act on it &mdash; you are recording, not diagnosing.
+      </p>
+
+      <form class="atiman-stack" method="post" action="/atiman/report">
+        <input type="hidden" name="identifierType" value="<%= identifier.type %>">
+        <input type="hidden" name="identifierValue" value="<%= identifier.value %>">
+
+        <label class="atiman-action__label" for="observationText">What you observed</label>
+        <textarea class="atiman-input" id="observationText" name="observationText"
+                  rows="4" maxlength="4000" autocomplete="off" spellcheck="true"
+                  <% if (errors.some(function (e) { return e.field === 'observationText'; })) { %>aria-invalid="true" aria-describedby="observationText-error"<% } %>><%= values.observationText %></textarea>
+        <% errors.filter(function (e) { return e.field === 'observationText'; }).forEach(function (e) { %>
+          <p class="atiman-note" id="observationText-error"><%= e.message %></p>
+        <% }); %>
+
+        <label class="atiman-action__label" for="measuredValue">Measured value (optional)</label>
+        <input class="atiman-input" id="measuredValue" name="measuredValue" type="text"
+               inputmode="decimal" autocomplete="off" spellcheck="false" maxlength="13"
+               value="<%= values.measuredValue %>"
+               <% if (errors.some(function (e) { return e.field === 'measuredValue'; })) { %>aria-invalid="true" aria-describedby="measuredValue-error"<% } %>>
+        <% errors.filter(function (e) { return e.field === 'measuredValue'; }).forEach(function (e) { %>
+          <p class="atiman-note" id="measuredValue-error"><%= e.message %></p>
+        <% }); %>
+
+        <label class="atiman-action__label" for="unit">Unit (optional)</label>
+        <input class="atiman-input" id="unit" name="unit" type="text"
+               autocomplete="off" spellcheck="false" maxlength="50"
+               value="<%= values.unit %>"
+               <% if (errors.some(function (e) { return e.field === 'unit'; })) { %>aria-invalid="true" aria-describedby="unit-error"<% } %>>
+        <% errors.filter(function (e) { return e.field === 'unit'; }).forEach(function (e) { %>
+          <p class="atiman-note" id="unit-error"><%= e.message %></p>
+        <% }); %>
+
+        <button class="atiman-action" type="submit">
+          <span>
+            <span class="atiman-action__label">Record observation</span>
+            <span class="atiman-action__hint">Stores what you observed against this asset</span>
+          </span>
+          <span aria-hidden="true">›</span>
+        </button>
+      </form>
+    </section>
+
+    <section class="atiman-card" aria-labelledby="report-truth-heading">
+      <h2 class="atiman-card__title" id="report-truth-heading">What recording does and does not do</h2>
+      <p class="atiman-note">
+        Recording stores what you observed. It sets no severity, decides no outcome,
+        and creates no Finding, no work order and no notification to your enterprise
+        maintenance system. The observation is timestamped when it reaches Atiman.
+        Recording needs a connection: if you are offline, nothing is stored and you
+        will be told so rather than shown a saved state.
+      </p>
+      <p class="atiman-note">
+        Photographs and file evidence are not available: Atiman has no durable
+        media storage yet, so no capture control is offered here.
+      </p>
+    </section>
+
+  <% } %>
+
+</div>

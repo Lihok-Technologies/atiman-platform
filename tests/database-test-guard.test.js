@@ -72,6 +72,8 @@ const DB_MUTATING_SUITES = [
   'observation-foundation.test.js',
   // ATM-002-I2C trustworthy asset context (resolves real assets across two tenants).
   'asset-context.test.js',
+  // ATM-002-I2E report / observation capture (writes real Observations for two tenants).
+  'report-capture.test.js',
   'step6-access-control.test.js',
   'step6-coverage-e2e.test.js',
   'step6-performance.test.js',
@@ -105,7 +107,8 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'capability-grants.test.js',
   'atiman-shell.test.js',
   'observation-foundation.test.js',
-  'asset-context.test.js'
+  'asset-context.test.js',
+  'report-capture.test.js'
 ];
 
 const REPO_ROOT = path.resolve(__dirname, '..');

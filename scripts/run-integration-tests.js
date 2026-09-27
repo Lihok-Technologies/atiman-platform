@@ -67,7 +67,10 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'tests/observation-foundation.test.js',
   // ATM-002-I2C: trustworthy asset context — the single tenant-safe resolver and
   // the closure of the three legacy cross-tenant asset lookup defects.
-  'tests/asset-context.test.js'
+  'tests/asset-context.test.js',
+  // ATM-002-I2E: report / observation capture — the first real Atiman field
+  // workflow, end to end, with a truthful confirmation.
+  'tests/report-capture.test.js'
 ];
 
 /**

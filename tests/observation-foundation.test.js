@@ -1353,8 +1353,18 @@ describe('ATM-002-I2B observation operational foundation', { skip: DB_TEST_SKIP_
           assert.ok(!/observation/i.test(name), `${name} must not be an observation view`);
         }
       }
-      const shell = fs.readFileSync(path.join(REPO_ROOT, 'src', 'config', 'destinations.js'), 'utf8');
+      // Comments are stripped before the scan. The guard's intent is that the
+      // registry gains no observation DESTINATION; a comment explaining that
+      // ATM-002-I2E implemented Report is not a destination, and matching prose
+      // would make this assertion fail for a reason it was never protecting.
+      const shell = fs.readFileSync(path.join(REPO_ROOT, 'src', 'config', 'destinations.js'), 'utf8')
+        .replace(/\/\*[\s\S]*?\*\//g, ' ')
+        .split('\n').map((line) => line.replace(/\/\/.*$/, ' ')).join('\n');
       assert.ok(!/observation/i.test(shell), 'the destination registry must not gain an observation entry');
+      const registry = require('../src/config/destinations').DESTINATIONS;
+      assert.ok(!registry.some((d) => /observation/i.test(`${d.id} ${d.label} ${d.href || ''}`)),
+        'no destination may be an observation surface');
+      assert.strictEqual(registry.length, 7, 'the destination count is unchanged');
     });
   });
 
@@ -1421,13 +1431,14 @@ describe('ATM-002-I2B observation operational foundation', { skip: DB_TEST_SKIP_
       const { DESTINATIONS, composeWorkNavigation } = require('../src/config/destinations');
       const available = composeWorkNavigation(new Set(['inspection.execute', 'finding.report']));
       const ids = available.map((destination) => destination.id).sort();
-      assert.deepStrictEqual(ids, ['knowledge', 'today'],
-        'I2B must not enable any additional work destination');
+      assert.deepStrictEqual(ids, ['knowledge', 'report', 'today'],
+        'ATM-002-I2E implemented Report, so it joined the available destinations; '
+        + 'Inspect did not, and I2B itself enabled nothing');
 
       const withheld = DESTINATIONS.filter((destination) => !destination.available)
         .map((destination) => destination.id).sort();
-      assert.deepStrictEqual(withheld, ['assess', 'escalate', 'inspect', 'monitor', 'report'],
-        'Inspect and Report remain withheld after I2B');
+      assert.deepStrictEqual(withheld, ['assess', 'escalate', 'inspect', 'monitor'],
+        'Inspect, Assess, Monitor and Escalate remain withheld');
     });
   });
 });
