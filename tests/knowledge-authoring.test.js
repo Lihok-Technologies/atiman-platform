@@ -40,6 +40,7 @@ const ACTOR = 992101;          // belongs to ORG_A
 const REVIEWER = 992102;       // belongs to ORG_A
 const APPROVER = 992103;       // belongs to ORG_A
 const PUBLISHER = 992104;      // belongs to ORG_A
+const INACTIVE_ACTOR = 992105; // belongs to ORG_A but is deactivated
 const CATEGORY = 992201;
 const CLASS = 992202;
 const ETYPE_MAIN = 992203;     // canonical
@@ -77,6 +78,13 @@ async function ensureFixture() {
         `INSERT INTO organizations (id, organization_name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING`,
         [id, name]);
     }
+    // An existing but deactivated principal: authorship must not be attributable
+    // to someone who cannot be held accountable for it.
+    await query(conn,
+      `INSERT INTO users (id, username, email, password_hash, full_name, role, organization_id, is_active)
+       VALUES ($1, 'm64-inactive', 'm64-inactive@test.local', 'x', 'M6.4 Inactive User', 'admin', $2, false)
+       ON CONFLICT (id) DO NOTHING`, [INACTIVE_ACTOR, ORG_A]);
+
     for (const [id, username, role, org] of [
       [ACTOR, 'm64-actor', 'admin', ORG_A],
       [REVIEWER, 'm64-reviewer', 'supervisor', ORG_A],
@@ -411,6 +419,27 @@ describe('ATM-001 M6.4 governed draft authoring', { skip: DB_TEST_SKIP_REASON },
         () => authoring.createAuthoredDefinition(governedInput(), { actorUserId: 'system' }),
         hasRule('ACTOR_INVALID'), 'anonymous/system actor'
       );
+    });
+
+    it('refuses an existing but inactive actor, and writes nothing', async () => {
+      const code = uniq('M64INACTIVE');
+      await assertRejected(
+        () => authoring.createAuthoredDefinition(governedInput({ templateCode: code }),
+          { actorUserId: INACTIVE_ACTOR }),
+        (error) => error.code === 'ACTOR_INACTIVE', 'inactive actor'
+      );
+      assert.strictEqual(await countAuthoredTemplates(code), 0,
+        'a refused inactive actor must write nothing');
+
+      // The same principal is also refused on an existing definition.
+      const created = await authoring.createAuthoredDefinition(governedInput(), { actorUserId: ACTOR });
+      await assertRejected(
+        () => authoring.updateGovernedDraft(created.id, { maintenanceStrategy: 'predictive' },
+          { actorUserId: INACTIVE_ACTOR }),
+        (error) => error.code === 'ACTOR_INACTIVE', 'inactive actor on an existing definition'
+      );
+      const after = await authoring.loadAuthoredDefinition(created.id);
+      assert.strictEqual(after.maintenance_strategy, 'preventive', 'the definition was not modified');
     });
 
     it('refuses an actor that does not exist, and writes nothing', async () => {
@@ -868,6 +897,72 @@ describe('ATM-001 M6.4 governed draft authoring', { skip: DB_TEST_SKIP_REASON },
         'a refused cross-tenant creation writes nothing');
     });
 
+    it('refuses to transfer a customer-scoped definition to another organization', async () => {
+      const created = await authoring.createAuthoredDefinition(governedInput({
+        knowledgeScope: 'customer', organizationId: ORG_A
+      }), { actorUserId: ACTOR });
+
+      await assertRejected(
+        () => authoring.updateGovernedDraft(created.id,
+          { knowledgeScope: 'customer', organizationId: ORG_B },
+          { actorUserId: ACTOR, organizationId: ORG_A }),
+        (error) => error.code === 'ACTOR_ORGANIZATION_MISMATCH', 'transfer to another organization'
+      );
+
+      const after = await authoring.loadAuthoredDefinition(created.id, { organizationId: ORG_A });
+      assert.strictEqual(Number(after.organization_id), ORG_A,
+        'ownership is unchanged: the transfer must not have landed');
+      assert.strictEqual(after.knowledge_scope, 'customer');
+    });
+
+    it('refuses to convert a shared definition into another organization\'s knowledge', async () => {
+      const created = await authoring.createAuthoredDefinition(governedInput({
+        knowledgeScope: 'shared', organizationId: null
+      }), { actorUserId: ACTOR });
+
+      await assertRejected(
+        () => authoring.updateGovernedDraft(created.id,
+          { knowledgeScope: 'customer', organizationId: ORG_B }, { actorUserId: ACTOR }),
+        (error) => error.code === 'ACTOR_ORGANIZATION_MISMATCH', 'shared to another organization'
+      );
+
+      const after = await authoring.loadAuthoredDefinition(created.id);
+      assert.strictEqual(after.organization_id, null,
+        'the shared definition must not have acquired an owner');
+      assert.strictEqual(after.knowledge_scope, 'shared');
+    });
+
+    it('permits the owning organization to de-scope its own knowledge to shared', async () => {
+      // Customer Org A -> shared is performed BY Org A on knowledge Org A owns. It
+      // creates no organization ownership (shared is organization_id = NULL), so no
+      // cross-tenant ownership arises; ownership only widens from one tenant to no
+      // tenant, never from one tenant to another.
+      const created = await authoring.createAuthoredDefinition(governedInput({
+        knowledgeScope: 'customer', organizationId: ORG_A
+      }), { actorUserId: ACTOR });
+
+      const updated = await authoring.updateGovernedDraft(created.id,
+        { knowledgeScope: 'shared', organizationId: null },
+        { actorUserId: ACTOR, organizationId: ORG_A });
+
+      assert.strictEqual(updated.knowledge_scope, 'shared');
+      assert.strictEqual(updated.organization_id, null,
+        'shared knowledge is bound to no tenant');
+    });
+
+    it('permits the owning organization to keep ownership unchanged', async () => {
+      const created = await authoring.createAuthoredDefinition(governedInput({
+        knowledgeScope: 'customer', organizationId: ORG_A
+      }), { actorUserId: ACTOR });
+
+      const updated = await authoring.updateGovernedDraft(created.id,
+        { knowledgeScope: 'customer', organizationId: ORG_A, maintenanceStrategy: 'predictive' },
+        { actorUserId: ACTOR, organizationId: ORG_A });
+
+      assert.strictEqual(Number(updated.organization_id), ORG_A);
+      assert.strictEqual(updated.maintenance_strategy, 'predictive');
+    });
+
     it('does not expose a customer-scoped definition to an unscoped caller', async () => {
       const created = await authoring.createAuthoredDefinition(governedInput({
         knowledgeScope: 'customer', organizationId: ORG_A
@@ -1077,6 +1172,58 @@ describe('ATM-001 M6.4 governed draft authoring', { skip: DB_TEST_SKIP_REASON },
 
       assert.strictEqual(await countAuthoredTemplates(code), 0,
         'no partial authored definition may remain after a failed creation');
+    });
+
+    it('cannot author across a concurrent draft -> under_review transition', async () => {
+      // Deterministic serialization proof, not a sequential call pair.
+      //
+      // A concurrent governed-lifecycle transaction takes the definition row lock
+      // first and then commits `under_review` while an authoring mutation is in
+      // flight. The authoring mutation must not land on the now-non-draft
+      // definition: it either waits for the lock and then observes `under_review`,
+      // or it fails closed. What it must never do is act on the stale `draft` it
+      // would otherwise have read.
+      const created = await authoring.createAuthoredDefinition(governedInput({
+        knowledgeScope: 'customer', organizationId: ORG_A
+      }), { actorUserId: ACTOR });
+
+      const lifecycleConn = await getConnection();
+      try {
+        await query(lifecycleConn,
+          `SELECT id FROM task_templates WHERE id = $1 FOR UPDATE`, [created.id]);
+
+        const pending = authoring.updateGovernedDraft(created.id,
+          { maintenanceStrategy: 'predictive' },
+          { actorUserId: ACTOR, organizationId: ORG_A })
+          .then(() => ({ ok: true }))
+          .catch((error) => ({ ok: false, code: error.code }));
+
+        // Give the authoring operation time to reach its own row acquisition.
+        await new Promise((resolve) => { setTimeout(resolve, 200); });
+
+        // The lifecycle transition completes and commits while authoring is in flight.
+        await query(lifecycleConn,
+          `UPDATE task_templates
+              SET review_state = 'under_review',
+                  submitted_for_review_by_user_id = $2,
+                  submitted_for_review_at = CURRENT_TIMESTAMP
+            WHERE id = $1`, [created.id, REVIEWER]);
+        await lifecycleConn.commit();
+
+        const outcome = await pending;
+        assert.strictEqual(outcome.ok, false,
+          'authoring must not cross a concurrent draft -> under_review transition');
+        assert.strictEqual(outcome.code, 'DRAFT_ONLY',
+          'the serialized authoring attempt must see the committed lifecycle state');
+      } finally {
+        try { await lifecycleConn.rollback(); } catch { /* already committed */ }
+        lifecycleConn.release();
+      }
+
+      const after = await authoring.loadAuthoredDefinition(created.id, { organizationId: ORG_A });
+      assert.strictEqual(after.review_state, 'under_review');
+      assert.strictEqual(after.maintenance_strategy, 'preventive',
+        'the refused authoring attempt left no governed change behind');
     });
 
     it('leaves no orphan child rows attributed to the author when creation fails', async () => {

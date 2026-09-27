@@ -230,6 +230,16 @@ async function resolveActor(conn, actorUserId) {
       'ACTOR_NOT_FOUND'
     );
   }
+  // An inactive principal may not author. Authorship is an accountable human act,
+  // and a deactivated account is not an accountable principal: accepting its
+  // attribution would record accountability against someone who cannot be held to
+  // it.
+  if (rows[0].is_active !== true) {
+    throw new AuthoringConflictError(
+      `Accountable actor ${actorId} is inactive and may not author governed knowledge`,
+      'ACTOR_INACTIVE'
+    );
+  }
   return rows[0];
 }
 
@@ -240,7 +250,7 @@ async function resolveActor(conn, actorUserId) {
  * organization. When no organization is supplied, a customer-scoped definition
  * is simply not reachable — it is not silently readable.
  */
-async function loadDefinitionRow(conn, templateId, organizationId = null) {
+async function loadDefinitionRow(conn, templateId, organizationId = null, { forUpdate = false } = {}) {
   const id = asPositiveInt(templateId);
   if (Number.isNaN(id)) {
     throw new AuthoringValidationError([
@@ -268,7 +278,8 @@ async function loadDefinitionRow(conn, templateId, organizationId = null) {
        LEFT JOIN task_families  tf ON tf.id = t.task_family_id
        LEFT JOIN equipment_types et ON et.id = t.equipment_type_id
       WHERE t.id = $1
-        AND (t.organization_id IS NULL OR t.organization_id = $2)`,
+        AND (t.organization_id IS NULL OR t.organization_id = $2)
+      ${forUpdate ? 'FOR UPDATE OF t' : ''}`,
     [id, orgId]
   );
   const row = rows[0];
@@ -276,6 +287,29 @@ async function loadDefinitionRow(conn, templateId, organizationId = null) {
     throw new AuthoringNotFoundError(`Knowledge definition ${id} was not found`);
   }
   return row;
+}
+
+/**
+ * Acquire the definition row for authoring, serializing against the governed
+ * lifecycle.
+ *
+ * Every mutating operation loads the definition `FOR UPDATE` inside its own
+ * transaction — BEFORE authorability and draft state are evaluated — and holds
+ * that lock until commit. Without it, `load -> assertDraft -> write` is a stale
+ * read: a concurrent `submitForReview` could commit `under_review` between the
+ * read and the write, and the authoring mutation would then land on a definition
+ * that is no longer a draft. The lock makes the read and the write one atomic
+ * decision against the lifecycle.
+ *
+ * `FOR UPDATE OF t` is required because the query LEFT JOINs the governed
+ * vocabularies; locking the whole row set would be rejected for the nullable side
+ * of an outer join and would lock rows this operation has no business locking.
+ *
+ * The read path (`loadAuthoredDefinition`) does not lock: it makes no decision
+ * that a later write depends on.
+ */
+async function loadDefinitionRowForAuthoring(conn, templateId, organizationId) {
+  return loadDefinitionRow(conn, templateId, organizationId, { forUpdate: true });
 }
 
 /**
@@ -1215,13 +1249,23 @@ async function updateGovernedDraft(templateId, input = {}, { actorUserId, organi
 
   return withTransaction(async (conn) => {
     const actor = await resolveActor(conn, actorUserId);
-    const row = await loadDefinitionRow(conn, templateId, organizationId);
+    const row = await loadDefinitionRowForAuthoring(conn, templateId, organizationId);
     assertAuthorable(row);
     assertActorMayOwn(actor, row.organization_id);
     assertDraft(row);
 
     const state = mergeState(row, proposed);
     state.content_origin = row.content_origin;
+
+    // Ownership is validated against the RESULTING state, not only the current
+    // one. `organization_id` is writable, so checking only the loaded row would
+    // let an actor who belongs to the current owner TRANSFER the definition to a
+    // different organization — including converting a shared definition into
+    // another tenant's knowledge. The invariant is that a customer-scoped
+    // definition is never created, transferred or modified into ownership by an
+    // organization other than the accountable actor's own.
+    assertActorMayOwn(actor, state.organization_id);
+
     assertValid(await validateGovernedState(conn, state, {}));
 
     const setClause = supplied.map((column, index) => `${column} = $${index + 1}`).join(', ');
@@ -1260,7 +1304,7 @@ async function updateGovernedDraft(templateId, input = {}, { actorUserId, organi
 async function setApplicability(templateId, applicability, { actorUserId, organizationId = null } = {}) {
   return withTransaction(async (conn) => {
     const actor = await resolveActor(conn, actorUserId);
-    const row = await loadDefinitionRow(conn, templateId, organizationId);
+    const row = await loadDefinitionRowForAuthoring(conn, templateId, organizationId);
     assertAuthorable(row);
     assertActorMayOwn(actor, row.organization_id);
     assertDraft(row);
@@ -1288,7 +1332,7 @@ async function setApplicability(templateId, applicability, { actorUserId, organi
 async function replaceSteps(templateId, steps, { actorUserId, organizationId = null } = {}) {
   return withTransaction(async (conn) => {
     const actor = await resolveActor(conn, actorUserId);
-    const row = await loadDefinitionRow(conn, templateId, organizationId);
+    const row = await loadDefinitionRowForAuthoring(conn, templateId, organizationId);
     assertAuthorable(row);
     assertActorMayOwn(actor, row.organization_id);
     assertDraft(row);
@@ -1334,7 +1378,7 @@ async function replaceSteps(templateId, steps, { actorUserId, organizationId = n
 async function setSafetyControls(templateId, safetyControls, { actorUserId, organizationId = null } = {}) {
   return withTransaction(async (conn) => {
     const actor = await resolveActor(conn, actorUserId);
-    const row = await loadDefinitionRow(conn, templateId, organizationId);
+    const row = await loadDefinitionRowForAuthoring(conn, templateId, organizationId);
     assertAuthorable(row);
     assertActorMayOwn(actor, row.organization_id);
     assertDraft(row);
