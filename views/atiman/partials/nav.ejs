@@ -1,0 +1,19 @@
+<%#
+  Work navigation (ATM-002-R2 §3.4).
+
+  Composed on the SERVER from the authoritative capability descriptor for this
+  principal. Only truthful destinations are rendered: a destination whose surface
+  does not yet exist is not drawn, because a navigation item that leads nowhere
+  (or to a mock) would misrepresent the product. No role appears here, and no
+  duplicate destination is possible because the registry is keyed by destination.
+%>
+<nav class="atiman-worknav" aria-label="Work">
+  <ul class="atiman-worknav__list">
+    <% workNavigation.forEach(function (destination) { %>
+      <li class="atiman-worknav__item">
+        <a class="atiman-worknav__link"
+           href="<%= destination.href %>"<% if (destination.id === activeDestination) { %> aria-current="page"<% } %>><%= destination.label %><% if (destination.transitional) { %><span class="atiman-worknav__transitional">current form</span><% } %></a>
+      </li>
+    <% }); %>
+  </ul>
+</nav>

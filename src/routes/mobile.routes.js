@@ -120,60 +120,20 @@ router.post('/login', (req, res) => {
 
 // Legacy Home Dashboard - redirect to Today
 router.get('/home', requireAuth, (req, res) => {
-  res.redirect('/mobile/today');
+  // ATM-002-I1 entry-point reconciliation: the legacy home landing is no longer a
+  // destination. Redirect to the canonical Atiman Today so there is exactly one
+  // authenticated landing concept, while existing bookmarks and installed PWAs
+  // keep working.
+  return res.redirect('/today');
 });
 
 // Today - role-aware landing destination
-router.get('/today', requireAuth, async (req, res) => {
-  const userRole = req.user?.role;
-  const { checkPermission } = require('../config/permissions');
-  const organizationId = req.organization_id;
-
-  const data = {
-    title: 'Today',
-    showBack: false,
-    showNav: true,
-    activeNav: 'today',
-    userRole,
-    canInspect: checkPermission(userRole, 'INSPECTIONS', 'SUBMIT') !== 'none',
-    canReport: checkPermission(userRole, 'FINDINGS', 'CREATE') !== 'none',
-    canAssess: checkPermission(userRole, 'FINDINGS', 'MANAGE') !== 'none',
-    dueScheduleCount: null,
-    overdueScheduleCount: null,
-    dueScheduleItems: [],
-    openFindingsCount: null,
-    openFindings: []
-  };
-
-  if (organizationId) {
-    try {
-      const operatorVisible = userRole === 'operator' || userRole === 'supervisor' || userRole === 'admin';
-      if (operatorVisible) {
-        const dueToday = await Schedule.getDueToday(organizationId);
-        const overdue = await Schedule.getOverdue(organizationId);
-        data.dueScheduleCount = Array.isArray(dueToday) ? dueToday.length : null;
-        data.overdueScheduleCount = Array.isArray(overdue) ? overdue.length : null;
-        data.dueScheduleItems = (Array.isArray(dueToday) ? dueToday : []).slice(0, 5);
-      }
-
-      const assessVisible = userRole === 'supervisor' || userRole === 'admin';
-      if (assessVisible) {
-        const openFindings = await Finding.getFindingsWithDetails(organizationId, { status: 'open', limit: 5 });
-        data.openFindings = Array.isArray(openFindings) ? openFindings : [];
-        // Count is the returned page size unless a dedicated count method exists.
-        data.openFindingsCount = data.openFindings.length;
-      }
-    } catch (err) {
-      console.error('[Today] Error loading dashboard data:', err);
-      data.dueScheduleCount = null;
-      data.overdueScheduleCount = null;
-      data.dueScheduleItems = [];
-      data.openFindingsCount = null;
-      data.openFindings = [];
-    }
-  }
-
-  renderMobile(res, 'today', data, req);
+router.get('/today', requireAuth, (req, res) => {
+  // ATM-002-I1 entry-point reconciliation: the legacy Today view is superseded by
+  // the Atiman shell's canonical Today. The route is preserved as a redirect so
+  // installed apps and bookmarks that point at it keep working, and so no
+  // competing "Today" concept remains in the product.
+  return res.redirect('/today');
 });
 
 // Work Order List - operators and supervisors only

@@ -1,0 +1,56 @@
+<div class="atiman-stack">
+  <section class="atiman-card" aria-labelledby="today-attention-heading">
+    <h2 class="atiman-card__title" id="today-attention-heading">Needs attention</h2>
+    <% if (findings.count > 0) { %>
+      <p class="atiman-card__note">
+        <span class="atiman-badge atiman-badge--attention"><%= findings.count %> reported</span>
+        Reported findings recorded against your organization. Reviewing and acting on
+        findings is not yet available in Atiman.
+      </p>
+      <ul class="atiman-list">
+        <% findings.items.forEach(function (finding) { %>
+          <li class="atiman-list__item">
+            <div><%= finding.description %></div>
+            <div class="atiman-list__meta">
+              <%= finding.asset_label ? finding.asset_label + ' · ' : '' %>
+              <%= finding.severity ? 'Severity: ' + finding.severity + ' · ' : '' %>
+              Reported <%= finding.reported_at_label %><%= finding.reported_by ? ' by ' + finding.reported_by : '' %>
+            </div>
+          </li>
+        <% }); %>
+      </ul>
+    <% } else { %>
+      <p class="atiman-empty">Nothing needs your attention right now.</p>
+      <p class="atiman-card__note">No findings have been reported for your organization.</p>
+    <% } %>
+  </section>
+
+  <section class="atiman-card" aria-labelledby="today-actions-heading">
+    <h2 class="atiman-card__title" id="today-actions-heading">What you can do</h2>
+    <% if (actions.length > 0) { %>
+      <div class="atiman-stack">
+        <% actions.forEach(function (action) { %>
+          <a class="atiman-action" href="<%= action.href %>">
+            <span>
+              <span class="atiman-action__label"><%= action.label %></span>
+              <span class="atiman-action__hint"><%= action.hint %></span>
+            </span>
+            <span aria-hidden="true">›</span>
+          </a>
+        <% }); %>
+      </div>
+    <% } else { %>
+      <p class="atiman-empty">Your account has no work available yet.</p>
+    <% } %>
+  </section>
+
+  <section class="atiman-card" aria-labelledby="today-boundary-heading">
+    <h2 class="atiman-card__title" id="today-boundary-heading">What Atiman does not do here</h2>
+    <p class="atiman-note">
+      This is the first Atiman experience slice. Inspection execution, finding
+      assessment, monitoring and escalation are approved architecture but are not
+      implemented yet, so they are not offered here. Atiman does not plan or execute
+      maintenance work: that stays with your enterprise maintenance system.
+    </p>
+  </section>
+</div>

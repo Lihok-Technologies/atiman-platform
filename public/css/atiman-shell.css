@@ -1,0 +1,203 @@
+/**
+ * Atiman application shell and minimum primitives (ATM-002-R4).
+ *
+ * Consumes only Tier 2 semantic tokens. No legacy stylesheet is imported and no
+ * legacy class is reused; the legacy layer is left untouched (ATM-002-R2 §9
+ * strangler migration: a new surface never imports legacy CSS).
+ *
+ * Field-first: one-handed targets, safe areas, generous spacing. The same markup
+ * serves larger screens — there is no separate desktop product, only more room.
+ */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body.atiman {
+  margin: 0;
+  font-family: var(--atiman-font-family);
+  font-size: var(--atiman-font-size-md);
+  line-height: 1.5;
+  color: var(--atiman-text);
+  background: var(--atiman-surface-sunken);
+  -webkit-text-size-adjust: 100%;
+}
+
+/* ---- Shell regions ------------------------------------------------------- */
+.atiman-skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  background: var(--atiman-surface);
+  color: var(--atiman-text-link);
+  padding: var(--atiman-space-2) var(--atiman-space-3);
+  z-index: 10;
+}
+.atiman-skip-link:focus { left: var(--atiman-space-2); top: var(--atiman-space-2); }
+
+.atiman-header {
+  background: var(--atiman-surface-inverse);
+  color: var(--atiman-text-inverse);
+  padding: var(--atiman-space-3) var(--atiman-space-4);
+  padding-top: calc(var(--atiman-space-3) + env(safe-area-inset-top, 0px));
+}
+.atiman-header__row {
+  display: flex;
+  align-items: center;
+  gap: var(--atiman-space-3);
+  max-width: 64rem;
+  margin: 0 auto;
+}
+.atiman-header__title { margin: 0; font-size: var(--atiman-font-size-lg); }
+.atiman-header__context { font-size: var(--atiman-font-size-sm); color: #cbd2d9; }
+.atiman-header__spacer { flex: 1 1 auto; }
+.atiman-header__account {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--atiman-target-min);
+  padding: var(--atiman-space-2) var(--atiman-space-3);
+  color: var(--atiman-text-inverse);
+  text-decoration: underline;
+  border-radius: var(--atiman-radius-sm);
+}
+
+.atiman-main {
+  max-width: 64rem;
+  margin: 0 auto;
+  padding: var(--atiman-space-4);
+  padding-bottom: calc(var(--atiman-space-6) + 5rem + env(safe-area-inset-bottom, 0px));
+}
+
+/* ---- Primitives ---------------------------------------------------------- */
+.atiman-stack > * + * { margin-top: var(--atiman-space-4); }
+
+.atiman-card {
+  background: var(--atiman-surface-raised);
+  border: var(--atiman-border-width) solid var(--atiman-border);
+  border-radius: var(--atiman-radius-md);
+  padding: var(--atiman-space-4);
+  box-shadow: var(--atiman-shadow-raised);
+}
+.atiman-card__title { margin: 0 0 var(--atiman-space-2); font-size: var(--atiman-font-size-lg); }
+.atiman-card__note { margin: var(--atiman-space-2) 0 0; color: var(--atiman-text-muted); font-size: var(--atiman-font-size-sm); }
+
+.atiman-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--atiman-space-3);
+  min-height: var(--atiman-target-min);
+  padding: var(--atiman-space-3) var(--atiman-space-4);
+  background: var(--atiman-action-subtle);
+  color: var(--atiman-action);
+  border: var(--atiman-border-width) solid var(--atiman-border);
+  border-radius: var(--atiman-radius-md);
+  text-decoration: none;
+  font-weight: 600;
+}
+.atiman-action__label { display: block; }
+.atiman-action__hint { display: block; font-weight: 400; font-size: var(--atiman-font-size-sm); color: var(--atiman-text-muted); }
+
+.atiman-list { list-style: none; margin: 0; padding: 0; }
+.atiman-list__item {
+  padding: var(--atiman-space-3) 0;
+  border-top: var(--atiman-border-width) solid var(--atiman-border);
+}
+.atiman-list__item:first-child { border-top: 0; }
+.atiman-list__meta { color: var(--atiman-text-muted); font-size: var(--atiman-font-size-sm); }
+
+/* Non-colour state communication: every badge carries text, and attention
+   states add a border treatment as well as colour. */
+.atiman-badge {
+  display: inline-block;
+  padding: var(--atiman-space-1) var(--atiman-space-2);
+  border-radius: var(--atiman-radius-sm);
+  border: var(--atiman-border-width) solid var(--atiman-border-strong);
+  background: var(--atiman-status-neutral-surface);
+  color: var(--atiman-text);
+  font-size: var(--atiman-font-size-sm);
+}
+.atiman-badge--attention {
+  background: var(--atiman-attention-surface);
+  border-color: var(--atiman-attention);
+  color: var(--atiman-attention);
+}
+
+.atiman-note {
+  border-left: 4px solid var(--atiman-border-strong);
+  padding: var(--atiman-space-2) var(--atiman-space-3);
+  color: var(--atiman-text-muted);
+  font-size: var(--atiman-font-size-sm);
+}
+
+.atiman-empty { color: var(--atiman-text-muted); }
+
+.atiman-connectivity {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--atiman-space-2);
+  font-size: var(--atiman-font-size-sm);
+}
+.atiman-connectivity__dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  border: 1px solid currentColor;
+  background: currentColor;
+}
+.atiman-connectivity[data-state="online"] { color: var(--atiman-connectivity-online); }
+.atiman-connectivity[data-state="degraded"] { color: var(--atiman-connectivity-degraded); }
+.atiman-connectivity[data-state="offline"] { color: var(--atiman-connectivity-offline); }
+
+/* ---- Work navigation (task-first, composed from capabilities) ------------- */
+.atiman-worknav {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  background: var(--atiman-surface);
+  border-top: var(--atiman-border-width) solid var(--atiman-border);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.atiman-worknav__list {
+  display: flex;
+  list-style: none;
+  margin: 0 auto;
+  padding: 0;
+  max-width: 64rem;
+}
+.atiman-worknav__item { flex: 1 1 0; }
+.atiman-worknav__link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--atiman-target-min);
+  padding: var(--atiman-space-2);
+  color: var(--atiman-text-muted);
+  text-decoration: none;
+  font-size: var(--atiman-font-size-sm);
+}
+.atiman-worknav__transitional {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--atiman-text-muted);
+}
+
+.atiman-worknav__link[aria-current="page"] {
+  color: var(--atiman-action);
+  font-weight: 700;
+  border-top: 3px solid var(--atiman-action);
+}
+
+/* ---- Focus: always visible (ATM-002-R4 §5) -------------------------------- */
+.atiman a:focus-visible,
+.atiman button:focus-visible,
+.atiman [tabindex]:focus-visible {
+  outline: var(--atiman-focus-width) solid var(--atiman-focus);
+  outline-offset: 2px;
+}
+
+/* ---- Responsive: one IA, more room. Compact and expanded only. ------------ */
+@media (min-width: 48rem) {
+  .atiman-main { padding: var(--atiman-space-6); padding-bottom: var(--atiman-space-6); }
+  .atiman-worknav { position: static; border-top: 0; border-bottom: var(--atiman-border-width) solid var(--atiman-border); order: -1; }
+  .atiman-layout { display: flex; flex-direction: column; min-height: 100vh; }
+  .atiman-worknav__list { justify-content: flex-start; gap: var(--atiman-space-2); }
+  .atiman-worknav__item { flex: 0 0 auto; }
+  .atiman-worknav__link { padding: var(--atiman-space-2) var(--atiman-space-4); }
+}

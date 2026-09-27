@@ -1,0 +1,9 @@
+<%#
+  Connectivity presentation (ATM-002-R7 §11). Three states, always named in text
+  as well as colour, and never a claim that unsaved work will synchronise:
+  offline means read-only, and offline mutation is not ratified.
+%>
+<span class="atiman-connectivity" id="atiman-connectivity" data-state="online" role="status" aria-live="polite">
+  <span class="atiman-connectivity__dot" aria-hidden="true"></span>
+  <span id="atiman-connectivity-label">Online</span>
+</span>
