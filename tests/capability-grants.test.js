@@ -16,6 +16,10 @@ const fs = require('fs');
 const path = require('path');
 const { Pool } = require('pg');
 const { getConnection, isIntegrationTest } = require('../src/config/database');
+const { resolveCapabilities, REFUSAL_REASONS } = require('../src/services/capability.service');
+const {
+  RESOLUTION_MODES, LEGACY_COMPATIBILITY_BUNDLES, V1_HUMAN_GRANTABLE, NON_HUMAN_GRANTABLE
+} = require('../src/config/capabilities');
 
 const DB_TEST_SKIP_REASON = isIntegrationTest()
   ? false
@@ -96,6 +100,9 @@ async function attempt(statement, params = []) {
   });
 }
 
+// The unknown-role case takes the compatibility branch (no explicit grants present).
+const RESOLUTION_MODE_SAFE = () => RESOLUTION_MODES.LEGACY_COMPATIBILITY;
+
 const grant = (userId = GRANTEE, orgId = ORG, capability = 'knowledge.approve', by = GRANTER) =>
   ['INSERT INTO user_capabilities (user_id, organization_id, capability, granted_by_user_id) VALUES (?, ?, ?, ?)',
     [userId, orgId, capability, by]];
@@ -109,12 +116,15 @@ const grant = (userId = GRANTEE, orgId = ORG, capability = 'knowledge.approve', 
  */
 let userSeq = 0;
 async function makeUser(role = 'operator', org = ORG) {
-  const id = 991100 + (++userSeq);
-  await withConn((conn) => conn.query(
-    `INSERT INTO users (id, username, email, password_hash, full_name, role, organization_id, is_active)
-     VALUES (?, ?, ?, 'x', 'Capability Probe User', ?, ?, true)`,
-    [id, `cap-probe-${id}`, `cap-probe-${id}@test.local`, role, org]));
-  return id;
+  // The id is assigned by the database and the username is unique per run, so
+  // re-running the suite against a long-lived test database cannot collide with
+  // principals created by a previous run.
+  const tag = `${Date.now()}-${process.pid}-${++userSeq}`;
+  const rows = await withConn((conn) => conn.query(
+    `INSERT INTO users (username, email, password_hash, full_name, role, organization_id, is_active)
+     VALUES (?, ?, 'x', 'Capability Probe User', ?, ?, true) RETURNING id`,
+    [`cap-probe-${tag}`, `cap-probe-${tag}@test.local`, role, org]));
+  return rows[0].id;
 }
 
 async function ensureFixture() {
@@ -312,6 +322,188 @@ describe('ATM-003 capability grants (migration 022)', { skip: DB_TEST_SKIP_REASO
           WHERE user_id=? AND revoked_at IS NOT NULL`, [grantee]);
       assert.strictEqual(unrevoke.accepted, false);
       assert.match(unrevoke.error, /cannot be un-revoked/);
+    });
+  });
+
+  describe('capability resolver — the authorization-mode boundary', () => {
+    /** A connection stub, so defensive behaviour can be tested without weakening the schema. */
+    const stub = (rows, { userOverride = {}, throwOn } = {}) => ({
+      query: async (sql) => {
+        if (throwOn && sql.includes(throwOn)) throw new Error('stub failure');
+        if (sql.includes('FROM users')) {
+          return [{ id: GRANTEE, organization_id: ORG, role: 'operator', is_active: true, ...userOverride }];
+        }
+        return rows;
+      },
+      rollback: async () => {},
+      release: () => {}
+    });
+
+    it('uses ONLY explicit grants when the principal has any, adding no legacy capability', async () => {
+      const admin = await makeUser('admin');
+      const [sql, params] = grant(admin, ORG, 'finding.report');
+      assert.strictEqual((await attempt(sql, params)).accepted, true);
+
+      const resolved = await resolveCapabilities({ id: admin });
+      assert.strictEqual(resolved.mode, RESOLUTION_MODES.EXPLICIT_GRANTS);
+      assert.deepStrictEqual([...resolved.capabilities], ['finding.report']);
+      // The admin bundle would have granted knowledge.publish; explicit mode must not.
+      assert.ok(!resolved.capabilities.has('knowledge.publish'),
+        'legacy capabilities must not be unioned into explicit mode');
+      assert.ok(!resolved.capabilities.has('org.user_admin'));
+    });
+
+    it('does not union a second explicit grant with role-derived capabilities', async () => {
+      const operator = await makeUser('operator');
+      for (const capability of ['knowledge.approve', 'org.user_admin']) {
+        const [sql, params] = grant(operator, ORG, capability);
+        assert.strictEqual((await attempt(sql, params)).accepted, true);
+      }
+      const resolved = await resolveCapabilities({ id: operator });
+      assert.strictEqual(resolved.mode, RESOLUTION_MODES.EXPLICIT_GRANTS);
+      assert.deepStrictEqual([...resolved.capabilities].sort(),
+        ['knowledge.approve', 'org.user_admin']);
+      // operator's legacy bundle would have added these; explicit mode must not.
+      assert.ok(!resolved.capabilities.has('inspection.execute'));
+      assert.ok(!resolved.capabilities.has('finding.report'));
+      assert.ok(!resolved.capabilities.has('evidence.attach'));
+    });
+
+    it('falls back to the exact legacy bundle when the principal holds no explicit grant', async () => {
+      for (const role of ['operator', 'supervisor', 'admin']) {
+        const user = await makeUser(role);
+        const resolved = await resolveCapabilities({ id: user });
+        assert.strictEqual(resolved.mode, RESOLUTION_MODES.LEGACY_COMPATIBILITY);
+        assert.deepStrictEqual([...resolved.capabilities].sort(),
+          [...LEGACY_COMPATIBILITY_BUNDLES[role]].sort(), `${role} bundle must match exactly`);
+      }
+    });
+
+    it('never yields a non-human-grantable capability in either mode', async () => {
+      for (const role of ['operator', 'supervisor', 'admin']) {
+        const user = await makeUser(role);
+        const [sql, params] = grant(user, ORG, 'finding.report');
+        assert.strictEqual((await attempt(sql, params)).accepted, true);
+        for (const principal of [{ id: user }, { id: await makeUser(role) }]) {
+          const resolved = await resolveCapabilities(principal);
+          for (const forbidden of NON_HUMAN_GRANTABLE) {
+            assert.ok(!resolved.capabilities.has(forbidden),
+              `${forbidden} must never be resolved for a human principal (${role}, ${resolved.mode})`);
+          }
+        }
+      }
+      for (const bundle of Object.values(LEGACY_COMPATIBILITY_BUNDLES)) {
+        for (const forbidden of NON_HUMAN_GRANTABLE) {
+          assert.ok(!bundle.includes(forbidden), `no bundle may contain ${forbidden}`);
+        }
+        assert.ok(!bundle.includes('*'), 'no bundle may contain a wildcard');
+      }
+    });
+
+    it('ignores non-grantable and unknown identifiers even if a row exists (defence in depth)', async () => {
+      const conn = stub([
+        { capability: 'platform.admin' },
+        { capability: 'knowledge.taxonomy_admin' },
+        { capability: 'integration.service' },
+        { capability: '*' },
+        { capability: 'not.a.capability' },
+        { capability: 'finding.report' }
+      ]);
+      const resolved = await resolveCapabilities({ id: GRANTEE }, { connection: conn });
+      assert.strictEqual(resolved.mode, RESOLUTION_MODES.EXPLICIT_GRANTS);
+      assert.deepStrictEqual([...resolved.capabilities], ['finding.report']);
+    });
+
+    it('treats a row set containing only invalid identifiers as no explicit grant', async () => {
+      const conn = stub([{ capability: 'platform.admin' }, { capability: '*' }]);
+      const resolved = await resolveCapabilities({ id: GRANTEE }, { connection: conn });
+      assert.strictEqual(resolved.mode, RESOLUTION_MODES.LEGACY_COMPATIBILITY,
+        'invalid rows must not create explicit mode');
+      assert.deepStrictEqual([...resolved.capabilities].sort(),
+        [...LEGACY_COMPATIBILITY_BUNDLES.operator].sort());
+    });
+
+    it('ignores grants revoked or held in another organization', async () => {
+      const user = await makeUser('operator');
+      const [sql, params] = grant(user, ORG, 'knowledge.publish');
+      assert.strictEqual((await attempt(sql, params)).accepted, true);
+      await withConn((conn) => conn.query(
+        `UPDATE user_capabilities SET revoked_at=CURRENT_TIMESTAMP, revoked_by_user_id=?
+          WHERE user_id=? AND capability='knowledge.publish'`, [GRANTER, user]));
+
+      const resolved = await resolveCapabilities({ id: user });
+      assert.strictEqual(resolved.mode, RESOLUTION_MODES.LEGACY_COMPATIBILITY,
+        'a revoked grant must not keep the principal in explicit mode');
+      assert.ok(!resolved.capabilities.has('knowledge.publish'));
+    });
+
+    it('refuses on tenant mismatch instead of resolving another tenant', async () => {
+      const user = await makeUser('admin');
+      const resolved = await resolveCapabilities({ id: user }, { organizationId: ORG_B });
+      assert.strictEqual(resolved.reason, REFUSAL_REASONS.ORGANIZATION_MISMATCH);
+      assert.strictEqual(resolved.mode, null);
+      assert.strictEqual(resolved.capabilities.size, 0);
+    });
+
+    it('accepts the principal\'s own organization as explicit context', async () => {
+      const user = await makeUser('operator');
+      const resolved = await resolveCapabilities({ id: user }, { organizationId: ORG });
+      assert.strictEqual(resolved.mode, RESOLUTION_MODES.LEGACY_COMPATIBILITY);
+      assert.ok(resolved.capabilities.size > 0);
+    });
+
+    it('refuses absent, unknown, inactive and organization-less principals', async () => {
+      assert.strictEqual((await resolveCapabilities(null)).reason, REFUSAL_REASONS.PRINCIPAL_REQUIRED);
+      assert.strictEqual((await resolveCapabilities({})).reason, REFUSAL_REASONS.PRINCIPAL_REQUIRED);
+      assert.strictEqual((await resolveCapabilities({ id: 999999 })).reason, REFUSAL_REASONS.PRINCIPAL_NOT_FOUND);
+
+      const inactive = await makeUser('admin');
+      await withConn((conn) => conn.query(`UPDATE users SET is_active=false WHERE id=?`, [inactive]));
+      const inactiveResult = await resolveCapabilities({ id: inactive });
+      assert.strictEqual(inactiveResult.reason, REFUSAL_REASONS.PRINCIPAL_INACTIVE);
+      assert.strictEqual(inactiveResult.capabilities.size, 0,
+        'an inactive user must resolve to no capabilities even as an admin');
+
+      await withConn((conn) => conn.query(
+        `INSERT INTO users (id, username, email, password_hash, full_name, role, organization_id, is_active)
+         VALUES (991015, 'cap-noorg2', 'cap-noorg2@test.local', 'x', 'No Org 2', 'admin', NULL, true)
+         ON CONFLICT (id) DO NOTHING`));
+      const noOrg = await resolveCapabilities({ id: 991015 });
+      assert.strictEqual(noOrg.reason, REFUSAL_REASONS.ORGANIZATION_REQUIRED);
+      assert.strictEqual(noOrg.capabilities.size, 0, 'a user without a tenant resolves to nothing');
+    });
+
+    it('resolves an unrecognised role to no capabilities rather than to a default', async () => {
+      const conn = stub([], { userOverride: { role: 'planner' } });
+      const resolved = await resolveCapabilities({ id: GRANTEE }, { connection: conn });
+      assert.strictEqual(resolved.mode, RESOLUTION_MODE_SAFE(conn));
+      assert.strictEqual(resolved.capabilities.size, 0, 'an unknown role grants nothing');
+    });
+
+    it('fails closed when resolution itself errors', async () => {
+      const conn = stub([], { throwOn: 'user_capabilities' });
+      const resolved = await resolveCapabilities({ id: GRANTEE }, { connection: conn });
+      assert.strictEqual(resolved.reason, REFUSAL_REASONS.RESOLVER_ERROR);
+      assert.strictEqual(resolved.capabilities.size, 0);
+    });
+
+    it('returns an independent set per resolution (per-request, not cached authority)', async () => {
+      const user = await makeUser('admin');
+      const first = await resolveCapabilities({ id: user });
+      first.capabilities.add('platform.admin');
+      const second = await resolveCapabilities({ id: user });
+      assert.ok(!second.capabilities.has('platform.admin'),
+        'mutating one resolution must not affect the next');
+      assert.deepStrictEqual([...second.capabilities].sort(),
+        [...LEGACY_COMPATIBILITY_BUNDLES.admin].sort());
+    });
+
+    it('keeps the resolver and the schema gate on the same 18-capability set', async () => {
+      const constraint = await withConn((conn) => conn.query(
+        `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname='chk_user_capabilities_grantable'`));
+      const inSchema = [...constraint[0].def.matchAll(/'([a-z]+\.[a-z_]+)'/g)].map((m) => m[1]).sort();
+      assert.deepStrictEqual(inSchema, [...V1_HUMAN_GRANTABLE].sort(),
+        'the migration constraint and the resolver vocabulary must be identical');
     });
   });
 
