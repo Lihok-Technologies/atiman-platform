@@ -22,6 +22,8 @@ const { resolveCapabilities, REFUSAL_REASONS } = require('../src/services/capabi
 const {
   requireCapability, requireAllCapabilities, requirePermissionViaCapability, attachCapabilities
 } = require('../src/middleware/capability.middleware');
+const { requireAdmin } = require('../src/middleware/auth');
+const { requirePermission } = require('../src/middleware/rbac');
 const {
   RESOLUTION_MODES, LEGACY_COMPATIBILITY_BUNDLES, V1_HUMAN_GRANTABLE, NON_HUMAN_GRANTABLE
 } = require('../src/config/capabilities');
@@ -900,6 +902,124 @@ describe('ATM-003 capability grants (migration 022)', { skip: DB_TEST_SKIP_REASO
       assert.match(client, /function getUserRole/, 'the role display helper is still required by auth-check.js');
       assert.match(client, /function hasCapability/, 'capability presentation must be available');
       assert.match(client, /window\.atimanCapabilities/, 'capability checks must delegate to the descriptor');
+    });
+  });
+
+
+  describe('proof integration — knowledge route family (milestone 6)', () => {
+    const ROUTE_FILE = path.join(REPO_ROOT, 'src', 'routes', 'task-template.routes.js');
+    const response = () => {
+      const res = { statusCode: 200, payload: null };
+      res.status = (code) => { res.statusCode = code; return res; };
+      res.json = (body) => { res.payload = body; return res; };
+      return res;
+    };
+    const decide = async (middleware, user) => {
+      const res = response();
+      let allowed = false;
+      await middleware({ user }, res, () => { allowed = true; });
+      return allowed;
+    };
+
+    /** The migrated routes and the pre-change guard each one replaced. */
+    const MIGRATED = [
+      ['POST /', 'knowledge.author', () => requireAdmin],
+      ['PUT /:id', 'knowledge.author', () => requireAdmin],
+      ['DELETE /:id', 'knowledge.author', () => requireAdmin],
+      ['POST /:id/clone', 'knowledge.author', () => requireAdmin],
+      ['POST /:id/publish', 'knowledge.publish', () => requireAdmin],
+      ['POST /:id/submit-for-review', 'knowledge.review', () => requirePermission('KNOWLEDGE', 'REVIEW')],
+      ['POST /:id/reject', 'knowledge.review', () => requirePermission('KNOWLEDGE', 'REVIEW')],
+      ['POST /:id/reopen', 'knowledge.review', () => requirePermission('KNOWLEDGE', 'REVIEW')],
+      ['POST /:id/approve', 'knowledge.approve', () => requirePermission('KNOWLEDGE', 'APPROVE')],
+      ['POST /:id/safety-review', 'knowledge.safety_review', () => requirePermission('KNOWLEDGE', 'SAFETY_REVIEW')]
+    ];
+
+    it('the route file authorizes the lifecycle with capabilities and nothing else', async () => {
+      const source = fs.readFileSync(ROUTE_FILE, 'utf8');
+      assert.strictEqual((source.match(/requireCapability\(/g) || []).length, 10,
+        'all ten lifecycle routes must use the capability guard');
+      assert.ok(!/requirePermission\(/.test(source),
+        'the migrated family must no longer use the resource/action seam');
+      const executable = source.replace(/\/\*[\s\S]*?\*\//g, ' ')
+        .split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
+      const adminUses = (executable.match(/requireAdmin/g) || []).length;
+      assert.strictEqual(adminUses, 2,
+        'requireAdmin must remain only for the import and GET /stats; comments do not count');
+      assert.match(source, /router\.get\('\/stats', requireAdmin/,
+        'GET /stats deliberately keeps requireAdmin: no capability exists for reading aggregate statistics');
+    });
+
+    it('effective authority is unchanged for every legacy role (behavioural parity)', async () => {
+      for (const role of ['operator', 'supervisor', 'admin']) {
+        const principal = await makeUser(role);
+        // The pre-change guards read req.user.role from the session principal; the
+        // capability guard resolves from the database by id and ignores the role.
+        const actor = { id: principal, role };
+        for (const [route, capability, oldGuard] of MIGRATED) {
+          const before = await decide(oldGuard(), actor);
+          const after = await decide(requireCapability(capability), actor);
+          assert.strictEqual(after, before,
+            `${role} ${route}: capability ${capability} must be no more and no less privileged than the guard it replaced`);
+        }
+      }
+    });
+
+    it('an explicit grant is authoritative and can exceed or fall short of the legacy bundle', async () => {
+      const operator = await makeUser('operator');
+      // Operator has no knowledge capability by bundle...
+      assert.strictEqual(await decide(requireCapability('knowledge.approve'), { id: operator }), false);
+      // ...but an explicit grant of one capability confers exactly that one.
+      const [sql, params] = grant(operator, ORG, 'knowledge.approve');
+      assert.strictEqual((await attempt(sql, params)).accepted, true);
+      assert.strictEqual(await decide(requireCapability('knowledge.approve'), { id: operator }), true,
+        'the explicit grant must be honoured');
+      assert.strictEqual(await decide(requireCapability('knowledge.publish'), { id: operator }), false,
+        'and must not confer any other capability');
+      assert.strictEqual(await decide(requireCapability('knowledge.review'), { id: operator }), false);
+    });
+
+    it('denies a missing capability, an inactive principal and a cross-tenant context', async () => {
+      const operator = await makeUser('operator');
+      assert.strictEqual(await decide(requireCapability('knowledge.publish'), { id: operator }), false,
+        'a missing grant must fail on a direct call, not only in the UI');
+
+      const inactive = await makeUser('admin');
+      await withConn((conn) => conn.query(`UPDATE users SET is_active=false WHERE id=?`, [inactive]));
+      assert.strictEqual(await decide(requireCapability('knowledge.publish'), { id: inactive }), false,
+        'an inactive admin must be denied even though the role held publish');
+
+      const foreign = await makeUser('admin', ORG_B);
+      const resolved = await resolveCapabilities({ id: foreign }, { organizationId: ORG });
+      assert.strictEqual(resolved.capabilities.size, 0, 'a cross-tenant context must resolve to nothing');
+    });
+
+    it('a request that claims the capability in its own body is still denied', async () => {
+      const operator = await makeUser('operator');
+      const req = {
+        user: { id: operator },
+        body: { capability: 'knowledge.publish', capabilities: ['knowledge.publish'] },
+        query: { capability: 'knowledge.publish' },
+        headers: { 'x-capability': 'knowledge.publish' }
+      };
+      const res = response();
+      let allowed = false;
+      await requireCapability('knowledge.publish')(req, res, () => { allowed = true; });
+      assert.strictEqual(allowed, false);
+      assert.strictEqual(res.statusCode, 403);
+    });
+
+    it('keeps ATM-001 domain governance out of the route layer', async () => {
+      const controller = fs.readFileSync(
+        path.join(REPO_ROOT, 'src', 'controllers', 'task-template.controller.js'), 'utf8');
+      assert.ok(!/requireCapability|capabilit/i.test(controller),
+        'capability authorization must not leak into the controller');
+      // The governed rules stay in the ATM-001 services and the schema.
+      const governance = fs.readFileSync(
+        path.join(REPO_ROOT, 'src', 'services', 'knowledge-governance.service.js'), 'utf8');
+      for (const rule of ['AI_DISCLOSURE_MISSING', 'APPROVAL_STALE', 'EVIDENCE_MISSING', 'SEGREGATION_OF_DUTIES']) {
+        assert.ok(governance.includes(rule), `ATM-001 admission rule ${rule} must remain in the service layer`);
+      }
     });
   });
 
