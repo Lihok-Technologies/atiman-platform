@@ -74,7 +74,10 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   // ATM-001-K3: knowledge accession authority — the four provenance mutation
   // routes require knowledge.author instead of the legacy TASKS.CREATE/UPDATE
   // matrix, so a grantable accession authority exists for the SME.
-  'tests/knowledge-accession-authority.test.js'
+  'tests/knowledge-accession-authority.test.js',
+  // ATM-001-K3-R1: provenance write scope — a tenant may read and cite global
+  // shared reference provenance but may not author into it (MAJOR-1).
+  'tests/provenance-write-scope.test.js'
 ];
 
 /**

@@ -77,6 +77,9 @@ const DB_MUTATING_SUITES = [
   // ATM-001-K3 knowledge accession authority (writes real sources, versions and
   // working evidence; issues and revokes a real capability grant).
   'knowledge-accession-authority.test.js',
+  // ATM-001-K3-R1 provenance write scope (writes real sources, versions and
+  // working evidence for two tenants, plus an out-of-band global source fixture).
+  'provenance-write-scope.test.js',
   'step6-access-control.test.js',
   'step6-coverage-e2e.test.js',
   'step6-performance.test.js',
@@ -112,7 +115,8 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'observation-foundation.test.js',
   'asset-context.test.js',
   'report-capture.test.js',
-  'knowledge-accession-authority.test.js'
+  'knowledge-accession-authority.test.js',
+  'provenance-write-scope.test.js'
 ];
 
 const REPO_ROOT = path.resolve(__dirname, '..');
