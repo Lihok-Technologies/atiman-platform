@@ -589,8 +589,9 @@ describe('ATM-003 capability grants (migration 022)', { skip: DB_TEST_SKIP_REASO
       assert.strictEqual(partial.res.statusCode, 403);
       assert.match(partial.res.payload.message, /knowledge\.approve/);
 
-      const complete = await run(requireAllCapabilities('finding.report', 'evidence.attach'), { id: user });
-      assert.strictEqual(complete.advanced, true);
+      const complete = await run(requireAllCapabilities('finding.report', 'inspection.execute'), { id: user });
+      assert.strictEqual(complete.advanced, true,
+        'operator holds both finding.report and inspection.execute after the parity correction');
     });
 
     it('adapter refuses an unmapped authorization seam rather than guessing', async () => {
@@ -654,6 +655,87 @@ describe('ATM-003 capability grants (migration 022)', { skip: DB_TEST_SKIP_REASO
       await requireCapability('knowledge.publish')({ apiKey: { id: 1, scopes: ['admin'] } }, res, () => { advanced = true; });
       assert.strictEqual(advanced, false, 'an API-key principal must not satisfy a human capability guard');
       assert.strictEqual(res.statusCode, 401);
+    });
+  });
+
+
+  describe('legacy compatibility parity (milestone 4)', () => {
+    /**
+     * The pre-change authority oracle, transcribed from src/config/permissions.js
+     * and the guards on the routes that enforce it. A compatibility bundle may
+     * only contain capabilities this table permits for that role.
+     */
+    const PRE_CHANGE = {
+      'inspection.execute': { admin: false, supervisor: true, operator: true },   // INSPECTIONS.SUBMIT: admin none
+      'inspection.assign': { admin: true, supervisor: true, operator: false },    // WORK_ORDERS.ASSIGN
+      'finding.report': { admin: true, supervisor: true, operator: true },        // FINDINGS.CREATE
+      'finding.assess': { admin: true, supervisor: true, operator: false },       // FINDINGS.MANAGE
+      'finding.monitor': { admin: true, supervisor: true, operator: false },
+      'finding.close': { admin: true, supervisor: true, operator: false },
+      'escalation.prepare': { admin: true, supervisor: true, operator: false },   // FINDINGS.MANAGE / LINK_SAP
+      'escalation.approve': { admin: true, supervisor: true, operator: false },
+      'evidence.attach': { admin: true, supervisor: false, operator: false },     // TASKS.CREATE/UPDATE: admin only
+      'knowledge.author': { admin: true, supervisor: true, operator: false },     // requireAdmin on create/update
+      'knowledge.submit': { admin: true, supervisor: true, operator: false },     // KNOWLEDGE.REVIEW
+      'knowledge.review': { admin: true, supervisor: true, operator: false },
+      'knowledge.approve': { admin: true, supervisor: true, operator: false },
+      'knowledge.safety_review': { admin: true, supervisor: true, operator: false },
+      'knowledge.publish': { admin: true, supervisor: true, operator: false },    // requireAdmin on publish
+      'org.user_admin': { admin: true, supervisor: false, operator: false },      // USERS.DELETE supervisor none
+      'org.config_admin': { admin: true, supervisor: false, operator: false },    // FACILITIES.* admin only
+      'knowledge.legacy_clearance': { admin: false, supervisor: false, operator: false } // no route enforces it
+    };
+
+    it('every capability in every bundle was reachable by that role before the campaign', () => {
+      for (const [role, bundle] of Object.entries(LEGACY_COMPATIBILITY_BUNDLES)) {
+        for (const capability of bundle) {
+          assert.ok(capability in PRE_CHANGE, `${capability} must have a parity entry`);
+          assert.strictEqual(PRE_CHANGE[capability][role], true,
+            `${role} must not gain ${capability}: it was unreachable before the capability model`);
+        }
+      }
+    });
+
+    it('records the two less-privileged mappings explicitly', () => {
+      assert.ok(!LEGACY_COMPATIBILITY_BUNDLES.operator.includes('evidence.attach'),
+        'operator must not gain provenance evidence attachment');
+      assert.ok(!LEGACY_COMPATIBILITY_BUNDLES.supervisor.includes('evidence.attach'));
+      assert.ok(LEGACY_COMPATIBILITY_BUNDLES.admin.includes('evidence.attach'),
+        'admin held TASKS.CREATE/UPDATE before the campaign');
+      assert.ok(!LEGACY_COMPATIBILITY_BUNDLES.supervisor.includes('org.user_admin'),
+        'supervisor user administration was facility-scoped and cannot be mapped without expansion');
+    });
+
+    it('keeps admin out of inspection execution and everyone out of legacy clearance', () => {
+      assert.ok(!LEGACY_COMPATIBILITY_BUNDLES.admin.includes('inspection.execute'),
+        'INSPECTIONS.SUBMIT is admin: none — granting it would expand admin authority');
+      for (const bundle of Object.values(LEGACY_COMPATIBILITY_BUNDLES)) {
+        assert.ok(!bundle.includes('knowledge.legacy_clearance'),
+          'no route enforces legacy clearance, so no bundle may grant it');
+      }
+    });
+
+    it('bundles are enumerations, not wildcards, with the parity-verified sizes', () => {
+      assert.strictEqual(LEGACY_COMPATIBILITY_BUNDLES.operator.length, 2);
+      assert.strictEqual(LEGACY_COMPATIBILITY_BUNDLES.supervisor.length, 14);
+      assert.strictEqual(LEGACY_COMPATIBILITY_BUNDLES.admin.length, 16);
+      assert.ok(LEGACY_COMPATIBILITY_BUNDLES.admin.length < V1_HUMAN_GRANTABLE.length,
+        'admin must be an enumeration smaller than the grantable set, never "everything"');
+      for (const bundle of Object.values(LEGACY_COMPATIBILITY_BUNDLES)) {
+        assert.ok(!bundle.includes('*'));
+        assert.strictEqual(new Set(bundle).size, bundle.length, 'no duplicates');
+      }
+    });
+
+    it('a capability added to the vocabulary later is not silently granted to a legacy role', async () => {
+      // The bundles are frozen enumerations: adding to the vocabulary cannot
+      // change what a legacy principal resolves to.
+      const operator = await makeUser('operator');
+      const resolved = await resolveCapabilities({ id: operator });
+      assert.deepStrictEqual([...resolved.capabilities].sort(),
+        [...LEGACY_COMPATIBILITY_BUNDLES.operator].sort());
+      assert.ok(!resolved.capabilities.has('knowledge.author'));
+      assert.ok(!resolved.capabilities.has('evidence.attach'));
     });
   });
 
