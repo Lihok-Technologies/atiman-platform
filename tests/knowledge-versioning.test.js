@@ -166,10 +166,15 @@ async function createTestTemplate(conn) {
     RETURNING id
   `, [cls.id]);
   const [template] = await conn.query(`
-    INSERT INTO task_templates (equipment_type_id, template_code, template_name, maintenance_type, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, content_origin)
-    VALUES ($1, 'TT' || floor(random() * 1000000000)::int::text, 'Test Template', 'corrective', (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'corrective', 'no_fixed_interval', 'shared', 'authored')
+    INSERT INTO task_templates (equipment_type_id, template_code, template_name, maintenance_type, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, content_origin, ai_assisted, ai_assistance_detail)
+    VALUES ($1, 'TT' || floor(random() * 1000000000)::int::text, 'Test Template', 'corrective', (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'corrective', 'no_fixed_interval', 'shared', 'authored', FALSE, NULL)
     RETURNING id, equipment_type_id
   `, [type.id]);
+  // ATM-001 M6.4 Step 3B-B: authored knowledge must declare whether AI materially
+  // assisted its production, and publication freezes that declaration. This
+  // fixture is synthetic and hand-written, so it explicitly declares FALSE. NULL
+  // is NOT interchangeable with FALSE: it means the disclosure was never captured,
+  // and an authored definition carrying NULL is refused publication.
   // ATM-001 M6.3: publication freezes the working applicability set and fails
   // closed without it, so the fixture declares its single explicit anchor.
   await conn.query(`
@@ -3158,7 +3163,6 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       const result = await TaskTemplate.publishVersion(template.id, publisher.id, {
         publishedByOrganizationId: template.organization_id ?? null,
         changeRationale: 'Initial publication',
-        aiAssisted: true,
         connection: conn
       });
 
@@ -3179,7 +3183,11 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       assert.strictEqual(version.version_number, 1);
       assert.strictEqual(version.priority, 'high');
       assert.strictEqual(version.activity_code_id, activityCodeId);
-      assert.strictEqual(version.ai_assisted, true);
+      // ATM-001 M6.4 Step 3B-B: the frozen disclosure is the DEFINITION's
+      // declaration, snapshotted at publication. It is never a publication
+      // parameter, and never defaulted on the caller's behalf.
+      assert.strictEqual(version.ai_assisted, false);
+      assert.strictEqual(version.ai_assistance_detail, null);
       assert.strictEqual(version.change_rationale, 'Initial publication');
 
       // Verify step versions exist and preserve order/content.
@@ -3245,22 +3253,38 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
     }
   });
 
-  it('defaults ai_assisted to FALSE when not supplied', async () => {
+  it('freezes the definition disclosure and treats a caller-supplied aiAssisted as inert', async () => {
     const conn = await getConnection();
     try {
       const { TaskTemplate } = require('../src/models');
       const publisher = await ensureTestUser(conn);
       const { template } = await createPublishableTemplate(conn);
 
+      // The retired publish-body AI parameters are still passed here on purpose:
+      // a caller that supplies them must NOT be able to assert AI assistance for
+      // knowledge whose definition says otherwise. The frozen record reports the
+      // definition's declaration (FALSE/NULL), never the caller's claim.
       const result = await TaskTemplate.publishVersion(template.id, publisher.id, {
         publishedByOrganizationId: template.organization_id ?? null,
+        aiAssisted: true,
+        aiAssistanceDetail: { model: 'inert', prompt: 'inert' },
         connection: conn
       });
 
       const [version] = await conn.query(`
-        SELECT ai_assisted FROM task_template_versions WHERE id = $1
+        SELECT ai_assisted, ai_assistance_detail FROM task_template_versions WHERE id = $1
       `, [result.versionId]);
       assert.strictEqual(version.ai_assisted, false);
+      assert.strictEqual(version.ai_assistance_detail, null);
+
+      const stepVersions = await conn.query(`
+        SELECT DISTINCT ai_assisted, ai_assistance_detail FROM task_template_step_versions
+        WHERE task_template_version_id = $1
+      `, [result.versionId]);
+      assert.deepStrictEqual(
+        stepVersions.map((r) => [r.ai_assisted, r.ai_assistance_detail]),
+        [[false, null]]
+      );
 
       await conn.rollback();
     } catch (err) {
@@ -3661,19 +3685,41 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       assert.strictEqual(nextErrors.length, 0);
     });
 
-    it('returns 400 when ai_assisted is not a boolean', async () => {
-      const invalidValues = ['true', 1, 0, null, [], {}];
-      for (const value of invalidValues) {
+    it('refuses an AI disclosure supplied as a publication parameter', async () => {
+      // ATM-001 M6.4 Step 3B-B. Refused outright rather than ignored: silently
+      // dropping it would tell a publisher the attribution had been recorded.
+      const bodies = [
+        { ai_assisted: true },
+        { ai_assisted: false },
+        { ai_assisted: null },
+        { ai_assistance_detail: { model: 'x' } },
+        { ai_assistance_detail: null },
+        { ai_assisted: true, ai_assistance_detail: { model: 'x' } }
+      ];
+      for (const body of bodies) {
         const res = buildResponse();
-        const req = buildRequest(1, { ai_assisted: value });
-        await taskTemplateController.publish(req, res, () => {});
-        assert.strictEqual(res._status(), 400, `ai_assisted=${JSON.stringify(value)} should be rejected`);
+        await taskTemplateController.publish(buildRequest(42, body), res, () => {});
+        assert.strictEqual(res._status(), 400, `${JSON.stringify(body)} should be refused`);
         assert.strictEqual(res._json().success, false);
-        assert.ok(res._json().message.toLowerCase().includes('ai_assisted must be a boolean'));
+        assert.strictEqual(res._json().code, 'AI_DISCLOSURE_NOT_A_PUBLICATION_PARAMETER');
+        assert.ok(res._json().message.toLowerCase().includes('cannot be supplied when publishing'));
       }
     });
 
-    it('defaults omitted ai_assisted to false and passes it to the model', async () => {
+    it('never reaches the model when an AI disclosure is supplied', async () => {
+      let called = false;
+      TaskTemplate.publishVersion = async () => {
+        called = true;
+        return { versionId: 1, versionNumber: 1 };
+      };
+
+      const res = buildResponse();
+      await taskTemplateController.publish(buildRequest(42, { ai_assisted: true }), res, () => {});
+      assert.strictEqual(res._status(), 400);
+      assert.strictEqual(called, false, 'a refused publication must not reach the model');
+    });
+
+    it('publishes without any AI parameter and passes only the rationale and publisher scope', async () => {
       let receivedArgs;
       TaskTemplate.publishVersion = async (...args) => {
         receivedArgs = args;
@@ -3681,67 +3727,14 @@ describe('Knowledge Versioning Foundation', { skip: DB_TEST_SKIP_REASON }, () =>
       };
 
       const res = buildResponse();
-      await taskTemplateController.publish(buildRequest(42, {}), res, () => {});
+      await taskTemplateController.publish(buildRequest(42, { change_rationale: 'rationale' }), res, () => {});
       assert.strictEqual(res._status(), 201);
       assert.strictEqual(receivedArgs[0], 42);
       assert.strictEqual(receivedArgs[1], 1);
-      assert.strictEqual(receivedArgs[2].aiAssisted, false);
-    });
-
-    it('passes ai_assisted true and false to the model unchanged', async () => {
-      for (const value of [true, false]) {
-        let receivedArgs;
-        TaskTemplate.publishVersion = async (...args) => {
-          receivedArgs = args;
-          return { versionId: 1, versionNumber: 1 };
-        };
-
-        const res = buildResponse();
-        await taskTemplateController.publish(buildRequest(42, { ai_assisted: value }), res, () => {});
-        assert.strictEqual(res._status(), 201, `ai_assisted=${value} should reach the model`);
-        assert.strictEqual(receivedArgs[2].aiAssisted, value, `ai_assisted=${value} should be passed unchanged`);
-      }
-    });
-
-    it('returns 400 when ai_assistance_detail is not an object', async () => {
-      const invalidValues = ['detail', 123, true, []];
-      for (const value of invalidValues) {
-        const res = buildResponse();
-        const req = buildRequest(1, { ai_assistance_detail: value });
-        await taskTemplateController.publish(req, res, () => {});
-        assert.strictEqual(res._status(), 400, `ai_assistance_detail=${JSON.stringify(value)} should be rejected`);
-        assert.strictEqual(res._json().success, false);
-        assert.ok(res._json().message.toLowerCase().includes('ai_assistance_detail must be an object'));
-      }
-    });
-
-    it('accepts omitted and explicit-null ai_assistance_detail and passes them to the model', async () => {
-      for (const body of [{}, { ai_assistance_detail: null }]) {
-        let receivedArgs;
-        TaskTemplate.publishVersion = async (...args) => {
-          receivedArgs = args;
-          return { versionId: 1, versionNumber: 1 };
-        };
-
-        const res = buildResponse();
-        await taskTemplateController.publish(buildRequest(42, body), res, () => {});
-        assert.strictEqual(res._status(), 201);
-        assert.deepStrictEqual(receivedArgs[2].aiAssistanceDetail, body.ai_assistance_detail);
-      }
-    });
-
-    it('passes a plain-object ai_assistance_detail to the model unchanged', async () => {
-      const detail = { model: 'gpt-4', prompt: 'hello' };
-      let receivedArgs;
-      TaskTemplate.publishVersion = async (...args) => {
-        receivedArgs = args;
-        return { versionId: 1, versionNumber: 1 };
-      };
-
-      const res = buildResponse();
-      await taskTemplateController.publish(buildRequest(42, { ai_assistance_detail: detail }), res, () => {});
-      assert.strictEqual(res._status(), 201);
-      assert.deepStrictEqual(receivedArgs[2].aiAssistanceDetail, detail);
+      assert.deepStrictEqual(receivedArgs[2], {
+        changeRationale: 'rationale',
+        publishedByOrganizationId: 1
+      });
     });
   });
 

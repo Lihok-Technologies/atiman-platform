@@ -96,10 +96,14 @@ const uniq = () => `${Date.now()}-${++seq}`;
 /** A working task template in the given organization, with one step. */
 async function createWorkingTemplate(orgId = ORG) {
   return withConn(async (conn) => {
+    // ATM-001 M6.4 Step 3B-B: this fixture is authored, so publication requires
+    // an explicit AI-assistance declaration. The fixture is hand-written and
+    // declares FALSE. NULL is not a substitute: it means "never captured".
     const [template] = await query(conn,
       `INSERT INTO task_templates (equipment_type_id, organization_id, template_code, template_name,
-         maintenance_type, task_kind, frequency_value, frequency_unit, estimated_duration_minutes, priority, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, content_origin)
-       VALUES (?, ?, ?, 'M3 Working Template', 'preventive', 'inspection', NULL, NULL, 30, 'medium', (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', 'customer', 'authored')
+         maintenance_type, task_kind, frequency_value, frequency_unit, estimated_duration_minutes, priority, knowledge_type_id, task_family_id, maintenance_strategy, trigger_mechanism, knowledge_scope, content_origin,
+         ai_assisted, ai_assistance_detail)
+       VALUES (?, ?, ?, 'M3 Working Template', 'preventive', 'inspection', NULL, NULL, 30, 'medium', (SELECT id FROM knowledge_types WHERE type_code='MAINTENANCE_PROCEDURE'), (SELECT id FROM task_families WHERE family_code='inspect'), 'preventive', 'no_fixed_interval', 'customer', 'authored', FALSE, NULL)
        RETURNING id`,
       [EQUIPMENT_TYPE, orgId, `M3-${uniq()}`]);
     // M6.3 governed knowledge: a governed definition must declare at least one
