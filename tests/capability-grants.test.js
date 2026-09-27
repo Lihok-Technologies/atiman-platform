@@ -15,7 +15,9 @@ const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
 const { Pool } = require('pg');
+const vm = require('node:vm');
 const { getConnection, isIntegrationTest } = require('../src/config/database');
+const { getMyCapabilities } = require('../src/controllers/capability.controller');
 const { resolveCapabilities, REFUSAL_REASONS } = require('../src/services/capability.service');
 const {
   requireCapability, requireAllCapabilities, requirePermissionViaCapability, attachCapabilities
@@ -525,6 +527,13 @@ describe('ATM-003 capability grants (migration 022)', { skip: DB_TEST_SKIP_REASO
       await middleware(request(user), res, () => { advanced = true; });
       return { res, advanced };
     };
+    /** Run against a fully-formed request, for tests that attach state to it. */
+    const runRequest = async (middleware, req) => {
+      const res = response();
+      let advanced = false;
+      await middleware(req, res, () => { advanced = true; });
+      return { res, advanced };
+    };
 
     it('requires an authenticated principal (401, never 403-as-allow)', async () => {
       for (const user of [undefined, null, {}]) {
@@ -647,6 +656,41 @@ describe('ATM-003 capability grants (migration 022)', { skip: DB_TEST_SKIP_REASO
       assert.ok(!req2.capabilities.has('finding.report'), 'explicit mode drops the legacy bundle');
     });
 
+    it('never trusts a capability set that merely exists on the request (VUDA finding)', async () => {
+      const operator = await makeUser('operator');
+
+      // A forged or stale set attached by anything other than this middleware must
+      // not become authority: the guard resolves for itself.
+      const forged = {
+        user: { id: operator },
+        capabilities: new Set(['knowledge.publish', 'platform.admin']),
+        capabilityMode: 'EXPLICIT_GRANTS'
+      };
+      const { res, advanced } = await runRequest(requireCapability('knowledge.publish'), forged);
+      assert.strictEqual(advanced, false, 'a pre-attached capability set must be ignored');
+      assert.strictEqual(res.statusCode, 403);
+
+      // The forged property is overwritten by the authoritative resolution, so a
+      // later consumer cannot read the forged value either.
+      assert.ok(forged.capabilities instanceof Set);
+      assert.strictEqual(forged.capabilities.has('knowledge.publish'), false);
+      assert.strictEqual(forged.capabilities.has('finding.report'), true);
+    });
+
+    it('trusts a set attached by this middleware, giving identical answers either way', async () => {
+      const operator = await makeUser('operator');
+      const req = { user: { id: operator } };
+      await attachCapabilities(req, response(), () => {});
+      const attached = await runRequest(requireCapability('finding.report'), req);
+      assert.strictEqual(attached.advanced, true, 'the authoritative attached set must be honoured');
+
+      // Mutating the public mirror after resolution must not change the guard's answer.
+      req.capabilities.add('knowledge.publish');
+      const afterTamper = await runRequest(requireCapability('knowledge.publish'), req);
+      assert.strictEqual(afterTamper.res.statusCode, 403,
+        'mutating the public mirror must not grant authority');
+    });
+
     it('is not reachable through an API-key principal (machine authority stays separate)', async () => {
       // An API-key principal carries req.apiKey and no human user id; the guard
       // must deny rather than resolve machine authority as a human.
@@ -736,6 +780,126 @@ describe('ATM-003 capability grants (migration 022)', { skip: DB_TEST_SKIP_REASO
         [...LEGACY_COMPATIBILITY_BUNDLES.operator].sort());
       assert.ok(!resolved.capabilities.has('knowledge.author'));
       assert.ok(!resolved.capabilities.has('evidence.attach'));
+    });
+  });
+
+
+  describe('presentation descriptor (milestone 5)', () => {
+    const response = () => {
+      const res = { statusCode: 200, payload: null };
+      res.status = (code) => { res.statusCode = code; return res; };
+      res.json = (body) => { res.payload = body; return res; };
+      return res;
+    };
+    const call = async (user) => {
+      const res = response();
+      await getMyCapabilities({ user }, res, () => {});
+      return res;
+    };
+
+    it('returns the principal capabilities from the same authoritative resolver', async () => {
+      const user = await makeUser('operator');
+      const res = await call({ id: user, organization_id: ORG });
+      assert.strictEqual(res.payload.success, true);
+      assert.deepStrictEqual(res.payload.data.capabilities.sort(),
+        [...LEGACY_COMPATIBILITY_BUNDLES.operator].sort());
+      assert.strictEqual(res.payload.data.presentationOnly, true);
+    });
+
+    it('reflects an explicit grant and keeps the mode out of the descriptor', async () => {
+      const user = await makeUser('admin');
+      const [sql, params] = grant(user, ORG, 'org.config_admin');
+      assert.strictEqual((await attempt(sql, params)).accepted, true);
+
+      const res = await call({ id: user, organization_id: ORG });
+      assert.deepStrictEqual(res.payload.data.capabilities, ['org.config_admin'],
+        'explicit mode must be reflected exactly');
+      assert.ok(!('mode' in res.payload.data), 'resolution mode is not the browser\'s business');
+      assert.ok(!('role' in res.payload.data), 'a role is not authority in the capability model');
+      assert.ok(!('grants' in res.payload.data), 'grant internals must not be exposed');
+      assert.ok(!JSON.stringify(res.payload).includes('granted_by'), 'no granter identity may leak');
+    });
+
+    it('requires authentication and fails closed', async () => {
+      for (const user of [undefined, null, {}]) {
+        const res = await call(user);
+        assert.strictEqual(res.statusCode, 401);
+      }
+      const unresolvable = await call({ id: 987654321, organization_id: ORG });
+      assert.deepStrictEqual(unresolvable.payload.data.capabilities, [],
+        'an unresolvable principal must present no capabilities');
+      assert.strictEqual(unresolvable.payload.data.presentationOnly, true);
+    });
+
+    it('exposes a version stamp that is stable for the same authority and changes with it', async () => {
+      const user = await makeUser('supervisor');
+      const first = await call({ id: user, organization_id: ORG });
+      const second = await call({ id: user, organization_id: ORG });
+      assert.strictEqual(first.payload.data.version, second.payload.data.version,
+        'the same authority must produce the same version');
+
+      const [sql, params] = grant(user, ORG, 'org.user_admin');
+      assert.strictEqual((await attempt(sql, params)).accepted, true);
+      const third = await call({ id: user, organization_id: ORG });
+      assert.notStrictEqual(third.payload.data.version, first.payload.data.version,
+        'a change in authority must change the version so a client can detect staleness');
+    });
+
+    it('exposes the tenant context the capabilities apply to', async () => {
+      const user = await makeUser('operator');
+      const res = await call({ id: user, organization_id: ORG });
+      assert.strictEqual(Number(res.payload.data.organization.id), ORG);
+    });
+
+    it('is wired as GET /api/users/me/capabilities', async () => {
+      const source = fs.readFileSync(path.join(REPO_ROOT, 'src', 'routes', 'user.routes.js'), 'utf8');
+      assert.match(source, /router\.get\('\/me\/capabilities', getMyCapabilities\)/,
+        'the descriptor must be mounted at the specified path');
+      assert.match(source, /router\.use\(authenticate\)/, 'the descriptor route must be authenticated');
+    });
+
+    it('browser descriptor consumer fails closed before loading and on failure', async () => {
+      const clientSource = fs.readFileSync(path.join(REPO_ROOT, 'public', 'js', 'capabilities.js'), 'utf8');
+
+      // Never loaded: no capability may be reported.
+      const neverLoaded = { window: {}, fetch: () => Promise.reject(new Error('offline')) };
+      vm.createContext(neverLoaded);
+      vm.runInContext(clientSource, neverLoaded);
+      assert.strictEqual(neverLoaded.window.atimanCapabilities.isAvailable(), false);
+      assert.strictEqual(neverLoaded.window.atimanCapabilities.hasCapability('knowledge.publish'), false,
+        'an unloaded descriptor must report no capability');
+
+      // Load failure: still closed, with an error surfaced rather than a permissive default.
+      await neverLoaded.window.atimanCapabilities.load();
+      assert.strictEqual(neverLoaded.window.atimanCapabilities.isAvailable(), false);
+      assert.strictEqual(neverLoaded.window.atimanCapabilities.hasCapability('finding.report'), false);
+      assert.ok(neverLoaded.window.atimanCapabilities.state.error, 'the failure must be observable');
+
+      // Successful load: capabilities are reported, and a malformed payload is refused.
+      const ok = {
+        window: {},
+        fetch: () => Promise.resolve({ ok: true, json: () => Promise.resolve({ data: { capabilities: ['finding.report'], organization: { id: ORG }, version: 'v1' } }) })
+      };
+      vm.createContext(ok); vm.runInContext(clientSource, ok);
+      await ok.window.atimanCapabilities.load();
+      assert.strictEqual(ok.window.atimanCapabilities.hasCapability('finding.report'), true);
+      assert.strictEqual(ok.window.atimanCapabilities.hasCapability('platform.admin'), false);
+
+      const malformed = { window: {}, fetch: () => Promise.resolve({ ok: true, json: () => Promise.resolve({ data: {} }) }) };
+      vm.createContext(malformed); vm.runInContext(clientSource, malformed);
+      await malformed.window.atimanCapabilities.load();
+      assert.strictEqual(malformed.window.atimanCapabilities.isAvailable(), false,
+        'a malformed descriptor must leave the client closed');
+    });
+
+    it('no longer ships a duplicated client authorization matrix', async () => {
+      const client = fs.readFileSync(path.join(REPO_ROOT, 'public', 'js', 'permissions.js'), 'utf8');
+      assert.ok(!/const PERMISSIONS = \{/.test(client),
+        'the duplicated client permission matrix must be gone');
+      assert.ok(!/PERMISSIONS\[/.test(client), 'no matrix lookups may remain');
+      assert.match(client, /function getUserRole/, 'the role display helper is still required by auth-check.js');
+      assert.match(client, /function hasCapability/, 'capability presentation must be available');
+      assert.match(client, /window\.atimanCapabilities/, 'capability checks must delegate to the descriptor');
     });
   });
 

@@ -25,27 +25,57 @@ const { resolveCapabilities } = require('../services/capability.service');
  * Attached once per request. A resolution failure attaches an empty set and a
  * reason rather than throwing, so downstream guards fail closed.
  */
+/**
+ * Private resolution marker.
+ *
+ * A capability set is trusted ONLY when this module resolved it for this request.
+ * `req.capabilities` is exposed for read-only consumers (the descriptor, view
+ * rendering), but a guard never trusts that public property: a Set that merely
+ * exists on the request — set by a stale middleware, a test double, or any future
+ * code path — must not become authority. The marker is a module-private Symbol,
+ * which a request body, query, header or client-supplied value cannot produce.
+ */
+const RESOLVED = Symbol('atiman.capabilities.resolved');
+
+const storeResolution = (req, resolved) => {
+  Object.defineProperty(req, RESOLVED, {
+    value: resolved,
+    enumerable: false,
+    configurable: true,
+    writable: true
+  });
+  // Public SNAPSHOT for presentation consumers. It is a separate Set, so mutating
+  // it — by a view helper, a stale middleware or any future code — cannot change
+  // what the guards authorize. Guards read the private resolution above and never
+  // this property.
+  req.capabilities = new Set(resolved.capabilities);
+  req.capabilityMode = resolved.mode;
+  req.capabilityReason = resolved.reason;
+  return resolved.capabilities;
+};
+
 const attachCapabilities = async (req, res, next) => {
   try {
-    const resolved = await resolveCapabilities(req.user);
-    req.capabilities = resolved.capabilities;
-    req.capabilityMode = resolved.mode;
-    req.capabilityReason = resolved.reason;
+    storeResolution(req, await resolveCapabilities(req.user));
   } catch {
-    req.capabilities = new Set();
-    req.capabilityMode = null;
-    req.capabilityReason = 'RESOLVER_ERROR';
+    storeResolution(req, { mode: null, capabilities: new Set(), reason: 'RESOLVER_ERROR' });
   }
   next();
 };
 
+/**
+ * The capabilities a guard may rely on: the server-resolved set for this request,
+ * or a fresh resolution. A pre-existing `req.capabilities` is ignored.
+ */
 const capabilitiesFor = async (req) => {
-  if (req.capabilities instanceof Set) return req.capabilities;
-  const resolved = await resolveCapabilities(req.user);
-  req.capabilities = resolved.capabilities;
-  req.capabilityMode = resolved.mode;
-  req.capabilityReason = resolved.reason;
-  return req.capabilities;
+  const already = req[RESOLVED];
+  if (already) return already.capabilities;
+
+  try {
+    return storeResolution(req, await resolveCapabilities(req.user));
+  } catch {
+    return storeResolution(req, { mode: null, capabilities: new Set(), reason: 'RESOLVER_ERROR' });
+  }
 };
 
 /**

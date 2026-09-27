@@ -9,13 +9,22 @@ const { User, Facility } = require('../models');
 const { authenticate, requireAdmin, requireSupervisor } = require('../middleware/auth');
 const { requirePermission, canCreateUser, canManageUser, getUserPermissions } = require('../middleware/rbac');
 const { validateAvailableSeats, validateReactivation, checkSeatUsage } = require('../middleware/seat-validation');
+const { getMyCapabilities } = require('../controllers/capability.controller');
 
 router.use(authenticate);
 
 /**
- * Get current user permissions
+ * Get current user permissions (legacy role-shaped view; presentation only)
  */
 router.get('/me/permissions', getUserPermissions);
+
+/**
+ * ATM-003 capability presentation descriptor.
+ *
+ * Presentation only: it tells the UI what to show. Every protected operation is
+ * authorized server-side by the capability guard from the same resolver.
+ */
+router.get('/me/capabilities', getMyCapabilities);
 
 /**
  * Get all users (with facility info) - admin and supervisor only
