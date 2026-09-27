@@ -55,6 +55,16 @@ Generic **Dashboard**, **Reports**, **Calendar**, **Schedules**, **Work Orders**
 **Custom Fields** and **Coverage** are not V1 destinations. Each is either EAM-owned, retired, or a
 platform/admin concern (§4).
 
+**A standalone AI destination is also rejected**: there is no "AI", "Assistant" or chat destination, and
+no persistent AI surface anywhere in the information architecture. AI appears inside work, at the point
+of need (R1 §2 E; R5 §8; R6 §8). This is stated here explicitly because the historically drafted legacy
+pattern "persistent AI chat bolted onto screens" (draft §16) is exactly the kind of surface an IA can
+reintroduce by accident.
+
+*Correction (2026-09-27, VUDA of the ATM-002 campaign): this record previously left the AI destination
+implicit and did not name it in the rejected list. The decision is unchanged — R1 §2 E already ratifies
+contextual-only AI — and the omission is corrected here rather than left to inference.*
+
 ---
 
 ## 3. Navigation principles
