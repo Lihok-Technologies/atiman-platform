@@ -74,6 +74,9 @@ const DB_MUTATING_SUITES = [
   'asset-context.test.js',
   // ATM-002-I2E report / observation capture (writes real Observations for two tenants).
   'report-capture.test.js',
+  // ATM-001-K3 knowledge accession authority (writes real sources, versions and
+  // working evidence; issues and revokes a real capability grant).
+  'knowledge-accession-authority.test.js',
   'step6-access-control.test.js',
   'step6-coverage-e2e.test.js',
   'step6-performance.test.js',
@@ -108,7 +111,8 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'atiman-shell.test.js',
   'observation-foundation.test.js',
   'asset-context.test.js',
-  'report-capture.test.js'
+  'report-capture.test.js',
+  'knowledge-accession-authority.test.js'
 ];
 
 const REPO_ROOT = path.resolve(__dirname, '..');

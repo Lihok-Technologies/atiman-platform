@@ -70,7 +70,11 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'tests/asset-context.test.js',
   // ATM-002-I2E: report / observation capture — the first real Atiman field
   // workflow, end to end, with a truthful confirmation.
-  'tests/report-capture.test.js'
+  'tests/report-capture.test.js',
+  // ATM-001-K3: knowledge accession authority — the four provenance mutation
+  // routes require knowledge.author instead of the legacy TASKS.CREATE/UPDATE
+  // matrix, so a grantable accession authority exists for the SME.
+  'tests/knowledge-accession-authority.test.js'
 ];
 
 /**
