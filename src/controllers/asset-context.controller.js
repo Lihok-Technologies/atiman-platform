@@ -27,6 +27,14 @@ const {
 } = require('../services/asset-context.service');
 
 /**
+ * Recording an observation is an accountable act, so the Report action appears
+ * here only when the principal actually holds `finding.report`. Client visibility
+ * is presentation only: the Report route enforces the same capability server-side,
+ * so hiding the control is never the enforcement.
+ */
+const REPORT_CAPABILITY = 'finding.report';
+
+/**
  * Read exactly one identifier out of the query string.
  *
  * `token` and `code` are the only two identifier kinds the resolver accepts, and
@@ -62,6 +70,7 @@ const getAssetContext = async (req, res, next) => {
     const resolved = await resolveCapabilities(req.user);
     const shell = {
       workNavigation: composeWorkNavigation(resolved.capabilities),
+      canReport: resolved.capabilities.has(REPORT_CAPABILITY),
       organizationName: req.organization?.organization_name
         || req.user.organization_name
         || null,
@@ -90,6 +99,13 @@ const getAssetContext = async (req, res, next) => {
     );
     const asset = resolution.asset;
 
+    // The Report hand-off carries the identifier the operator arrived with, never
+    // an asset id: the Report route re-resolves it against the trusted tenant, so a
+    // browser-supplied asset identifier is never authority.
+    const reportHref = asset
+      ? `/atiman/report?${read.identifier.type === IDENTIFIER_TYPES.QR_TOKEN ? 'token' : 'code'}=${encodeURIComponent(read.identifier.value)}`
+      : null;
+
     return res.render('atiman/asset-context', {
       layout: 'atiman/layout',
       title: asset && asset.name ? asset.name : 'Asset',
@@ -97,7 +113,8 @@ const getAssetContext = async (req, res, next) => {
       ...shell,
       state: resolution.outcome === RESOLUTION_OUTCOMES.RESOLVED ? 'RESOLVED' : 'UNRESOLVED',
       outcome: resolution.outcome,
-      asset
+      asset,
+      reportHref
     });
   } catch (error) {
     return next(error);

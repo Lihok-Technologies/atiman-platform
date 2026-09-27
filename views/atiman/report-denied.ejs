@@ -1,0 +1,39 @@
+<%#
+  Atiman Report — capability denial page (ATM-002-I2E).
+
+  Rendered when the canonical ATM-003 capability middleware refuses
+  `finding.report`. It states the decision plainly and reveals no asset, no
+  product state and no authority detail. No role or userRole appears here: the
+  decision is a capability decision, and the page says so in the operator's terms.
+%>
+<div class="atiman-stack">
+  <section class="atiman-card" aria-labelledby="report-denied-heading">
+    <h2 class="atiman-card__title" id="report-denied-heading">Reporting is not available for your account</h2>
+    <p class="atiman-note">
+      Your account does not currently hold the authority to record observations.
+      Nothing has been recorded and nothing has been changed.
+    </p>
+    <p class="atiman-card__note">
+      If you believe you should be able to report observations against your
+      organization's assets, ask an administrator to review your account's
+      capabilities.
+    </p>
+  </section>
+
+  <section class="atiman-card" aria-labelledby="report-denied-next-heading">
+    <h2 class="atiman-card__title" id="report-denied-next-heading">Where you can go</h2>
+    <div class="atiman-stack">
+      <a class="atiman-action" href="/today">
+        <span><span class="atiman-action__label">Today</span></span>
+        <span aria-hidden="true">›</span>
+      </a>
+      <a class="atiman-action" href="/atiman/asset">
+        <span>
+          <span class="atiman-action__label">Look up an asset</span>
+          <span class="atiman-action__hint">Identity and operating context only</span>
+        </span>
+        <span aria-hidden="true">›</span>
+      </a>
+    </div>
+  </section>
+</div>

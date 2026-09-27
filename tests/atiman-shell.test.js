@@ -199,9 +199,27 @@ describe('ATM-002-I1 Atiman application shell', { skip: DB_TEST_SKIP_REASON }, (
     it('withheld destinations are reported, not silently missing', async () => {
       const resolved = await resolveCapabilities({ id: SUPERVISOR });
       const withheld = withheldDestinations(resolved.capabilities).map((d) => d.id);
-      for (const id of ['inspect', 'report', 'assess', 'monitor', 'escalate']) {
-        assert.ok(withheld.includes(id), `${id} must be reported as withheld`);
+      const available = composeWorkNavigation(resolved.capabilities).map((d) => d.id);
+
+      // ATM-002-I2E implemented observation capture, so Report is no longer withheld
+      // for a supervisor: it is a real destination that a `finding.report` holder
+      // reaches. That changes WHICH destinations are withheld; the invariant this
+      // test protects is unchanged and is asserted more strictly than before —
+      // every registered destination is accounted for exactly once, and the
+      // destinations that remain unimplemented are still reported rather than
+      // silently missing.
+      assert.deepStrictEqual(
+        new Set([...available, ...withheld]),
+        new Set(DESTINATIONS.map((d) => d.id)),
+        'every registered destination must be either available or reported as withheld');
+      assert.strictEqual(available.length + withheld.length, DESTINATIONS.length,
+        'no destination may be both available and withheld');
+      for (const id of ['inspect', 'assess', 'monitor', 'escalate']) {
+        assert.ok(withheld.includes(id), `${id} must still be reported as withheld`);
       }
+      assert.ok(available.includes('report'),
+        'ATM-002-I2E: Report is implemented and therefore available to a finding.report holder');
+      assert.ok(available.includes('today'));
     });
   });
 

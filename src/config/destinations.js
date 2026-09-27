@@ -16,9 +16,11 @@
  * capability model (ATM-003 milestone 3, KNOWLEDGE.VIEW → authenticated-only).
  */
 
+// `REPORT` was removed in ATM-002-I2E: observation capture is implemented, so a
+// reason for Report being unavailable no longer exists and leaving one here would
+// be a false statement inside the source of truth for availability.
 const UNAVAILABLE = Object.freeze({
   INSPECT: 'inspection execution is not implemented',
-  REPORT: 'finding reporting is not implemented',
   ASSESS: 'finding assessment is not implemented',
   MONITOR: 'monitoring is not implemented',
   ESCALATE: 'escalation is not implemented'
@@ -44,10 +46,14 @@ const DESTINATIONS = Object.freeze([
   Object.freeze({
     id: 'report',
     label: 'Report',
-    href: null,
+    // ATM-002-I2E: observation capture is implemented, so Report is a real
+    // destination. It records an observation and nothing else — no Finding, no
+    // outcome, no work order. Availability is still evaluated before capability,
+    // so enabling it here cannot surface it to a principal who does not hold
+    // `finding.report`.
+    href: '/atiman/report',
     capability: 'finding.report',
-    available: false,
-    unavailableReason: UNAVAILABLE.REPORT
+    available: true
   }),
   Object.freeze({
     id: 'assess',

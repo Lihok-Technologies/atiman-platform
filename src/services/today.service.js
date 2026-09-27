@@ -116,12 +116,16 @@ function availableActions(capabilities = new Set()) {
       href: null
     });
   }
+  // Report is implemented (ATM-002-I2E): it records an observation against an
+  // asset and creates no Finding, no outcome and no work order. The hint says
+  // exactly that, because a "report" that turned out to raise maintenance work
+  // would misrepresent the product.
   if (held.has('finding.report')) {
     actions.push({
-      id: 'reporting-unavailable',
-      label: 'Report a finding',
-      hint: 'Finding reporting is approved but not implemented yet',
-      href: null
+      id: 'report',
+      label: 'Report an observation',
+      hint: 'Record what you observed about an asset. No Finding is created.',
+      href: '/atiman/report'
     });
   }
   if (held.has('inspection.execute')) {
