@@ -122,11 +122,50 @@ class KnowledgeSourceModel extends BaseModel {
     return this.findSourceById(rows.insertId, organizationId);
   }
 
-  /** Tenant-scoped read: global sources plus the caller's organization. */
+  /**
+   * READ scope: global sources plus the caller's own organization.
+   *
+   * Deliberately global-inclusive, because a tenant may DISCOVER and CITE shared
+   * reference provenance (ATM-000 §4 — shared knowledge is referenceable but
+   * immutable to tenants; migration 011 — "Global source (NULL org) supports any
+   * template").
+   *
+   * This predicate answers "may the caller SEE this source". It must NEVER
+   * authorize a write: a global source has a NULL organization, so it satisfies
+   * this predicate for every tenant. Write authorization uses
+   * `findTenantWritableSourceById` below.
+   */
   async findSourceById(id, organizationId) {
     const rows = await this.query(
       `SELECT * FROM knowledge_sources
         WHERE id = ? AND (organization_id IS NULL OR organization_id = ?)`,
+      [id, organizationId]
+    );
+    return rows[0] || null;
+  }
+
+  /**
+   * WRITE scope: strictly the caller's own organization.
+   *
+   * The tenant write predicate, kept separate from the read predicate above so the
+   * two cannot be confused again — conflating them is ATM-001-K3-R1 MAJOR-1.
+   * `organization_id = ?` is exact equality, so a global source
+   * (`organization_id IS NULL`) can never satisfy it: NULL equals nothing. A caller
+   * with no organization has no tenant write scope at all.
+   *
+   * Global reference provenance remains a system/OWNER act (ATM-001 M3; M5R3A
+   * §3.2/§3.3). The application deliberately has no tenant-callable global path,
+   * and the executable OWNER mechanism is a direct, governed database operation
+   * outside the tenant authoring path (M5R3A §3.4) — not an application authority
+   * that this predicate could check. So there is no in-application global writer to
+   * admit here, and none is invented.
+   */
+  async findTenantWritableSourceById(id, organizationId) {
+    if (!organizationId) return null;
+
+    const rows = await this.query(
+      `SELECT * FROM knowledge_sources
+        WHERE id = ? AND organization_id = ?`,
       [id, organizationId]
     );
     return rows[0] || null;
@@ -168,15 +207,32 @@ class KnowledgeSourceVersionModel extends BaseModel {
   /**
    * Create an immutable source version.
    *
-   * The parent source must exist within the caller's tenant scope. There is no
-   * update or delete counterpart: migration 011 makes the row immutable and
-   * refuses deletion once evidence references it.
+   * The parent source must be WRITABLE by the caller's tenant — its own
+   * organization, exactly. Existence within READ scope is deliberately not
+   * sufficient: a tenant may read and cite global reference provenance but must not
+   * author into it. Authorizing through the global-inclusive read predicate let a
+   * tenant write a new version into a shared lineage (ATM-001-K3-R1 MAJOR-1).
+   *
+   * There is no update or delete counterpart: migration 011 makes the row
+   * immutable and refuses deletion once evidence references it.
    */
   async createVersion(knowledgeSourceId, input, { organizationId, userId }) {
     assertValid(validateSourceVersionInput(input));
 
-    const source = await KnowledgeSource.findSourceById(knowledgeSourceId, organizationId);
+    const source = await KnowledgeSource.findTenantWritableSourceById(knowledgeSourceId, organizationId);
     if (!source) {
+      // Explain a global source (visible to the caller, but not tenant-writable)
+      // without disclosing an absent or foreign one. This lookup runs ONLY after
+      // write authority has already been refused, and its result authorizes
+      // nothing — it exists so the refusal tells the truth about which rule was hit.
+      const visible = await KnowledgeSource.findSourceById(knowledgeSourceId, organizationId);
+      if (visible && visible.organization_id === null) {
+        throw new ProvenanceConflictError(
+          'Global/shared reference provenance is a system/OWNER act: a tenant may read and cite a global '
+            + 'source and its immutable versions, but cannot author a new version into it',
+          'SOURCE_NOT_TENANT_WRITABLE'
+        );
+      }
       throw new ProvenanceNotFoundError('Knowledge source not found');
     }
 

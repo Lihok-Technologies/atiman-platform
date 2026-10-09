@@ -785,6 +785,63 @@ describe('ATM-003 capability grants (migration 022)', { skip: DB_TEST_SKIP_REASO
     });
   });
 
+  describe('provenance route guard-to-capability mapping (ATM-001-K3-G2)', () => {
+    /**
+     * The blind spot that let the ATM-001-K3 discrepancy through: the parity
+     * block above checks BUNDLE membership, and the K3 accession suite checked a
+     * route-guard TOTAL. Nothing cross-checked which capability actually guards
+     * which provenance route — so a principal could reach an accountable act
+     * through a capability whose bundle the less-privileged mapping deliberately
+     * withheld, and every test still passed.
+     *
+     * This block binds the two halves together: the OWNER-approved per-route
+     * guard map, and the bundle membership that map must agree with. Either half
+     * drifting now fails here.
+     */
+    const ROUTES_FILE = path.join(REPO_ROOT, 'src', 'routes', 'knowledge-provenance.routes.js');
+
+    const codeOnly = () => fs.readFileSync(ROUTES_FILE, 'utf8')
+      .split('\n')
+      .filter((line) => !/^\s*(\*|\/\/|\/\*)/.test(line))
+      .join('\n');
+
+    it('binds each provenance mutation route to its OWNER-approved capability', () => {
+      const code = codeOnly();
+
+      assert.match(code, /router\.post\('\/sources', requireCapability\('knowledge\.author'\)/,
+        'POST /sources must require knowledge.author');
+      assert.match(code, /router\.post\('\/sources\/:id\/versions', requireCapability\('knowledge\.author'\)/,
+        'POST /sources/:id/versions must require knowledge.author');
+      assert.match(code, /router\.post\('\/templates\/:templateId\/evidence', requireCapability\('evidence\.attach'\)/,
+        'POST /templates/:templateId/evidence must require evidence.attach');
+      assert.match(code, /router\.delete\('\/templates\/:templateId\/evidence\/:evidenceId', requireCapability\('evidence\.attach'\)/,
+        'DELETE /templates/:templateId/evidence/:evidenceId must require evidence.attach');
+
+      assert.strictEqual((code.match(/requireCapability\('knowledge\.author'\)/g) || []).length, 2);
+      assert.strictEqual((code.match(/requireCapability\('evidence\.attach'\)/g) || []).length, 2);
+      assert.strictEqual((code.match(/requirePermission\('KNOWLEDGE', 'VIEW'\)/g) || []).length, 3,
+        'the three read routes keep KNOWLEDGE.VIEW');
+      assert.doesNotMatch(code, /requirePermission\('TASKS'/,
+        'the provenance routes must not regress to the legacy TASKS matrix');
+    });
+
+    it('keeps the guard map consistent with the less-privileged compatibility bundles', () => {
+      // evidence.attach was admin-only before the capability model (the PRE_CHANGE
+      // oracle above), so it must stay out of the supervisor and operator bundles
+      // (ATM-003-R3 section 4). knowledge.author was admin+supervisor, so the
+      // authoring routes are legitimately reachable by a supervisor without an
+      // explicit grant. If either the guards or the bundles move, they disagree.
+      assert.ok(LEGACY_COMPATIBILITY_BUNDLES.admin.includes('evidence.attach'));
+      assert.ok(!LEGACY_COMPATIBILITY_BUNDLES.supervisor.includes('evidence.attach'),
+        'the supervisor must need an explicit evidence.attach grant');
+      assert.ok(!LEGACY_COMPATIBILITY_BUNDLES.operator.includes('evidence.attach'));
+
+      assert.ok(LEGACY_COMPATIBILITY_BUNDLES.admin.includes('knowledge.author'));
+      assert.ok(LEGACY_COMPATIBILITY_BUNDLES.supervisor.includes('knowledge.author'));
+      assert.ok(!LEGACY_COMPATIBILITY_BUNDLES.operator.includes('knowledge.author'));
+    });
+  });
+
 
   describe('presentation descriptor (milestone 5)', () => {
     const response = () => {
