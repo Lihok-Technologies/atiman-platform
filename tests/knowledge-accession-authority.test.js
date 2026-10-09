@@ -1,31 +1,37 @@
 /**
- * Knowledge Accession Authority — ATM-001-K3 focused suite
+ * Knowledge Accession Authority — ATM-001-K3 / ATM-001-K3-G2 focused suite
  *
  * ATM-001-K3 — SME ACCESSION AUTHORITY & EVIDENCE ENTRY POINT.
+ * ATM-001-K3-G2 — KNOWLEDGE PROVENANCE AUTHORIZATION MAPPING (OWNER-approved
+ * Option B of the G1 reconciliation).
  *
- * This file proves the authority seam ONLY. It authors no knowledge, creates no
- * real source or evidence of record, changes no schema, and does not touch the
+ * This file proves the authority seam ONLY. It authors no real knowledge, creates
+ * no source or evidence of record, changes no schema, and does not touch the
  * legacy TASKS.CREATE / TASKS.UPDATE seam that still guards Knowledge Pack and
- * Standards Crosswalk authoring (out of K3's bounded scope).
+ * Standards Crosswalk authoring (out of this change's bounded scope).
  *
- * What changed
- * ------------
- * The four provenance MUTATION routes moved from `requirePermission('TASKS', …)`
- * to `requireCapability('knowledge.author')`. The three READ routes keep
- * `requirePermission('KNOWLEDGE', 'VIEW')` unchanged.
+ * The approved mapping (docs/architecture/ATM-001-K3-G2-…)
+ * --------------------------------------------------------
+ *   knowledge.author   POST /sources, POST /sources/:id/versions
+ *     Authoring a provenance source identity and its immutable editions
+ *     (`created_by_user_id`; ATM-003-R1 §3.1 "Create and edit a draft definition").
+ *   evidence.attach    POST /templates/:id/evidence, DELETE …/evidence/:id
+ *     Attaching and detaching provenance evidence on a working definition or step
+ *     (`added_by_user_id`; ATM-003-R1 §3.1 "Attach provenance evidence to a
+ *     definition or step").
+ *   KNOWLEDGE.VIEW     the three read routes, unchanged.
  *
- * The authority question was not invented here. M3 authored these routes and
- * recorded it as a known inconsistency ("task-template authoring routes use
- * requireAdmin (admin + supervisor) while this path uses the stricter admin-only
- * capability. Aligning them is a separate decision"), with the rationale that
- * "provenance authoring is an act of authoring working maintenance knowledge,
- * which is what the TASKS authoring capabilities already govern". K3 is that
- * separate decision, and `knowledge.author` is that capability.
+ * Why the mapping changed. ATM-001-K3 (commit 3aa5bbd) placed all four mutation
+ * routes under `knowledge.author`. Because the legacy supervisor bundle holds
+ * `knowledge.author` but deliberately excludes `evidence.attach` (ATM-003-R3 §3/§4,
+ * under the OWNER adjudication of 2026-09-27 §7 — "do not silently grant an
+ * existing role an action it could not previously perform"), the supervisor
+ * silently gained provenance evidence attachment and the recorded recovery
+ * ("explicit grant of evidence.attach") conferred nothing. K3-G2 reconciles the
+ * routes with ATM-003-R1 §3.1's two accountable acts and two attribution columns.
  *
- * Consequence under test: whoever holds `knowledge.author` may accession a source
- * and cite it. Under the legacy bundles that is admin and supervisor; under
- * EXPLICIT_GRANTS it is whoever the tenant granted it to. Nobody gains review,
- * approval, safety review or publication authority by this change.
+ * Capability bundles are unchanged. A principal needing both acts receives both
+ * capabilities through explicit grants.
  *
  * Database-mutating suite: gated on isIntegrationTest(), the same predicate
  * src/config/database.js uses to select test-database credentials.
@@ -55,15 +61,18 @@ const DB_TEST_SKIP_REASON = isIntegrationTest()
 // database, and every fixture uses `ON CONFLICT (id) DO NOTHING`, so a colliding
 // id is not an error — it is a silent substitution of another suite's principal,
 // with another suite's role and organization. `9994xx` is unused corpus-wide, and
-// R12 asserts that mechanically so the collision cannot return unnoticed.
+// R15 asserts that mechanically so the collision cannot return unnoticed.
 const ORG = 999401;
 const ORG_B = 999402;
-const ADMIN = 999411;         // legacy bundle: knowledge.author
-const SUPERVISOR = 999412;    // legacy bundle: knowledge.author — gains the four routes
-const OPERATOR = 999413;      // legacy bundle: no knowledge.author
-const SME = 999414;           // operator role + EXPLICIT knowledge.author grant
-const FOREIGN_SME = 999415;   // ORG_B operator + EXPLICIT knowledge.author grant
-const FOREIGN_ADMIN = 999416; // ORG_B admin, grantor of FOREIGN_SME
+const ADMIN = 999411;          // legacy bundle: knowledge.author + evidence.attach
+const SUPERVISOR = 999412;     // legacy bundle: knowledge.author only
+const OPERATOR = 999413;       // legacy bundle: neither
+const SME = 999414;            // operator + EXPLICIT knowledge.author
+const FOREIGN_SME = 999415;    // ORG_B operator + EXPLICIT knowledge.author + evidence.attach
+const FOREIGN_ADMIN = 999416;  // ORG_B admin, grantor for ORG_B
+const EV_ONLY = 999417;        // operator + EXPLICIT evidence.attach only
+const STEWARD = 999418;        // operator + EXPLICIT knowledge.author + evidence.attach
+const SUPERVISOR_EV = 999419;  // supervisor + EXPLICIT evidence.attach only
 const CATEGORY = 999421;
 const CLASS = 999422;
 const EQUIPMENT_TYPE = 999423;
@@ -121,7 +130,10 @@ async function ensureFixture() {
       [OPERATOR, 'k3-operator', 'operator', ORG],
       [SME, 'k3-sme', 'operator', ORG],
       [FOREIGN_SME, 'k3-foreign-sme', 'operator', ORG_B],
-      [FOREIGN_ADMIN, 'k3-foreign-admin', 'admin', ORG_B]
+      [FOREIGN_ADMIN, 'k3-foreign-admin', 'admin', ORG_B],
+      [EV_ONLY, 'k3-evidence-only', 'operator', ORG],
+      [STEWARD, 'k3-steward', 'operator', ORG],
+      [SUPERVISOR_EV, 'k3-supervisor-events', 'supervisor', ORG]
     ]) {
       await query(conn,
         `INSERT INTO users (id, username, email, password_hash, full_name, role, organization_id, is_active)
@@ -129,10 +141,17 @@ async function ensureFixture() {
         [id, username, `${username}@test.local`, role, orgId]);
     }
 
-    // The SME accession authority under test: an explicit grant of the SAME
-    // capability the task-template authoring routes already require.
+    // Explicit grants are issued per accountable act. Migration 022 refuses a
+    // grant whose grantor is outside the grant's organization, so each tenant is
+    // granted by its own administrator (who holds both capabilities via the admin
+    // bundle and therefore does not depend on this suite's grants).
     await grantCapability(conn, SME, ORG, 'knowledge.author', ADMIN);
     await grantCapability(conn, FOREIGN_SME, ORG_B, 'knowledge.author', FOREIGN_ADMIN);
+    await grantCapability(conn, FOREIGN_SME, ORG_B, 'evidence.attach', FOREIGN_ADMIN);
+    await grantCapability(conn, EV_ONLY, ORG, 'evidence.attach', ADMIN);
+    await grantCapability(conn, STEWARD, ORG, 'knowledge.author', ADMIN);
+    await grantCapability(conn, STEWARD, ORG, 'evidence.attach', ADMIN);
+    await grantCapability(conn, SUPERVISOR_EV, ORG, 'evidence.attach', ADMIN);
 
     await query(conn, `INSERT INTO equipment_categories (id, category_code, category_name)
       VALUES (?, 'K3CAT', 'K3 Category') ON CONFLICT (id) DO NOTHING`, [CATEGORY]);
@@ -229,10 +248,19 @@ async function authorSourceAndVersion(userId) {
   return { sourceId, versionId: version.body.data.version.id };
 }
 
+/** Attach working evidence through the real API and return its id. */
+async function attachEvidence(templateId, versionId, userId) {
+  const res = await call('POST', `/api/knowledge-provenance/templates/${templateId}/evidence`, {
+    userId, body: evidencePayload(versionId)
+  });
+  assert.strictEqual(res.status, 201, `evidence attachment failed: ${JSON.stringify(res.body)}`);
+  return res.body.data.evidence.id;
+}
+
 /** The four mutation routes, for the "all four behave alike" checks. */
 const MUTATIONS = ['sources', 'versions', 'attach', 'detach'];
 
-describe('Knowledge Accession Authority (ATM-001-K3)', { skip: DB_TEST_SKIP_REASON }, () => {
+describe('Knowledge Accession Authority (ATM-001-K3 / K3-G2)', { skip: DB_TEST_SKIP_REASON }, () => {
   before(async () => {
     await ensureFixture();
     process.env.NODE_ENV = 'test';
@@ -244,7 +272,7 @@ describe('Knowledge Accession Authority (ATM-001-K3)', { skip: DB_TEST_SKIP_REAS
   });
 
   // =========================================================================
-  // The seam as repaired: the same authority as the authoring routes
+  // knowledge.author — the authoring half (sources and editions)
   // =========================================================================
 
   it('R1 — a principal holding knowledge.author accessions a source (created_by recorded)', async () => {
@@ -264,50 +292,64 @@ describe('Knowledge Accession Authority (ATM-001-K3)', { skip: DB_TEST_SKIP_REAS
     assert.ok(versionId > 0, 'source version must be created');
   });
 
-  it('R3 — the same principal attaches working evidence (added_by_user_id recorded)', async () => {
+  // =========================================================================
+  // evidence.attach — the citation half, and why the supervisor needs a grant
+  // =========================================================================
+
+  it('R3 — a legacy supervisor holding knowledge.author but NOT evidence.attach is refused on evidence attachment', async () => {
     const templateId = await createWorkingTemplate();
-    const { versionId } = await authorSourceAndVersion(SUPERVISOR);
+    const { versionId } = await authorSourceAndVersion(ADMIN);
+
     const res = await call('POST', `/api/knowledge-provenance/templates/${templateId}/evidence`, {
       userId: SUPERVISOR, body: evidencePayload(versionId)
     });
-    assert.strictEqual(res.status, 201, `expected 201, got ${res.status}: ${JSON.stringify(res.body)}`);
-    // ATM-003-R1 §3.1 names added_by_user_id as the enforcement evidence for
-    // evidence.attach; the accountability record must survive the seam change.
-    assert.strictEqual(Number(res.body.data.evidence.added_by_user_id), SUPERVISOR);
+    assert.strictEqual(res.status, 403,
+      `legacy supervisor must not gain evidence attachment: ${JSON.stringify(res.body)}`);
+    assert.match(String(res.body.message), /evidence\.attach/,
+      'the refusal must name the required capability');
+
+    // Nothing was written: a capability refusal is not a partial write.
+    const rows = await withConn((conn) => query(conn,
+      `SELECT COUNT(*)::int AS n FROM knowledge_template_evidence
+        WHERE task_template_id = ? AND knowledge_source_version_id = ?`, [templateId, versionId]));
+    assert.strictEqual(Number(rows[0].n), 0, 'a refused attachment must create no evidence row');
   });
 
-  it('R4 — the same principal detaches working evidence', async () => {
+  it('R4 — the same supervisor is refused on evidence detachment', async () => {
     const templateId = await createWorkingTemplate();
-    const { versionId } = await authorSourceAndVersion(SUPERVISOR);
-    const attached = await call('POST', `/api/knowledge-provenance/templates/${templateId}/evidence`, {
-      userId: SUPERVISOR, body: evidencePayload(versionId)
-    });
-    assert.strictEqual(attached.status, 201);
+    const { versionId } = await authorSourceAndVersion(ADMIN);
+    const evidenceId = await attachEvidence(templateId, versionId, ADMIN);
 
     const res = await call('DELETE',
-      `/api/knowledge-provenance/templates/${templateId}/evidence/${attached.body.data.evidence.id}`,
+      `/api/knowledge-provenance/templates/${templateId}/evidence/${evidenceId}`,
       { userId: SUPERVISOR });
-    assert.strictEqual(res.status, 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert.strictEqual(res.status, 403,
+      `legacy supervisor must not gain evidence detachment: ${JSON.stringify(res.body)}`);
+    assert.match(String(res.body.message), /evidence\.attach/);
+
+    const rows = await withConn((conn) => query(conn,
+      `SELECT COUNT(*)::int AS n FROM knowledge_template_evidence WHERE id = ?`, [evidenceId]));
+    assert.strictEqual(Number(rows[0].n), 1, 'the refused detach must not remove the row');
   });
 
-  it('R5 — a principal without knowledge.author is refused on all four mutations, fail-closed', async () => {
+  it('R5 — a principal holding neither capability is refused on all four mutations, naming the capability per route', async () => {
     const templateId = await createWorkingTemplate();
     const { versionId } = await authorSourceAndVersion(ADMIN);
 
     const attempts = [
-      ['sources', () => call('POST', '/api/knowledge-provenance/sources', { userId: OPERATOR, body: sourcePayload() })],
-      ['versions', () => call('POST', '/api/knowledge-provenance/sources/1/versions', { userId: OPERATOR, body: versionPayload() })],
-      ['attach', () => call('POST', `/api/knowledge-provenance/templates/${templateId}/evidence`, { userId: OPERATOR, body: evidencePayload(versionId) })],
-      ['detach', () => call('DELETE', `/api/knowledge-provenance/templates/${templateId}/evidence/1`, { userId: OPERATOR })]
+      ['sources', 'knowledge.author', () => call('POST', '/api/knowledge-provenance/sources', { userId: OPERATOR, body: sourcePayload() })],
+      ['versions', 'knowledge.author', () => call('POST', '/api/knowledge-provenance/sources/1/versions', { userId: OPERATOR, body: versionPayload() })],
+      ['attach', 'evidence.attach', () => call('POST', `/api/knowledge-provenance/templates/${templateId}/evidence`, { userId: OPERATOR, body: evidencePayload(versionId) })],
+      ['detach', 'evidence.attach', () => call('DELETE', `/api/knowledge-provenance/templates/${templateId}/evidence/1`, { userId: OPERATOR })]
     ];
 
-    for (const [label, attempt] of attempts) {
+    for (const [label, capability, attempt] of attempts) {
       const res = await attempt();
       assert.strictEqual(res.status, 403, `${label}: expected 403, got ${res.status}: ${JSON.stringify(res.body)}`);
-      // The refusal must name the capability, proving the guard is capability-based
-      // rather than satisfied by the legacy role matrix.
-      assert.match(String(res.body.message), /knowledge\.author/,
-        `${label}: refusal must name the required capability, got ${JSON.stringify(res.body)}`);
+      // The refusal must name the capability that route is actually guarded by,
+      // proving the guard is capability-based and correctly mapped.
+      assert.match(String(res.body.message), new RegExp(capability.replace('.', '\\.')),
+        `${label}: refusal must name ${capability}, got ${JSON.stringify(res.body)}`);
     }
     assert.strictEqual(attempts.length, MUTATIONS.length);
   });
@@ -326,28 +368,96 @@ describe('Knowledge Accession Authority (ATM-001-K3)', { skip: DB_TEST_SKIP_REAS
   });
 
   // =========================================================================
-  // The mission outcome: a grantable accession authority for the SME
+  // The approved mapping, principal by principal
   // =========================================================================
 
-  it('R7 — an explicit knowledge.author grant gives a non-supervisor the whole entry point', async () => {
-    // The SME holds role `operator`, so the legacy bundle grants them nothing here.
-    // Their ONLY authority is the explicit grant, which resolves in EXPLICIT_GRANTS
-    // mode. This is the accession authority the mission exists to expose.
+  it('R7 — an explicit knowledge.author grant exposes authoring but NOT evidence attachment', async () => {
+    // The SME holds role `operator`, so the legacy bundle grants them nothing
+    // here; their ONLY authority is the explicit knowledge.author grant.
     const templateId = await createWorkingTemplate();
-    const { versionId } = await authorSourceAndVersion(SME);
-    const attached = await call('POST', `/api/knowledge-provenance/templates/${templateId}/evidence`, {
+    const { sourceId, versionId } = await authorSourceAndVersion(SME);
+    assert.ok(sourceId > 0, 'knowledge.author must author a source');
+
+    const res = await call('POST', `/api/knowledge-provenance/templates/${templateId}/evidence`, {
       userId: SME, body: evidencePayload(versionId)
     });
+    assert.strictEqual(res.status, 403,
+      `knowledge.author alone must not attach evidence: ${JSON.stringify(res.body)}`);
+    assert.match(String(res.body.message), /evidence\.attach/);
+  });
+
+  it('R8 — an explicit evidence.attach grant alone exposes citation but NOT authoring', async () => {
+    const templateId = await createWorkingTemplate();
+    const { sourceId, versionId } = await authorSourceAndVersion(ADMIN);
+
+    const attached = await call('POST', `/api/knowledge-provenance/templates/${templateId}/evidence`, {
+      userId: EV_ONLY, body: evidencePayload(versionId)
+    });
     assert.strictEqual(attached.status, 201,
-      `expected 201, got ${attached.status}: ${JSON.stringify(attached.body)}`);
+      `evidence.attach alone must permit citation: ${JSON.stringify(attached.body)}`);
+    assert.strictEqual(Number(attached.body.data.evidence.added_by_user_id), EV_ONLY);
 
     const detached = await call('DELETE',
       `/api/knowledge-provenance/templates/${templateId}/evidence/${attached.body.data.evidence.id}`,
-      { userId: SME });
+      { userId: EV_ONLY });
+    assert.strictEqual(detached.status, 200, `evidence.attach alone must permit detachment: ${JSON.stringify(detached.body)}`);
+
+    const source = await call('POST', '/api/knowledge-provenance/sources', { userId: EV_ONLY, body: sourcePayload() });
+    assert.strictEqual(source.status, 403, 'evidence.attach must not author a source');
+    assert.match(String(source.body.message), /knowledge\.author/);
+
+    const version = await call('POST', `/api/knowledge-provenance/sources/${sourceId}/versions`, {
+      userId: EV_ONLY, body: versionPayload()
+    });
+    assert.strictEqual(version.status, 403, 'evidence.attach must not author a source version');
+    assert.match(String(version.body.message), /knowledge\.author/);
+  });
+
+  it('R9 — both capabilities together complete the whole provenance entry point', async () => {
+    const templateId = await createWorkingTemplate();
+    const { sourceId, versionId } = await authorSourceAndVersion(STEWARD);
+    assert.ok(sourceId > 0);
+
+    const attached = await call('POST', `/api/knowledge-provenance/templates/${templateId}/evidence`, {
+      userId: STEWARD, body: evidencePayload(versionId)
+    });
+    assert.strictEqual(attached.status, 201, `expected 201, got ${attached.status}: ${JSON.stringify(attached.body)}`);
+    assert.strictEqual(Number(attached.body.data.evidence.added_by_user_id), STEWARD);
+
+    const detached = await call('DELETE',
+      `/api/knowledge-provenance/templates/${templateId}/evidence/${attached.body.data.evidence.id}`,
+      { userId: STEWARD });
     assert.strictEqual(detached.status, 200);
   });
 
-  it('R8 — that grant confers no review, approval, safety-review or publication authority', async () => {
+  it('R10 — an explicitly granted supervisor can attach and detach within authorized tenant scope', async () => {
+    // SUPERVISOR_EV holds an active explicit evidence.attach grant, so the
+    // resolver returns EXPLICIT_GRANTS mode and the legacy supervisor bundle is
+    // discarded entirely — they hold evidence.attach and nothing else.
+    const templateId = await createWorkingTemplate();
+    const { versionId } = await authorSourceAndVersion(ADMIN);
+
+    const attached = await call('POST', `/api/knowledge-provenance/templates/${templateId}/evidence`, {
+      userId: SUPERVISOR_EV, body: evidencePayload(versionId)
+    });
+    assert.strictEqual(attached.status, 201,
+      `explicit evidence.attach grant must recover citation: ${JSON.stringify(attached.body)}`);
+    assert.strictEqual(Number(attached.body.data.evidence.added_by_user_id), SUPERVISOR_EV);
+
+    const detached = await call('DELETE',
+      `/api/knowledge-provenance/templates/${templateId}/evidence/${attached.body.data.evidence.id}`,
+      { userId: SUPERVISOR_EV });
+    assert.strictEqual(detached.status, 200);
+
+    // The grant is for the evidence act only: it does not confer authoring.
+    const source = await call('POST', '/api/knowledge-provenance/sources', {
+      userId: SUPERVISOR_EV, body: sourcePayload()
+    });
+    assert.strictEqual(source.status, 403, 'an evidence.attach grant must not author a source');
+    assert.match(String(source.body.message), /knowledge\.author/);
+  });
+
+  it('R11 — both provenance capabilities confer no review, approval, safety-review or publication authority', async () => {
     const templateId = await createWorkingTemplate();
     const governed = [
       ['submit-for-review', 'knowledge.review'],
@@ -359,7 +469,7 @@ describe('Knowledge Accession Authority (ATM-001-K3)', { skip: DB_TEST_SKIP_REAS
     ];
     for (const [route, capability] of governed) {
       const res = await call('POST', `/api/task-templates/${templateId}/${route}`, {
-        userId: SME, body: {}
+        userId: STEWARD, body: {}
       });
       assert.strictEqual(res.status, 403, `${route}: expected 403, got ${res.status}: ${JSON.stringify(res.body)}`);
       assert.match(String(res.body.message), new RegExp(capability.replace('.', '\\.')),
@@ -367,7 +477,7 @@ describe('Knowledge Accession Authority (ATM-001-K3)', { skip: DB_TEST_SKIP_REAS
     }
   });
 
-  it('R9 — read authority is unchanged and still reaches the provenance surface', async () => {
+  it('R12 — read authority is unchanged and still reaches the provenance surface', async () => {
     const { sourceId } = await authorSourceAndVersion(ADMIN);
     for (const [label, userId] of [['supervisor', SUPERVISOR], ['operator', OPERATOR]]) {
       const list = await call('GET', '/api/knowledge-provenance/sources', { userId });
@@ -379,19 +489,26 @@ describe('Knowledge Accession Authority (ATM-001-K3)', { skip: DB_TEST_SKIP_REAS
     }
   });
 
-  it('R10 — the legacy admin is not narrowed by the seam change', async () => {
+  it('R13 — the legacy admin (both capabilities) is not narrowed', async () => {
     const templateId = await createWorkingTemplate();
-    const { versionId } = await authorSourceAndVersion(ADMIN);
+    const { sourceId, versionId } = await authorSourceAndVersion(ADMIN);
+    assert.ok(sourceId > 0);
+
     const attached = await call('POST', `/api/knowledge-provenance/templates/${templateId}/evidence`, {
       userId: ADMIN, body: evidencePayload(versionId)
     });
     assert.strictEqual(attached.status, 201, `admin attach: ${JSON.stringify(attached.body)}`);
+
+    const detached = await call('DELETE',
+      `/api/knowledge-provenance/templates/${templateId}/evidence/${attached.body.data.evidence.id}`,
+      { userId: ADMIN });
+    assert.strictEqual(detached.status, 200, `admin detach: ${JSON.stringify(detached.body)}`);
   });
 
-  it('R11 — the seam change does not weaken tenancy', async () => {
+  it('R14 — the mapping does not weaken tenancy', async () => {
     const templateId = await createWorkingTemplate(ORG);
 
-    // A principal in ORG_B who legitimately holds knowledge.author may accession
+    // A principal in ORG_B who holds BOTH provenance capabilities may accession
     // into their OWN tenant...
     const foreign = await authorSourceAndVersion(FOREIGN_SME);
     const ownSource = await call('GET', '/api/knowledge-provenance/sources', { userId: FOREIGN_SME });
@@ -400,7 +517,7 @@ describe('Knowledge Accession Authority (ATM-001-K3)', { skip: DB_TEST_SKIP_REAS
       'the foreign SME must see their own tenant\'s source');
 
     // ...but must not reach ORG's working knowledge. Another tenant's subject is
-    // reported as not-found rather than disclosed.
+    // reported as not-found rather than disclosed, even though the guard passes.
     const crossAttach = await call('POST', `/api/knowledge-provenance/templates/${templateId}/evidence`, {
       userId: FOREIGN_SME, body: evidencePayload(foreign.versionId)
     });
@@ -417,16 +534,15 @@ describe('Knowledge Accession Authority (ATM-001-K3)', { skip: DB_TEST_SKIP_REAS
       `SELECT COUNT(*)::int AS n FROM knowledge_template_evidence
         WHERE task_template_id = ? AND knowledge_source_version_id = ?`,
       [templateId, foreign.versionId]));
-    const count = rows[0] ? rows[0].n : rows[0];
-    assert.strictEqual(Number(count), 0, 'no cross-tenant evidence row may exist');
+    assert.strictEqual(Number(rows[0].n), 0, 'no cross-tenant evidence row may exist');
   });
 
   // =========================================================================
   // Structural guarantees against silent drift
   // =========================================================================
 
-  it('R12 — the seam is the capability, not the legacy matrix, and the bundles agree', async () => {
-    // Code lines only: a comment mentioning the old seam must not satisfy this.
+  it('R15 — the guard-to-capability map is the approved map, and the bundles agree', async () => {
+    // Code lines only: a comment mentioning a seam must not satisfy this.
     const code = fs.readFileSync(ROUTES_FILE, 'utf8')
       .split('\n')
       .filter((line) => !/^\s*(\*|\/\/|\/\*)/.test(line))
@@ -434,22 +550,50 @@ describe('Knowledge Accession Authority (ATM-001-K3)', { skip: DB_TEST_SKIP_REAS
 
     assert.doesNotMatch(code, /requirePermission\('TASKS'/,
       'the provenance routes must no longer be guarded by the legacy TASKS matrix');
-    assert.strictEqual((code.match(/requireCapability\('knowledge\.author'\)/g) || []).length, 4,
-      'all four mutation routes must require knowledge.author');
+
+    // The exact per-route binding. This is the guard-to-capability regression
+    // assertion: it names each route, so a future edit that silently moves a
+    // route back onto the wrong capability fails here — the blind spot that let
+    // the ATM-001-K3 discrepancy through (the parity test checked bundles, the
+    // old accession test checked only a total).
+    assert.match(code, /router\.post\('\/sources', requireCapability\('knowledge\.author'\)/,
+      'POST /sources must require knowledge.author');
+    assert.match(code, /router\.post\('\/sources\/:id\/versions', requireCapability\('knowledge\.author'\)/,
+      'POST /sources/:id/versions must require knowledge.author');
+    assert.match(code, /router\.post\('\/templates\/:templateId\/evidence', requireCapability\('evidence\.attach'\)/,
+      'POST /templates/:templateId/evidence must require evidence.attach');
+    assert.match(code, /router\.delete\('\/templates\/:templateId\/evidence\/:evidenceId', requireCapability\('evidence\.attach'\)/,
+      'DELETE /templates/:templateId/evidence/:evidenceId must require evidence.attach');
+
+    assert.strictEqual((code.match(/requireCapability\('knowledge\.author'\)/g) || []).length, 2,
+      'exactly the two authoring routes require knowledge.author');
+    assert.strictEqual((code.match(/requireCapability\('evidence\.attach'\)/g) || []).length, 2,
+      'exactly the two evidence routes require evidence.attach');
     assert.strictEqual((code.match(/requirePermission\('KNOWLEDGE', 'VIEW'\)/g) || []).length, 3,
       'the three read routes must keep KNOWLEDGE.VIEW unchanged');
 
-    // The capability must be human-grantable, or the SME entry point could not exist.
+    // Both capabilities must be human-grantable, or the approved recovery
+    // ("explicit grant of evidence.attach") could not exist.
     assert.strictEqual(isGrantable('knowledge.author'), true);
+    assert.strictEqual(isGrantable('evidence.attach'), true);
 
-    // Bundle membership is what makes this a coherence fix rather than a widening
-    // of the operator role.
+    // Guard ↔ bundle agreement. evidence.attach was admin-only before the
+    // capability model and is deliberately absent from the supervisor and
+    // operator bundles (ATM-003-R3 §3/§4). If a future change either swaps the
+    // route guards or adds the capability to a less-privileged bundle, the
+    // mapping and the bundles would disagree again — this catches both halves.
     assert.ok(LEGACY_COMPATIBILITY_BUNDLES.supervisor.includes('knowledge.author'),
       'the supervisor bundle must hold knowledge.author');
+    assert.ok(!LEGACY_COMPATIBILITY_BUNDLES.supervisor.includes('evidence.attach'),
+      'the supervisor bundle must NOT hold evidence.attach (ATM-003-R3 §4)');
     assert.ok(!LEGACY_COMPATIBILITY_BUNDLES.operator.includes('knowledge.author'),
       'the operator bundle must not hold knowledge.author');
+    assert.ok(!LEGACY_COMPATIBILITY_BUNDLES.operator.includes('evidence.attach'),
+      'the operator bundle must not hold evidence.attach');
     assert.ok(LEGACY_COMPATIBILITY_BUNDLES.admin.includes('knowledge.author'),
       'the admin bundle must hold knowledge.author');
+    assert.ok(LEGACY_COMPATIBILITY_BUNDLES.admin.includes('evidence.attach'),
+      'the admin bundle must hold evidence.attach');
 
     // Fixture-namespace disjointness, asserted mechanically.
     //
@@ -457,12 +601,10 @@ describe('Knowledge Accession Authority (ATM-001-K3)', { skip: DB_TEST_SKIP_REAS
     // shared database, and every fixture here uses `ON CONFLICT (id) DO NOTHING`.
     // A colliding id is therefore NOT an error: the other suite's row survives and
     // this suite silently resolves a principal with another suite's role and
-    // organization. CI caught exactly that — 997001/997002/997101-997104 and
-    // 997201-997203 were already taken by other suites, so a "supervisor" resolved
-    // into another tenant and an "operator" resolved an admin-shaped bundle. This
-    // assertion makes that class of defect impossible to reintroduce unnoticed.
+    // organization. CI caught exactly that once; this assertion makes the class
+    // of defect impossible to reintroduce unnoticed.
     const fixtureIds = [ORG, ORG_B, ADMIN, SUPERVISOR, OPERATOR, SME, FOREIGN_SME,
-      FOREIGN_ADMIN, CATEGORY, CLASS, EQUIPMENT_TYPE];
+      FOREIGN_ADMIN, EV_ONLY, STEWARD, SUPERVISOR_EV, CATEGORY, CLASS, EQUIPMENT_TYPE];
     const self = path.basename(__filename);
     const siblings = fs.readdirSync(__dirname)
       .filter((name) => name.endsWith('.test.js') && name !== self);
@@ -478,9 +620,11 @@ describe('Knowledge Accession Authority (ATM-001-K3)', { skip: DB_TEST_SKIP_REAS
     }
   });
 
-  it('R13 — revoking the grant closes the entry point again', async () => {
+  it('R16 — revoking either grant closes that half of the entry point again', async () => {
     // Authority that cannot be withdrawn is not a grant. Revocation is the
     // migration 022 contract: a revoked grant is history, never deleted.
+
+    // (a) knowledge.author revoked -> authoring closes.
     await withConn(async (conn) => {
       await query(conn,
         `UPDATE user_capabilities
@@ -490,16 +634,39 @@ describe('Knowledge Accession Authority (ATM-001-K3)', { skip: DB_TEST_SKIP_REAS
         [ADMIN, SME, ORG]);
     });
 
-    const res = await call('POST', '/api/knowledge-provenance/sources', {
+    const authoring = await call('POST', '/api/knowledge-provenance/sources', {
       userId: SME, body: sourcePayload()
     });
-    assert.strictEqual(res.status, 403,
-      `after revocation the SME must be refused, got ${res.status}: ${JSON.stringify(res.body)}`);
-    assert.match(String(res.body.message), /knowledge\.author/);
+    assert.strictEqual(authoring.status, 403,
+      `after revocation the SME must be refused, got ${authoring.status}: ${JSON.stringify(authoring.body)}`);
+    assert.match(String(authoring.body.message), /knowledge\.author/);
 
     // Restore the fixture for any later run in the same database (a new active
     // grant is the documented remedy; the revoked row is preserved as history).
     await withConn((conn) => grantCapability(conn, SME, ORG, 'knowledge.author', ADMIN));
+
+    // (b) evidence.attach revoked -> citation closes, authoring is unaffected.
+    await withConn(async (conn) => {
+      await query(conn,
+        `UPDATE user_capabilities
+            SET revoked_at = CURRENT_TIMESTAMP, revoked_by_user_id = ?
+          WHERE user_id = ? AND organization_id = ? AND capability = 'evidence.attach'
+            AND revoked_at IS NULL`,
+        [ADMIN, STEWARD, ORG]);
+    });
+
+    const templateId = await createWorkingTemplate();
+    const { sourceId, versionId } = await authorSourceAndVersion(STEWARD);
+    assert.ok(sourceId > 0, 'the still-held knowledge.author grant must continue to author');
+
+    const citation = await call('POST', `/api/knowledge-provenance/templates/${templateId}/evidence`, {
+      userId: STEWARD, body: evidencePayload(versionId)
+    });
+    assert.strictEqual(citation.status, 403,
+      `after revocation the Steward must be refused citation, got ${citation.status}: ${JSON.stringify(citation.body)}`);
+    assert.match(String(citation.body.message), /evidence\.attach/);
+
+    await withConn((conn) => grantCapability(conn, STEWARD, ORG, 'evidence.attach', ADMIN));
   });
 
   // Cleanup happens via process exit; the suite leaves disposable fixtures in the

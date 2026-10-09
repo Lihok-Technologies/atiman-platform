@@ -124,12 +124,19 @@ async function ensureFixture() {
         [id, username, `${username}@test.local`, role, orgId]);
     }
 
-    // `knowledge.author` only. Neither principal is a legacy admin or supervisor,
-    // so every allowance below comes from the capability alone. Migration 022
-    // refuses a grant whose grantor is outside the grant's organization, so each
-    // tenant is granted by its own administrator.
+    // Both provenance capabilities are granted explicitly (ATM-001-K3-G2): the
+    // write-scope properties under test — tenant scope, global citation, identity
+    // spoofing — must be exercised by a principal that can actually reach the
+    // mutation routes. The knowledge.author / evidence.attach split itself is
+    // proved by tests/knowledge-accession-authority.test.js. Neither principal is
+    // a legacy admin or supervisor, so every allowance below comes from the
+    // explicit grants alone. Migration 022 refuses a grant whose grantor is
+    // outside the grant's organization, so each tenant is granted by its own
+    // administrator.
     await grantCapability(conn, AUTHOR, ORG_A, 'knowledge.author', GRANTOR);
+    await grantCapability(conn, AUTHOR, ORG_A, 'evidence.attach', GRANTOR);
     await grantCapability(conn, AUTHOR_B, ORG_B, 'knowledge.author', GRANTOR_B);
+    await grantCapability(conn, AUTHOR_B, ORG_B, 'evidence.attach', GRANTOR_B);
 
     await query(conn, `INSERT INTO equipment_categories (id, category_code, category_name)
       VALUES (?, 'K3R1CAT', 'K3R1 Category') ON CONFLICT (id) DO NOTHING`, [CATEGORY]);
@@ -511,18 +518,19 @@ describe('Provenance Write Scope (ATM-001-K3-R1)', { skip: DB_TEST_SKIP_REASON }
   // E. Capability and lifecycle boundaries
   // =========================================================================
 
-  it('W15 — a principal without knowledge.author is refused on every mutation', async () => {
+  it('W15 — a principal holding neither provenance capability is refused on every mutation, naming the capability per route', async () => {
     const templateId = await createWorkingTemplate(ORG_A);
     const attempts = [
-      ['create source', () => call('POST', '/api/knowledge-provenance/sources', { userId: NO_CAP, body: sourcePayload() })],
-      ['create version', () => call('POST', `/api/knowledge-provenance/sources/${globalSourceId}/versions`, { userId: NO_CAP, body: versionPayload() })],
-      ['attach evidence', () => call('POST', `/api/knowledge-provenance/templates/${templateId}/evidence`, { userId: NO_CAP, body: evidencePayload(globalVersionId) })],
-      ['detach evidence', () => call('DELETE', `/api/knowledge-provenance/templates/${templateId}/evidence/1`, { userId: NO_CAP })]
+      ['create source', 'knowledge.author', () => call('POST', '/api/knowledge-provenance/sources', { userId: NO_CAP, body: sourcePayload() })],
+      ['create version', 'knowledge.author', () => call('POST', `/api/knowledge-provenance/sources/${globalSourceId}/versions`, { userId: NO_CAP, body: versionPayload() })],
+      ['attach evidence', 'evidence.attach', () => call('POST', `/api/knowledge-provenance/templates/${templateId}/evidence`, { userId: NO_CAP, body: evidencePayload(globalVersionId) })],
+      ['detach evidence', 'evidence.attach', () => call('DELETE', `/api/knowledge-provenance/templates/${templateId}/evidence/1`, { userId: NO_CAP })]
     ];
-    for (const [label, attempt] of attempts) {
+    for (const [label, capability, attempt] of attempts) {
       const res = await attempt();
       assert.strictEqual(res.status, 403, `${label}: expected 403, got ${res.status}`);
-      assert.match(String(res.body.message), /knowledge\.author/, `${label}: must name the capability`);
+      assert.match(String(res.body.message), new RegExp(capability.replace('.', '\\.')),
+        `${label}: must name ${capability}`);
     }
   });
 

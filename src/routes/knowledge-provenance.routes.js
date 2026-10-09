@@ -10,29 +10,45 @@
  *
  * Authorization
  * -------------
- * Writes require the capability `knowledge.author`. M3 authored these routes and
- * recorded the authority question as a KNOWN INCONSISTENCY rather than silently
- * resolving it:
+ * The four mutation routes are split across two accountable capabilities, as
+ * OWNER-approved by ATM-001-K3-G2
+ * (docs/architecture/ATM-001-K3-G2-Knowledge-Provenance-Authorization-Mapping.md):
  *
- *   "task-template authoring routes use requireAdmin (admin + supervisor) while
- *    this path uses the stricter admin-only capability. Aligning them is a
- *    separate decision."
+ *   knowledge.author   POST /sources
+ *                      POST /sources/:id/versions
+ *     Authoring a provenance source identity and its immutable editions. The
+ *     accountable act is "Create and edit a draft definition" (ATM-003-R1 §3.1),
+ *     enforced by `created_by` — here knowledge_sources.created_by_user_id and
+ *     knowledge_source_versions.created_by_user_id.
  *
- * ATM-001-K3 is that separate decision. M3's own rationale fixes the capability:
- * "provenance authoring is an act of authoring working maintenance knowledge,
- * which is what the TASKS authoring capabilities already govern" — and
- * `knowledge.author` is the accountable capability for authoring working
- * knowledge (ATM-003-R1 §3.1: "Create and edit a draft definition"; `created_by`;
- * draft-only). M3 explicitly refused a new capability ("not a new governance
- * vocabulary"), so no accession-specific capability is introduced here.
+ *   evidence.attach    POST /templates/:templateId/evidence
+ *                      DELETE /templates/:templateId/evidence/:evidenceId
+ *     Attaching and detaching provenance evidence (a citation of an immutable
+ *     source version) on a working definition or step. The accountable act is
+ *     "Attach provenance evidence to a definition or step" (ATM-003-R1 §3.1),
+ *     enforced by `added_by_user_id` — here
+ *     knowledge_template_evidence.added_by_user_id. Detachment is the inverse of
+ *     that act, and M3 models correction as detach-then-attach; both routes were
+ *     guarded by TASKS.UPDATE before the capability model existed.
  *
- * Consequence, stated rather than left to be inferred: a principal holding
- * `knowledge.author` may now reach this entry point. Under the legacy
- * compatibility bundles that is admin and supervisor, so the supervisor gains
- * these four routes and the operator does not; under EXPLICIT_GRANTS the grant is
- * the authority. Nothing here confers knowledge.review, knowledge.approve,
+ * How this mapping was reached. M3 authored these routes under the admin-only
+ * TASKS.CREATE/TASKS.UPDATE matrix and recorded the authority question as a KNOWN
+ * INCONSISTENCY rather than silently resolving it. ATM-001-K3 (commit 3aa5bbd)
+ * answered it by placing all four routes under `knowledge.author`; that gave every
+ * principal holding `knowledge.author` — including the legacy supervisor bundle,
+ * which deliberately excludes `evidence.attach` (ATM-003-R3 §3/§4, under the OWNER
+ * adjudication of 2026-09-27 §7) — the ability to attach provenance evidence.
+ * ATM-001-K3-G2 reconciles the seam with ATM-003-R1 §3.1's two accountable acts
+ * and two attribution columns, and with the ATM-003-R3 less-privileged mapping.
+ *
+ * Capability bundles are unchanged. A principal who must both author provenance
+ * and cite it holds both capabilities through explicit grants (ATM-003-R3 §4:
+ * "Explicit grant of `evidence.attach`"); `evidence.attach` is in the V1
+ * human-grantable set. Nothing here confers knowledge.review, knowledge.approve,
  * knowledge.safety_review or knowledge.publish, and the evidence separation of
- * duties is unchanged.
+ * duties is unchanged. Capability guards answer who may attempt an act; they
+ * never make a global source writable — the model's tenant write predicate
+ * refuses that independently (ATM-001-K3-R1).
  *
  * Reads reuse KNOWLEDGE.VIEW, consistent with how knowledge is already readable.
  *
@@ -88,15 +104,15 @@ router.get('/templates/:templateId/evidence', requirePermission('KNOWLEDGE', 'VI
 /**
  * @route   POST /api/knowledge-provenance/templates/:templateId/evidence
  * @desc    Attach an immutable source version as WORKING evidence
- * @access  Private (knowledge.author)
+ * @access  Private (evidence.attach)
  */
-router.post('/templates/:templateId/evidence', requireCapability('knowledge.author'), provenanceController.attachEvidence);
+router.post('/templates/:templateId/evidence', requireCapability('evidence.attach'), provenanceController.attachEvidence);
 
 /**
  * @route   DELETE /api/knowledge-provenance/templates/:templateId/evidence/:evidenceId
  * @desc    Detach WORKING evidence (frozen evidence is unreachable here)
- * @access  Private (knowledge.author)
+ * @access  Private (evidence.attach)
  */
-router.delete('/templates/:templateId/evidence/:evidenceId', requireCapability('knowledge.author'), provenanceController.detachEvidence);
+router.delete('/templates/:templateId/evidence/:evidenceId', requireCapability('evidence.attach'), provenanceController.detachEvidence);
 
 module.exports = router;
