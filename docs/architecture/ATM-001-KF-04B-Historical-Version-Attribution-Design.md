@@ -2,7 +2,7 @@
 
 **Document ID:** ATM-001-KF-04B
 **Mission:** ATM-001-KF-FINAL (workstream KF-04B); OWNER ratification recorded under ATM-001-KF-04B-ADR-RATIFICATION; D-1 direction recorded under ATM-001-KF-04B-D1-CLOSURE
-**Status:** **RATIFIED (Q-1 … Q-5, §6) AND D-1 CLOSED (§7.3 — persisted, server-controlled task-start pin).** No code and no migration exist; implementation still requires the normal review, and the remaining policy decisions in §8.H are flagged, not assumed.
+**Status:** **RATIFIED (Q-1 … Q-5, §6); D-1 CLOSED (§7.3); H-1 … H-4 CLOSED (§8.H).** No code and no migration exist; implementation still requires the normal review. The finalized implementation contract is **§8.I**.
 **Ratification date:** 2026-10-10 · **D-1 closure date:** 2026-10-10
 **Architectural authority:** ChatGPT — Atiman Chief Architect · **OWNER:** Lihok Technologies OPC
 **Baseline:** `origin/main` = `f156aa4479efe783eefd4f13fd62171647f83b7f`; approved review baseline = `21414273765541d2d3093771dc1da647e29e9e26`
@@ -135,10 +135,15 @@ governed path (Q-3); server-side task-start pinning with defined supersession an
 (Q-4); `RESTRICT` + immutable attribution + no backfill (Q-5); and **D-1 — a persisted, server-controlled
 task-start pin that is an execution-context record** (§7.3).
 
-**Still open (flagged, not assumed):** the remaining policy decisions in **§8.H** (notably the pin
-creation trigger point and the one-active-pin rule). The `effective_from`/`effective_to` active default
-(`ATM-001` §8.3) remains unimplemented and unclaimed. The operational UI is KF-04C. The legacy
-`inspection_results` CASCADE risk (§9) is recorded, not remediated.
+**Closed by this record:** D-1 (§7.3) and **H-1 … H-4 (§8.H)** — an explicit authenticated server-side
+task-start operation (never a GET), task-instance identity with retry idempotency, a one-way completion
+marker requiring explicit authorization, and the ruling against adding `facility_id`. The finalized
+implementation contract is **§8.I**.
+
+**Still open (flagged, not assumed):** the items in **§8.J** — chiefly where the task-start operation is
+mounted and whether the pin-reference column lands in `025` or a later migration. The
+`effective_from`/`effective_to` active default (`ATM-001` §8.3) remains unimplemented and unclaimed. The
+operational UI is KF-04C. The legacy `inspection_results` CASCADE risk (§9) is recorded, not remediated.
 
 ---
 
@@ -177,9 +182,9 @@ server-owned pin.
 
 | # | Requirement |
 |---|---|
-| **A. Creation authority** | The pin is created **by the server**, for the authenticated principal authorized to perform the capture on that path. A client may *request* task start; it may never *assert* a pin. |
+| **A. Creation authority** | The pin is created **by the server** through an explicit authenticated task-start operation (H-1), for the principal authorized to perform the capture on that path. A client may *request* task start; it may never *assert* a pin, and no GET may create one. |
 | **B. Server-side evidence** | Minimum evidence, independent of the client: tenant; asset; working template; the **immutable `task_template_version_id` resolved by the server through the KF-04A resolver at pin time**; the resolving principal; a **server-generated creation timestamp**. A client-supplied `template_version_id` or timestamp is **never** evidence. |
-| **C. Identity and lifecycle** | The pin is an **execution-context record**: immutable creation facts, plus at most a single one-way terminal marker. **No expiration, abandonment or retirement-override state is introduced** (directive 10). |
+| **C. Identity and lifecycle** | The pin is an **execution-context record**: immutable creation facts, plus at most a single one-way terminal marker. The pin `id` **is** the task-instance identity (H-2), and completion requires explicit authorization (H-3). **No expiration, abandonment or retirement-override state is introduced** (directive 10). |
 | **D. Supersession** | `published` at **creation**. If it becomes `superseded`, a capture may cite it **only with legitimate existing pin evidence** and only while continuation is authorized and safe (`ATM-002-R6` §6). A newly initiated task must never pin an already-`superseded` version. |
 | **E. Retirement** | A `retired` pinned version **stops execution**; the write is refused and surfaced as no-longer-applicable. **The pin is not mutated to "override" retirement** — the stop is the behaviour. |
 | **F. Resume / interruption** | The pin must survive navigation and session expiry (`ATM-003-R2` §3.5); a resumed task re-reads the **same** pinned version. This is why D-1 selected persistence over a short-lived credential. |
@@ -235,6 +240,9 @@ CREATE TABLE IF NOT EXISTS task_knowledge_pins (
     created_at               TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     -- Single one-way terminal marker. No expires_at, no abandoned_at, no override column.
     completed_at             TIMESTAMPTZ DEFAULT NULL,
+    -- Client-supplied de-duplication token for the task-start OPERATION (H-2).
+    -- It correlates retries; it is NOT evidence of which version applies.
+    idempotency_key          UUID        NOT NULL,
     CONSTRAINT fk_tkp_organization FOREIGN KEY (organization_id)
         REFERENCES organizations(id)          ON DELETE RESTRICT,
     CONSTRAINT fk_tkp_asset        FOREIGN KEY (asset_id)
@@ -245,6 +253,10 @@ CREATE TABLE IF NOT EXISTS task_knowledge_pins (
         REFERENCES task_template_versions(id) ON DELETE RESTRICT,
     CONSTRAINT fk_tkp_user         FOREIGN KEY (created_by_user_id)
         REFERENCES users(id)                  ON DELETE RESTRICT,
+    -- H-2: uniqueness is on the START OPERATION, never on the task tuple, so
+    -- distinct legitimate task instances remain possible.
+    CONSTRAINT uq_tkp_start_operation
+        UNIQUE (organization_id, created_by_user_id, idempotency_key),
     CONSTRAINT chk_tkp_completed_after_creation
         CHECK (completed_at IS NULL OR completed_at >= created_at)
 );
@@ -264,6 +276,7 @@ abandonment, no priority, no status vocabulary beyond the one-way terminal marke
 | `task_template_version_id` → `task_template_versions` | `RESTRICT` (the version is already delete-protected) |
 | `created_by_user_id` → `users` | `RESTRICT` (attribution is part of the evidence) |
 | `created_at` | server `DEFAULT`; never client-supplied |
+| `idempotency_key` | client-supplied **de-duplication token for the start operation** (H-2); unique per `(organization, principal, key)`; it is **not** evidence of which version applies |
 
 **Coherence trigger `task_knowledge_pin_context_check` (`BEFORE INSERT OR UPDATE`)** — mirrors the
 `asset_observation_context_check` idiom:
@@ -279,6 +292,7 @@ abandonment, no priority, no status vocabulary beyond the one-way terminal marke
 | creating user exists and `users.organization_id = pin.organization_id` |
 | **identity immutability**: `id`, `organization_id`, `asset_id`, `task_template_id`, `task_template_version_id`, `created_by_user_id`, `created_at` are never updatable |
 | **one-way terminal marker**: `completed_at` NULL → NOT NULL only; once set, no further update at all |
+| `idempotency_key` is present and immutable; a retry presenting the same key returns the **existing** pin and creates nothing — **prevents duplicate pins for retries of the same start operation** (H-2); a *new* key is a *new* legitimate task instance |
 | **no other update path** exists (no expiry, no abandonment, no override) |
 
 **Indexes:** `(organization_id, asset_id, task_template_id)`; `(task_template_version_id)`;
@@ -300,7 +314,7 @@ partial index on `completed_at IS NULL` for open pins.
 | From | To | Trigger | Notes |
 |---|---|---|---|
 | *(created)* | **open** | server creates the pin at task start | creation facts immutable forever |
-| open | **completed** | server sets `completed_at` once, when the task completes | one-way; no content change beyond the marker |
+| open | **completed** | an **explicit authenticated completion operation** (H-3); the server sets `completed_at` once and never implicitly | one-way; no content change beyond the marker; **completion requires explicit authorization** under the path's capture authority |
 | open | **open** | resumed after interruption | the pin is re-read; the version is **never** re-resolved |
 
 **Explicitly NOT modelled:** `expired`, `abandoned`, `cancelled`, `superseded_by`, `released`, or any
@@ -308,30 +322,58 @@ retirement override. A pin whose version is later superseded stays open and may 
 pin whose version is retired does not change state — the **capture** is refused (§7.2 E). Adding any
 state beyond the above is a **new policy decision requiring approval**.
 
-### 8.E Authorization requirements
+**H-3 ruling.** Nullable `completed_at` is retained as the **one-way terminal marker**, and completion is
+a distinct, authorized act. It is **never implied** by a capture, by a read, or by the passage of time;
+there is no automatic completion. A pin may remain open indefinitely — that is intended, not a defect,
+and it is precisely why no expiration or abandonment policy is introduced.
 
-**No new capability and no bundle change.** The pin is created and read under the **existing authority
-of the path being executed**:
+### 8.E Authorization requirements (H-1 ruling applied)
 
-| Path | Capture authority (existing) | Pin authority (proposed) |
+**H-1 ruling: use an explicit authenticated server-side task-start operation. Do not create pins through
+GET requests. Pin creation must occur before governed procedure execution and evidence capture. Preserve
+procedure-less observation workflows.**
+
+**No new capability and no bundle change.** One logical task-start operation is exposed on each execution
+path's existing router, so authorization is exactly that path's existing guard:
+
+| Path | Existing capture authority | Task-start authority |
 |---|---|---|
-| `/atiman/report` → `asset_observations` | `finding.report` (capability) | same |
-| `/m/asset/:assetId/inspect` → `inspection_results` | `INSPECTIONS.SUBMIT` + `preventAdminInspection` | same |
-| Runner read (`/m/asset/:assetId/inspect/:templateId`) | `INSPECTIONS.VIEW` | unchanged; **the read path does not create a pin** (a GET that writes would be prefetch-unsafe) |
+| Observation / report (`asset_observations`) | `finding.report` | `finding.report` |
+| Mobile inspection (`inspection_results`) | `INSPECTIONS.SUBMIT` + `preventAdminInspection` | `INSPECTIONS.SUBMIT` + `preventAdminInspection` |
+| Runner **read** (`GET …/inspect/:templateId`) | `INSPECTIONS.VIEW` | **creates no pin** — reads never write |
+| Pin **read / resume** (`GET …/pins/:pinId`) | path read authority | reads only; never writes |
 
-If a single shared task-start endpoint is later chosen, it must authorize **per path** — never by a union
-that would widen access to either authority. This is flagged as **§8.H H-1**.
+Consequences of H-1, recorded:
+
+1. A pin can only come into existence through an **authenticated write**; no GET, no page render and no
+   link prefetch can create one.
+2. Task start precedes governed procedure execution and the first evidence capture, so the content the
+   operator executes is the content that was pinned (`ATM-002-R6` §6).
+3. **Procedure-less observations are preserved**: a capture with no task template has no pin, no version
+   and no requirement to start a task (Q-3).
+4. If a single route is preferred to two mounts, it must still authorize **per path** — never by a union
+   that widens access. Recorded as **§8.J J-1**.
 
 Administrators remain unable to execute (`INSPECTIONS.SUBMIT: admin none`; `preventAdminInspection`).
 
-### 8.F Migration `025` implications
+### 8.F Migration `024` / `025` implications
 
-- New table + five `RESTRICT` FKs + the coherence/immutability trigger + three indexes. Additive; no seed;
-  no backfill; idempotent (`CREATE TABLE IF NOT EXISTS`, `DROP CONSTRAINT IF EXISTS`).
-- **Independent of `024`.** `024` (attribution columns) must be implementable and reviewable on its own;
-  `025` (pin) is a separate migration, separate PR and separate review. The canonical runner would move
-  `023 → 024 → 025`; migration-runner and schema-readiness suites must be updated per PR.
-- No production application, no manual migration; the release authority applies.
+- **`024` (ratified Q-1 / Q-2 / Q-5):** nullable `task_template_version_id` /
+  `task_template_step_version_id` on both operational tables, `RESTRICT` FKs, partial indexes, and the
+  §3.3 coherence/immutability trigger (including the `023` amendability-boundary extension). Independent
+  and reviewable on its own.
+- **`025` (D-1 / H-1 / H-2 / H-3):** the `task_knowledge_pins` table + five `RESTRICT` FKs + the
+  start-operation uniqueness constraint + the pin coherence/immutability trigger + indexes, **and** a
+  nullable `task_knowledge_pin_id` (`RESTRICT` FK to `task_knowledge_pins`) on `asset_observations` and
+  `inspection_results` — the pin-to-evidence link (§8.I item 5). Both parts belong to one mechanism and
+  one review; splitting the pin-reference column into a later migration is noted as **§8.J J-2**.
+- Both are additive, idempotent (`CREATE TABLE IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`,
+  `DROP CONSTRAINT IF EXISTS`), forward-only, with **no seed and no backfill**.
+- **`024` must land before `025`** (independently reviewable, but the meaningful end state needs both),
+  and **KF-04A (PR #81) must merge before either is exercisable** — without a resolver there is no
+  published version to pin.
+- Runner chain becomes `023 → 024 → 025`; migration-runner and schema-readiness suites are updated per
+  PR. No production application, no manual migration; the release authority applies.
 
 ### 8.G Required tests
 
@@ -353,18 +395,56 @@ Administrators remain unable to execute (`INSPECTIONS.SUBMIT: admin none`; `prev
 12. Tenant isolation across organisations for pins, captures and discovery.
 13. Authorization: admin cannot create a pin or capture (path-specific denial); operator/supervisor can
     per the existing matrix; no capability vocabulary or bundle change.
+14. **Idempotent retry**: the same `idempotencyKey` by the same principal returns the **same** pin, creates
+    no second row, and re-resolves nothing.
+15. **Distinct task instances**: a different `idempotencyKey` creates a distinct pin; two open pins for the
+    same `(organization, asset, template, principal)` coexist with **no unique violation**.
+16. **Cross-principal**: the same key used by a different principal creates a distinct pin.
+17. **No GET creates a pin**: the runner read and the pin read are side-effect free.
+18. **Completion**: setting `completed_at` requires the path's capture authority, succeeds once, and is
+    thereafter immutable; it is never set implicitly.
 
-### 8.H Remaining policy decisions (flagged — none assumed)
+### 8.H Rulings H-1 … H-4 (closed 2026-10-10)
 
-| # | Decision | Why it needs a decision | Status |
-|---|---|---|---|
-| **H-1** | **Pin creation trigger point**: an explicit task-start endpoint, versus creation at the first governed capture. | An explicit endpoint satisfies "pin at task start" cleanly (the runner read is already resolved under that pin) but adds an API surface; first-capture creation adds none but leaves a window between reading the runner and pinning. | **OPEN — requires approval** |
-| **H-2** | **One open pin per `(organization, asset, template, principal)`?** Concurrent task starts for the same tuple could create two pins. | Determines whether a partial unique index is added; a uniqueness rule is a workflow constraint | **OPEN — requires approval** |
-| **H-3** | **Is the one-way `completed_at` marker required at all?** | A purely immutable creation record is smaller; the marker adds terminal evidence (`ATM-002-R6` "completes against the version it started with") | **OPEN — minor** |
-| **H-4** | **Store `facility_id` on the pin?** | Observations carry facility; the pin could, but the asset implies it | **OPEN — minor** |
-| **H-5** | **Display of a retired-pin stop** (copy and next action) | Experience wording, not schema; belongs to KF-04C | Deferred to KF-04C |
+| # | Ruling (decision of record) | Effect on this design |
+|---|---|---|
+| **H-1** | **Use an explicit authenticated server-side task-start operation. Do not create pins through GET requests. Pin creation must occur before governed procedure execution and evidence capture. Preserve procedure-less observation workflows.** | §8.E; §8.I items 1–4 |
+| **H-2** | **Permit distinct legitimate task instances. Do not enforce uniqueness solely on `(organization_id, asset_id, task_template_id, created_by_user_id)`. Prevent duplicate pins for retries of the same task-start operation.** | `idempotency_key` + start-operation uniqueness (§8.A, §8.B); §8.I items 2–3 |
+| **H-3** | **Retain nullable `completed_at` as a one-way terminal marker. Completion requires explicit authorization.** | §8.D; §8.I item 11 |
+| **H-4** | **Do not add `facility_id` unless the actual schema investigation establishes a requirement.** | Investigation result: `equipment.facility_id` exists (`002_equipment_taxonomy.sql`), the pin already carries `asset_id`, and migration `023` already validates the capture's facility against the asset's facility. **No requirement established → `facility_id` is NOT added** |
 
-No item above is implemented or presumed. **H-1 and H-2 are flagged for approval before any `025` work.**
+No ruling introduces automatic expiration, abandonment, or a new business workflow policy.
+
+### 8.I Finalized implementation contract
+
+| # | Contract item | Specification |
+|---|---|---|
+| **1** | **Task-start request and response** | A `POST` on the executing path (H-1), body `{ assetId, taskTemplateId, idempotencyKey }`. The server resolves the asset, the working template, and the **published version** through the KF-04A resolver, then creates the pin. Response `{ pin: { id, organizationId, assetId, taskTemplateId, taskTemplateVersionId, createdByUserId, createdAt }, version: <KF-04A frozen content> }`. **No version id is accepted in the request.** |
+| **2** | **Idempotency and retry behavior** | A retry presenting the **same** `idempotencyKey` for the same principal returns the **existing** pin and re-resolves nothing (a pin is immutable); it creates no second row. A **different** key is a **new legitimate task instance** and creates a new pin. No time-window de-duplication is used — that would be an implicit expiration policy. |
+| **3** | **Task-instance identity** | The pin's `id` **is** the task-instance identity. Distinct instances are distinct pins; there is **no** uniqueness on `(organization, asset, template, principal)` (H-2). The only uniqueness is the start operation: `(organization_id, created_by_user_id, idempotency_key)`. |
+| **4** | **Server-side version resolution** | The version is resolved **by the server** at start through the KF-04A read path, restricted to `lifecycle_state_at_publish = 'published'` and to the caller's tenant scope. A client-supplied version id or timestamp is ignored/rejected and is never pin evidence. |
+| **5** | **Pin-to-evidence relationship** | A governed capture carries `task_knowledge_pin_id` (nullable; absent for legacy and procedure-less records). The record's `task_template_version_id` must equal the pin's version, and `task_template_step_version_id` must belong to that version; the service **and** the §3.3 trigger enforce it. A capture never mutates its pin. |
+| **6** | **Tenant isolation** | Pin and write are tenant-bound; asset, template, version and user must all be the pin's tenant (template/version may be global); a cross-tenant read or write is a **non-disclosing** refusal. |
+| **7** | **Existing capability enforcement** | No new capability and no bundle change: `finding.report` for the observation path; `INSPECTIONS.SUBMIT` + `preventAdminInspection` for the inspection path; reads under the path's read authority. |
+| **8** | **Supersession handling** | `published` at pin creation. If superseded afterwards, a capture may cite it **only** with the existing valid pin and authorized, safe continuation (`ATM-002-R6` §6). A new task start must never pin an already-superseded version. An existing pin is never re-resolved. |
+| **9** | **Retirement handling** | A `retired` pinned version refuses the capture (**409**) and surfaces no-longer-applicable. The pin is **not** mutated; there is **no** retirement override and **no** silent fallback. Continuation requires explicit disposition. |
+| **10** | **Resume behavior** | Resume reads the existing pin by id and returns the **same** frozen version; it creates no new pin and never re-resolves. A resumed task therefore completes against the version it started with. |
+| **11** | **Completion authorization** | Completion is an **explicit authenticated operation** under the path's capture authority; it sets `completed_at` once. It is never implied by a capture, by a read, or by the passage of time. |
+| **12** | **Migration 024/025 implications** | §8.F — `024`: attribution columns, `RESTRICT` FKs, indexes, §3.3 trigger. `025`: pins table, start-operation uniqueness, pin trigger, and the `task_knowledge_pin_id` link columns. Additive, idempotent, forward-only, no backfill; `024` before `025`; KF-04A first. |
+| **13** | **Required tests** | §8.G, extended: an idempotent retry returns the same pin and creates nothing; a different key creates a distinct pin (two open pins coexist, no unique violation); the same key by a **different** principal creates a distinct pin; a client-supplied version id is rejected; **no GET creates a pin**; a procedure-less capture still succeeds with no pin; completion requires authorization and is one-way. |
+| **14** | **Remaining architectural conflicts** | §8.J. |
+
+### 8.J Remaining architectural conflicts (flagged — not decided here)
+
+| # | Item | Why it is flagged |
+|---|---|---|
+| **J-1** | Two path-mounted task-start routes versus one shared route with a path discriminator. | Both preserve existing authorities; the choice is an API-surface preference, not a business rule. **PROPOSED:** two thin mounts over one shared service. |
+| **J-2** | Whether `task_knowledge_pin_id` lands in `025` with the pins table or in a later migration. | Migration granularity and review sequencing. **PROPOSED:** in `025`. |
+| **J-3** | Whether the governed runner **GET** is superseded by the task-start response for execution. | An experience/API change belonging to KF-04C; the pinned content must be what is executed, and `ATM-002-R6` §6 forbids silent substitution. |
+| **J-4** | The legacy `inspection_results` CASCADE risk (§9). | Pre-existing evidence-integrity gap; separate bounded remediation. |
+| **J-5** | `effective_from` / `effective_to` active default (`ATM-001` §8.3). | Still unimplemented and unclaimed; explicitly out of KF-04B scope. |
+
+No item above is implemented or presumed, and none introduces a new business rule.
 
 ---
 
@@ -381,10 +461,12 @@ No item above is implemented or presumed. **H-1 and H-2 are flagged for approval
 
 ## 10. Interim state
 
-- **KF-04A (PR #81)** — read half; complete, tested, awaiting review.
-- **KF-04B** — ratified in design (Q-1 … Q-5); **D-1 closed** as a persisted pin; no implementation;
-  `024`/`025` unwritten; **H-1/H-2 open**.
-- **KF-04C** — not started; depends on H-1/H-2 and on `024`/`025`.
+- **KF-04A (PR #81)** — read half; complete, tested, awaiting review. **Must merge before KF-04B is
+  exercisable.**
+- **KF-04B** — ratified in design (Q-1 … Q-5), D-1 closed, **H-1 … H-4 closed**; the finalized
+  implementation contract is **§8.I**. No implementation; `024`/`025` unwritten; the remaining conflicts
+  are **§8.J** (J-1/J-2 flagged and proposed, J-3 to KF-04C, J-4 a separate mission, J-5 out of scope).
+- **KF-04C** — not started; depends on §8.J J-1/J-3 and on `024`/`025`.
 - Requirement 14 (G-14) and requirement 15 (G-15) remain **PARTIAL**; only merged, independently verified
   implementation may upgrade them.
 
