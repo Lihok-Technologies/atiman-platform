@@ -80,6 +80,10 @@ const DB_MUTATING_SUITES = [
   // ATM-001-K3-R1 provenance write scope (writes real sources, versions and
   // working evidence for two tenants, plus an out-of-band global source fixture).
   'provenance-write-scope.test.js',
+  // ATM-001-KF-06 knowledge evidence deletion integrity (writes real definitions,
+  // steps, sources, versions, working evidence, a global source fixture and
+  // out-of-band published versions).
+  'knowledge-evidence-deletion-integrity.test.js',
   'step6-access-control.test.js',
   'step6-coverage-e2e.test.js',
   'step6-performance.test.js',
@@ -116,7 +120,8 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'asset-context.test.js',
   'report-capture.test.js',
   'knowledge-accession-authority.test.js',
-  'provenance-write-scope.test.js'
+  'provenance-write-scope.test.js',
+  'knowledge-evidence-deletion-integrity.test.js'
 ];
 
 const REPO_ROOT = path.resolve(__dirname, '..');

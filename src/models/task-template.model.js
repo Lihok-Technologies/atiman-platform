@@ -514,7 +514,60 @@ class TaskTemplate extends BaseModel {
   }
 
   /**
-   * Delete template (only if editable and not system)
+   * Count the WORKING provenance evidence a definition deletion would remove.
+   *
+   * A working knowledge definition can carry working evidence two ways
+   * (migration 011): directly (`knowledge_template_evidence.task_template_id`)
+   * or through one of its steps (`…task_template_step_id`). Both foreign keys
+   * are `ON DELETE CASCADE`, so deleting the definition removes those rows as a
+   * side effect.
+   *
+   * Working evidence is never removed silently: ATM-001 M3 makes the
+   * tenant-scoped detach operation the only sanctioned removal path, and
+   * ATM-003-R1 §3.1 (as reconciled by ATM-001-K3-G2) places the working-evidence
+   * citation lifecycle — including detachment — under `evidence.attach`. The
+   * governed authoring primitive already refuses a step-set replacement over
+   * attached evidence (`STEP_EVIDENCE_PRESENT`) for the same reason; this is the
+   * same rule applied to whole-definition deletion.
+   *
+   * @param {number} templateId - Working definition id
+   * @param {object} [conn] - optional transaction connection; defaults to the pool
+   * @returns {Promise<number>} working evidence rows bound to the definition or its steps
+   */
+  async countWorkingEvidence(templateId, conn = null) {
+    const runner = conn || this;
+    const rows = await runner.query(
+      `SELECT COUNT(*) AS n
+         FROM knowledge_template_evidence e
+        WHERE e.task_template_id = ?
+           OR e.task_template_step_id IN (
+                SELECT s.id FROM task_template_steps s WHERE s.task_template_id = ?
+              )`,
+      [templateId, templateId]
+    );
+    return Number(rows[0] ? rows[0].n : 0);
+  }
+
+  /**
+   * Delete template (only if editable, not system, and free of working evidence)
+   *
+   * Refuses while working provenance evidence is attached, so a deletion cannot
+   * remove evidence as an uncontrolled side effect of the cascade. The caller
+   * must detach that evidence explicitly first, which requires `evidence.attach`;
+   * `knowledge.author` alone therefore cannot destroy provenance. Nothing is
+   * mutated when the refusal fires.
+   *
+   * The guard and the deletion are ONE atomic unit, mirroring the crosswalk
+   * model's `inTransaction` idiom: the definition row **and its step rows** are
+   * locked `FOR UPDATE` before the count, and each lock conflicts with the
+   * `FOR KEY SHARE` lock an attaching transaction takes for its foreign-key
+   * check. A concurrent `evidence.attach` therefore either commits before this
+   * count (and is seen, refusing the deletion) or blocks until after the
+   * deletion (and then fails its own foreign key). Without those locks a commit
+   * could land between the count and the delete and still be cascaded away — and
+   * the definition row alone is not enough, because a step-level attachment
+   * locks the step row, not the definition.
+   *
    * @param {number} id - Template ID
    */
   async deleteIfEditable(id) {
@@ -523,7 +576,41 @@ class TaskTemplate extends BaseModel {
       throw new Error('System templates cannot be deleted.');
     }
 
-    return this.delete(id);
+    const conn = await getConnection();
+    try {
+      const locked = await conn.query('SELECT id FROM task_templates WHERE id = ? FOR UPDATE', [id]);
+      if (!locked.length) {
+        await conn.rollback();
+        return false;
+      }
+
+      // Lock the step rows as well. A step-level attachment takes its `FOR KEY
+      // SHARE` lock on the STEP row, not on the definition, so the definition
+      // lock alone would not serialize it and a step-level row could still be
+      // cascaded away. The steps are locked before the count, so an attaching
+      // transaction either commits first (and is counted) or waits and then
+      // fails its own foreign key.
+      await conn.query('SELECT id FROM task_template_steps WHERE task_template_id = ? FOR UPDATE', [id]);
+
+      const workingEvidence = await this.countWorkingEvidence(id, conn);
+      if (workingEvidence > 0) {
+        const error = new Error(
+          `Knowledge definition ${id} has ${workingEvidence} working evidence row(s); `
+          + 'detach that evidence explicitly before deleting the definition, so provenance is never removed silently'
+        );
+        error.code = 'EVIDENCE_PRESENT';
+        throw error;
+      }
+
+      const result = await conn.query('DELETE FROM task_templates WHERE id = ?', [id]);
+      await conn.commit();
+      return result.affectedRows > 0;
+    } catch (error) {
+      try { await conn.rollback(); } catch { /* the original error is what matters */ }
+      throw error;
+    } finally {
+      conn.release();
+    }
   }
 
   /**
