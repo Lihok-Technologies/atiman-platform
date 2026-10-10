@@ -63,10 +63,46 @@ class PublishedKnowledgeConflictError extends Error {
   }
 }
 
+/**
+ * Upper bound of a PostgreSQL `integer` (int4) column.
+ *
+ * A larger value cannot be a valid primary key, and passing one to the driver
+ * raises SQLSTATE 22003 ("value ... is out of range for type integer"), which
+ * would otherwise surface as an unhandled 500 carrying the raw database
+ * message. Identifiers are therefore bounded HERE, before the database is
+ * touched.
+ */
+const MAX_POSTGRES_INTEGER = 2147483647;
+
+/**
+ * Strict positive-identifier parse for route parameters.
+ *
+ * Deliberately NOT `parseInt`. `parseInt` silently accepts and truncates
+ * malformed input ("17.9" -> 17, "1abc" -> 1, "1e3" -> 1, "1 OR 1=1" -> 1),
+ * which both violates the "invalid identifier => 400" contract and hides caller
+ * mistakes. This accepts only a plain unsigned decimal integer within the
+ * PostgreSQL `integer` range:
+ *
+ *   - digits only: no sign, whitespace, decimal point, exponent or suffix;
+ *   - a safe JS integer, so an arbitrarily long digit string cannot silently
+ *     round into a different, in-range value;
+ *   - 1 <= value <= 2147483647.
+ *
+ * @returns {number|null} the identifier, or null when it is not well formed.
+ */
 const toPositiveInt = (value) => {
-  const parsed = parseInt(value, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  if (typeof value !== 'string' && typeof value !== 'number') return null;
+  const raw = String(value);
+  if (!/^[0-9]+$/.test(raw)) return null;
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed)) return null;
+  if (parsed < 1 || parsed > MAX_POSTGRES_INTEGER) return null;
+  return parsed;
 };
+
+/** Human-readable identifier requirement, shared by the three endpoints. */
+const IDENTIFIER_REQUIREMENT =
+  'must be a positive integer within the PostgreSQL INTEGER range (1-2147483647)';
 
 /** A row is in scope when it is global, or owned by the caller's tenant. */
 const isInScope = (row, organizationId) =>
@@ -245,7 +281,7 @@ async function resolvePublishedVersion(versionId, { organizationId = null } = {}
   const id = toPositiveInt(versionId);
   if (!id) {
     throw new PublishedKnowledgeValidationError('A positive knowledge version id is required', [
-      { field: 'versionId', message: 'must be a positive integer' }
+      { field: 'versionId', message: IDENTIFIER_REQUIREMENT }
     ]);
   }
 
@@ -295,7 +331,7 @@ async function listPublishedVersionsForTemplate(templateId, { organizationId = n
   const id = toPositiveInt(templateId);
   if (!id) {
     throw new PublishedKnowledgeValidationError('A positive task template id is required', [
-      { field: 'templateId', message: 'must be a positive integer' }
+      { field: 'templateId', message: IDENTIFIER_REQUIREMENT }
     ]);
   }
   const rows = await PublishedKnowledge.listPublishedVersionsForTemplate(id, organizationId);
@@ -307,7 +343,7 @@ async function listPublishedVersionsForEquipmentType(equipmentTypeId, { organiza
   const id = toPositiveInt(equipmentTypeId);
   if (!id) {
     throw new PublishedKnowledgeValidationError('A positive equipment type id is required', [
-      { field: 'equipmentTypeId', message: 'must be a positive integer' }
+      { field: 'equipmentTypeId', message: IDENTIFIER_REQUIREMENT }
     ]);
   }
   const rows = await PublishedKnowledge.listPublishedVersionsForEquipmentType(id, organizationId);
@@ -319,6 +355,8 @@ module.exports = {
   listPublishedVersionsForTemplate,
   listPublishedVersionsForEquipmentType,
   assertServableVersion,
+  toPositiveInt,
+  MAX_POSTGRES_INTEGER,
   PublishedKnowledgeValidationError,
   PublishedKnowledgeNotFoundError,
   PublishedKnowledgeConflictError

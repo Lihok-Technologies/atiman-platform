@@ -32,6 +32,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const jwt = require('jsonwebtoken');
 const { getConnection, isIntegrationTest } = require('../src/config/database');
+const { MAX_POSTGRES_INTEGER } = require('../src/services/published-knowledge.service');
 
 const DB_TEST_SKIP_REASON = isIntegrationTest()
   ? false
@@ -43,7 +44,7 @@ const DB_TEST_SKIP_REASON = isIntegrationTest()
 // Disposable fixtures. The id block MUST stay disjoint from every other suite's:
 // the sanctioned runner executes suites in PARALLEL PROCESSES against ONE shared
 // database, and fixtures use `ON CONFLICT (id) DO NOTHING`, so a colliding id
-// silently substitutes another suite's principal. `9970xx`/`9971xx` is asserted
+// silently substitutes another suite's principal. `9955xx` is asserted
 // disjoint from the corpus by the R12 test below.
 const ORG = 995501;
 const ORG_B = 995502;
@@ -477,6 +478,64 @@ describe('Published Knowledge Resolution (ATM-001-KF-04A)', { skip: DB_TEST_SKIP
     const res = await resolveVersion('not-a-number', ADMIN);
     assert.strictEqual(res.status, 400, `expected 400, got ${res.status}`);
     assert.strictEqual(res.body.code, 'PUBLISHED_KNOWLEDGE_VALIDATION_FAILED');
+  });
+
+  // =========================================================================
+  // K2/K3 — KF-04A-R1 identifier remediation (F-1 malformed, F-2 out-of-range)
+  // =========================================================================
+  it('K2 — malformed, injected and out-of-range identifiers are rejected with 400 and never reach PostgreSQL', async () => {
+    const templateId = await createWorkingTemplate();
+    await addWorkingStep(templateId, 'KF04A R1 strict-id step');
+    const versionId = await publishVersion(templateId, { templateName: 'KF04A R1 strict ids' });
+
+    const malformed = [
+      ['decimal identifier', '1.5'],
+      ['numeric suffix', '1abc'],
+      ['scientific notation', '1e3'],
+      ['sql-injection-shaped OR', '1 OR 1=1'],
+      ['sql-injection-shaped comment', "1'--"],
+      ['sql-injection-shaped statement', '1;DROP TABLE task_templates'],
+      ['signed', '-1'],
+      ['zero', '0'],
+      ['whitespace padded', ' 1'],
+      ['hexadecimal', '0x1'],
+      ['integer overflow (2^31)', String(MAX_POSTGRES_INTEGER + 1)],
+      ['extremely large numeric string', '9'.repeat(30)]
+    ];
+
+    for (const [label, id] of malformed) {
+      const res = await call('GET', `/api/knowledge-published/versions/${encodeURIComponent(id)}`, { userId: ADMIN });
+      assert.strictEqual(res.status, 400, `${label} (${JSON.stringify(id)}): expected 400, got ${res.status}`);
+      assert.strictEqual(res.body.code, 'PUBLISHED_KNOWLEDGE_VALIDATION_FAILED', `${label}: refusal code`);
+      // F-2 regression: the raw PostgreSQL out-of-range message must never leak.
+      assert.doesNotMatch(String(res.body.message), /out of range|22003|pg_|postgres/i,
+        `${label}: must not expose a raw PostgreSQL error`);
+    }
+
+    // The other two endpoints share the parser and must reject the same shapes.
+    const listTemplate = await call('GET', `/api/knowledge-published/templates/${encodeURIComponent('1abc')}/versions`, { userId: ADMIN });
+    const listType = await call('GET', `/api/knowledge-published/equipment-types/${encodeURIComponent('1;DROP TABLE task_templates')}/versions`, { userId: ADMIN });
+    assert.strictEqual(listTemplate.status, 400, `templates endpoint: expected 400, got ${listTemplate.status}`);
+    assert.strictEqual(listType.status, 400, `equipment-types endpoint: expected 400, got ${listType.status}`);
+
+    // Valid identifiers are unaffected.
+    const existing = await resolveVersion(versionId, ADMIN);
+    assert.strictEqual(existing.status, 200, `a valid existing id must still resolve: ${JSON.stringify(existing.body)}`);
+    const nonexistent = await resolveVersion(String(MAX_POSTGRES_INTEGER), ADMIN);
+    assert.strictEqual(nonexistent.status, 404, `a valid nonexistent in-range id must be 404, got ${nonexistent.status}`);
+    assert.strictEqual(nonexistent.body.code, 'PUBLISHED_VERSION_NOT_FOUND');
+  });
+
+  it('K3 — the strict parser accepts only well-formed in-range decimal identifiers', async () => {
+    const { toPositiveInt } = require('../src/services/published-knowledge.service');
+    assert.strictEqual(toPositiveInt('1'), 1);
+    assert.strictEqual(toPositiveInt(String(MAX_POSTGRES_INTEGER)), MAX_POSTGRES_INTEGER);
+    assert.strictEqual(toPositiveInt('0007'), 7, 'leading zeros remain a plain decimal integer');
+    const rejected = ['1.5', '1abc', '1e3', '1 OR 1=1', "1'--", '1;DROP TABLE t', '-1', '0', '', ' 1', '0x1',
+      String(MAX_POSTGRES_INTEGER + 1), '9'.repeat(30), '1e309', 'Infinity', 'NaN', null, undefined, {}, []];
+    for (const bad of rejected) {
+      assert.strictEqual(toPositiveInt(bad), null, `${JSON.stringify(bad)} must be rejected`);
+    }
   });
 
   // =========================================================================
