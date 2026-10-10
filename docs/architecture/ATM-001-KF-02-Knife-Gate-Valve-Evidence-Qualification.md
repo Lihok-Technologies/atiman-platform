@@ -3,12 +3,12 @@
 **Document ID:** ATM-001-KF-02
 **Mission:** ATIMAN-KF-01/02 — Knowledge Foundation Closure and Engineering Evidence Qualification
 **Status:** Investigation and evidence-qualification record. **Authorises no authoring, no approval, no publication.**
-**Revision:** 1.1 — adversarial corrections applied (see §11.3)
+**Revision:** 1.2 — dated baseline reconciliation appended (§13). Revision 1.1 applied the adversarial corrections recorded in §11.3.
 **Pilot:** Atiman equipment type **21** (`KNIFE`, "Knife Gate Valve"); legacy template **1217** (`KNIFE_INSPECTION`).
 **Governing policy:** `ATM-001-M6.4-Knowledge-Source-And-Evidence-Policy.md` (OWNER-ratified) — §2, §3, §4, §4.1, §7, §8, §11.
-**Repository baseline:** `origin/main` = `988fbb99f31737dbc8f6050511964091e7962ce0`
+**Repository baseline (verification):** `origin/main` = `988fbb99f31737dbc8f6050511964091e7962ce0` (the revision this qualification was performed against); `main` has since advanced to `bfa18c7ffa4c7f46ffa1bfd31447f0f9360b254e` (merge of PR #80, KF-06). See §13.
 **Investigation date:** 2026-10-10
-**Qualification outcome:** **`NO_ADMISSIBLE_ENGINEERING_EVIDENCE`** for authoring a publishable, evidence-backed Knife Gate Valve inspection procedure today. See §9.
+**Qualification outcome:** **`NO_ADMISSIBLE_ENGINEERING_EVIDENCE`** for authoring a publishable, evidence-backed Knife Gate Valve inspection procedure today. See §9. **Unchanged at the reconciled baseline — see §13.**
 
 ---
 
@@ -369,3 +369,33 @@ claim of independent acceptance is made.
 It does not author, transform, approve, publish, cite-as-authority, purchase, or store any engineering
 document. It creates no knowledge source, no evidence row, no version and no capability. It establishes
 no engineering value. It authorises no procedure and asserts no readiness.
+
+---
+
+## 13. Dated baseline reconciliation (revision 1.2, 2026-10-10)
+
+This section is appended; it changes no evidentiary finding above.
+
+| Item | Value |
+|---|---|
+| Qualification performed against | `origin/main` = `988fbb99f31737dbc8f6050511964091e7962ce0` |
+| Current `main` at reconciliation | `bfa18c7ffa4c7f46ffa1bfd31447f0f9360b254e` (merge of PR #80, KF-06 evidence-deletion integrity) |
+| Effect of the advance on this qualification | **None.** PR #80 changes only the authorization *effect* of deleting a knowledge definition that has working evidence attached. It adds no source, no edition, no evidence row, no capability, no migration and no engineering content, so it cannot change whether admissible engineering evidence exists for the Knife Gate Valve pilot |
+
+**Verdict preserved: `NO_ADMISSIBLE_ENGINEERING_EVIDENCE`.** Every pilot fact recorded above remains as
+investigated and is not superseded by PR #80:
+
+- equipment type **21** (`KNIFE`, "Knife Gate Valve");
+- legacy template **1217** (`KNIFE_INSPECTION`) with **5** legacy steps;
+- manufacturer / model — **NOT ESTABLISHED**;
+- rights / licence status — **UNRESOLVED** (M6.4 §4 / §4.1; deficiency **G1** is the live gate);
+- acceptance criteria, safety content, intervals, torque values and pressure/temperature limits —
+  **UNRESOLVED**;
+- M6.4 §6 (AI must not establish engineering correctness, safety controls, triggers/intervals,
+  acceptance criteria, Equipment-Type applicability, source authority or approval) and the M6.4 §11
+  **G1 / G2** restrictions remain in force.
+
+No OEM applicability, inspection limit, safety requirement, maintenance interval, acceptance criterion
+or licence permission is asserted here, and no reference-only material is promoted into approved
+engineering authority. The recommended next mission **KF-03** (§10) is unchanged and still requires
+architectural review and OWNER authorization before it starts.

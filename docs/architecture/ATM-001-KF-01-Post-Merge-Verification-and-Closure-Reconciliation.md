@@ -3,8 +3,10 @@
 **Document ID:** ATM-001-KF-01
 **Mission:** ATIMAN-KF-01/02 — Knowledge Foundation Closure and Engineering Evidence Qualification
 **Status:** Verification and reconciliation record. **Authorises no implementation, no deployment, no migration, no publication.**
+**Revision:** 1.1 — dated KF-06 remediation reconciliation appended (§18). Revision 1.0 verified PR #78 at `988fbb99…`.
 **Verification date:** 2026-10-10
-**Subject:** PR #78 — ATM-001-K3 Knowledge Accession Authority — and its effect on the ATM-001 V1 closure records.
+**KF-06 reconciliation date:** 2026-10-10
+**Subject:** PR #78 — ATM-001-K3 Knowledge Accession Authority — and its effect on the ATM-001 V1 closure records; reconciled against merged PR #80 (KF-06).
 
 ---
 
@@ -29,7 +31,7 @@ and no change to PR #27.
 |---|---|
 | Repository | `Lihok-Technologies/atiman-platform` |
 | Branch (mission) | `atm-kf-01-02-knowledge-closure-and-kgv-evidence`, created from `origin/main` |
-| `origin/main` (verified) | `988fbb99f31737dbc8f6050511964091e7962ce0` |
+| `origin/main` (verified) | `988fbb99f31737dbc8f6050511964091e7962ce0` — revision-1.0 baseline; `main` has since advanced to `bfa18c7ffa4c7f46ffa1bfd31447f0f9360b254e` (merge of PR #80, KF-06). See §18 |
 | Merge commit tree | `ce32efdd201b7fd89db52ca31461ea95755b582a` |
 | PR #78 head | `db0de82d63184d6929bb7a331779ac1ffaf982a6` |
 | Pre-merge `main` | `54ee2094c7b7ddbfeb2e7d7f2bb5855014382bc2` |
@@ -46,7 +48,7 @@ and no change to PR #27.
 | Merge commit | `988fbb99f31737dbc8f6050511964091e7962ce0` — **matches the expected merge commit** |
 | Merged at | `2026-10-09T23:19:49Z`, by `estrangender26` |
 | Merge parents | `54ee2094…` (pre-merge `main`) **and** `db0de82…` (PR head) — a true two-parent merge commit |
-| Merge commit in `main` history | `988fbb99…` is the tip of `origin/main`; PR head `db0de82…` is an **ancestor** of `origin/main` |
+| Merge commit in `main` history | `988fbb99…` was the tip of `origin/main` at revision 1.0; PR head `db0de82…` is an **ancestor** of `origin/main` (main has since advanced to `bfa18c7…` — see §18) |
 | **Merge integrity (strongest available check)** | The merge commit tree is `ce32efdd…`, which is **byte-identical to the PR head tree**. A merge that resolves no conflicts and introduces no content change cannot have silently altered the reviewed code |
 | Diff introduced by the merge | `git diff 54ee2094 988fbb99` = **9 files, +1,667 / −29**, exactly the reviewed PR #78 diff |
 
@@ -216,8 +218,13 @@ Production deployment was investigated **read-only**. Nothing was changed, resta
 > **deployed revision cannot be identified** from available evidence, and no production database or
 > deployment record was read. **No production acceptance is claimed for revision `988fbb99…`.**
 >
-> Verifying this requires an authorised read-only production reconciliation (see §13.6, recommended
-> mission KF-05). No guess is recorded in place of evidence.
+> Verifying this requires an authorised read-only production reconciliation (see §15.3 finding **F-5**,
+> recommended mission KF-05). No guess is recorded in place of evidence.
+>
+> **Reconciliation note (revision 1.1).** This determination is unchanged for the current revision. The
+> production health endpoint was re-probed live at the KF-06 merge and still exposes **no revision
+> identity**; the deployed revision remains unidentified and `PRODUCTION_STATUS_UNVERIFIED` (see §18.4).
+> Stale cross-reference corrected at revision 1.1: the original text cited a non-existent "§13.6".
 
 **Risk note (not a finding against PR #78).** Because Auto-Deploy runs `db:migrate:postgres` on every
 merge, an unverified deployment is also an unverified migration execution. For **this** merge the risk is
@@ -272,6 +279,14 @@ code. The clean re-run (fresh database, canonical migrations, exit code captured
 **898/898, 0 fail, 0 `not ok`, 0 deadlock mentions, exit 0**. Two runs, one deadlock, one clean — on the
 same code. This corroborates the parallel-execution nondeterminism recorded at F-3 and is **not** a
 failure of the merged code.
+
+**Relation attribution added at reconciliation (revision 1.1).** The later independent KF-06 review
+observed the same class of deadlock and mapped its cycle to concrete relations:
+`knowledge_pack_membership_guard()` awaiting a `RowShareLock` on **`knowledge_pack_versions`** against a
+concurrent `AccessExclusiveLock` on **`knowledge_pack_version_task_template_versions`**. Neither relation
+belongs to the KF-06 change (whose tables are `task_templates` and `task_template_steps`), which is further
+evidence that the intermittent parallel-execution nondeterminism is a pre-existing shared-runner hazard,
+not a defect in either merged change. The finding remains open as F-3.
 
 ---
 
@@ -377,9 +392,9 @@ independent reviewer.** Formal independent VUDA acceptance for this revision is 
 
 | ID | Class | Finding | Disposition |
 |---|---|---|---|
-| **F-1** | **MAJOR** | **Transitive working-evidence destruction defeats the `evidence.attach` mapping in effect.** A supervisor holding `knowledge.author` (and no `evidence.attach`) is refused on `DELETE …/evidence/:evidenceId` (403) yet destroys the same working evidence by deleting the draft template (`DELETE /api/task-templates/:id` → 200, `ON DELETE CASCADE`). **Independently reproduced** by this mission (§4.1). **Pre-existing, not a regression**; bounded to working evidence and to principals who already hold authoring authority over the definition | Documented and referred to bounded remediation mission **KF-06** (mirror the existing `STEP_EVIDENCE_PRESENT` guard onto template deletion, or add a `BEFORE DELETE` guard). **No code changed by this mission** |
+| **F-1** | **MAJOR** | **Transitive working-evidence destruction defeats the `evidence.attach` mapping in effect.** A supervisor holding `knowledge.author` (and no `evidence.attach`) is refused on `DELETE …/evidence/:evidenceId` (403) yet destroys the same working evidence by deleting the draft template (`DELETE /api/task-templates/:id` → 200, `ON DELETE CASCADE`). **Independently reproduced** by this mission (§4.1). **Pre-existing, not a regression**; bounded to working evidence and to principals who already hold authoring authority over the definition | Documented and referred to bounded remediation mission **KF-06** (mirror the existing `STEP_EVIDENCE_PRESENT` guard onto template deletion, or add a `BEFORE DELETE` guard). **No code changed by this mission.** **STATUS UPDATE (revision 1.1, 2026-10-10): MAJOR — REMEDIATED IN MAIN** by PR #80 (merge `bfa18c7ffa4c7f46ffa1bfd31447f0f9360b254e`); see §18 |
 | **F-2** | **NIT** | Structural guard-to-capability regression assertions in the merged tests are source-text scans; a future fifth mutation route guarded by a *different* capability would not move the asserted counts. Behavioural coverage mitigates | Recorded; test-hardening opportunity, not a defect |
-| **F-3** | **MINOR** | **Parallel-execution nondeterminism in the sanctioned suite.** Three independent data points: (a) pre-merge `main` CI was **red** (862/863) on a Knowledge Pack Membership assertion, then green at the merge commit with **no** corresponding code change; (b) one of this mission's two runs on the identical merged tree emitted a **PostgreSQL deadlock report**; (c) the clean re-run was 898/898 with no deadlock. All 25 suites share one database injected into one `node --test` invocation | Recorded for monitoring; consider a bounded CI-determinism review (isolate shared-fixture suites and/or remove the deadlock-prone contention). **No code change made by this mission** |
+| **F-3** | **MINOR** | **Parallel-execution nondeterminism in the sanctioned suite.** Three independent data points: (a) pre-merge `main` CI was **red** (862/863) on a Knowledge Pack Membership assertion, then green at the merge commit with **no** corresponding code change; (b) one of this mission's two runs on the identical merged tree emitted a **PostgreSQL deadlock report**; (c) the clean re-run was 898/898 with no deadlock. All 25 suites share one database injected into one `node --test` invocation | Recorded for monitoring; consider a bounded CI-determinism review (isolate shared-fixture suites and/or remove the deadlock-prone contention). **No code change made by this mission.** Relation attribution added at revision 1.1: `knowledge_pack_versions` ↔ `knowledge_pack_version_task_template_versions` (§12, §18.3) |
 | **F-4** | **MINOR** | The V1 closure ledger contains **six statements rendered stale** by post-closure merges (§13.3) | Reconciliation recorded here; a dated addendum to the ledger is recommended (not performed in this PR, to keep it to its three authorised documents) |
 | **F-5** | **MINOR** | **`PRODUCTION_STATUS_UNVERIFIED`**: the deployed production revision cannot be identified from repository/GitHub evidence, and no production record was read. Production has no observable revision identity on `/health` | Recorded; requires an authorised read-only production reconciliation (recommended mission KF-05). **No guess made** |
 | **F-6** | **NIT** | GitHub deployment records are stale (all Railway, 2026-03-19) while `render.yaml` auto-deploys from `main`; GitHub therefore does not reflect the real deployment channel | Recorded; consider whether the Render GitHub App should report deployment status (governance-owned, out of mission scope) |
@@ -388,6 +403,10 @@ independent reviewer.** Formal independent VUDA acceptance for this revision is 
 | **F-9** | **NIT** | Precision of the merge-integrity statement: "zero content change" is true **relative to the PR head tree**; relative to the **base** commit the merge changed 9 files. The record states both facts (§3), and this row removes any ambiguity | Recorded; wording already qualified in §3 |
 
 **No BLOCKER. Findings: one MAJOR (F-1, pre-existing guard completeness — not a regression and not introduced by PR #78); five MINOR (F-3, F-4, F-5, F-7, F-8); three NIT (F-2, F-6, F-9). No authorization regression, tenant-isolation failure or immutability failure was found.**
+
+**Reconciliation update (revision 1.1, 2026-10-10).** F-1 is **REMEDIATED IN MAIN** by PR #80 (merge
+`bfa18c7ffa4c7f46ffa1bfd31447f0f9360b254e`). The revised ledger is therefore: **no BLOCKER; zero MAJOR
+open**; the five MINOR and three NIT findings above remain as recorded. See §18.
 
 ---
 
@@ -423,11 +442,105 @@ independent reviewer.** Formal independent VUDA acceptance for this revision is 
    **pre-existing (not a regression introduced by PR #78)**, security impact bounded to working evidence
    and to principals already holding `knowledge.author`, and **referred to bounded remediation mission
    KF-06** because the fix requires an application-code change this mission is not authorised to make.
+   **Status at reconciliation (revision 1.1, 2026-10-10): REMEDIATED IN MAIN** — KF-06 was authorised and
+   delivered as PR #80 (merge `bfa18c7ffa4c7f46ffa1bfd31447f0f9360b254e`) and independently verified; see
+   §18.
 
-### 17.1 Recommended remediation mission
+### 17.1 Recommended remediation mission (delivered at revision 1.1)
 
 **KF-06 (recommended): "Close the transitive working-evidence destruction path"** — add the missing
 guard on definition deletion so that the `evidence.attach` mapping holds in effect, mirroring the
 existing `STEP_EVIDENCE_PRESENT` pattern (service-level check and/or a database `BEFORE DELETE` guard on
 `task_templates`), with regression tests proving that a principal denied `evidence.attach` cannot destroy
 working evidence by any route. **Requires architectural review and OWNER authorisation; not started.**
+
+**Status update (revision 1.1, 2026-10-10).** KF-06 was subsequently authorised by the OWNER, delivered
+as **PR #80**, and **merged to `main`** at `bfa18c7ffa4c7f46ffa1bfd31447f0f9360b254e`. The guard is
+implemented at the model operation (both the definition and its step rows are locked, and the refusal
+carries `EVIDENCE_PRESENT` → HTTP 409), with a registered regression suite. It was independently verified
+by the **ATIMAN-KF-06-VUDA** review mission, which reproduced the defect on the base commit and its
+closure on the merge head before issuing **PASS_WITH_MINOR_FINDINGS**. See §18 for the full
+reconciliation, the preserved acceptance boundaries and the recorded residuals.
+
+---
+
+## 18. Dated reconciliation — KF-06 remediation landed in main (revision 1.1)
+
+**This section is appended, not substituted.** Everything above remains the historical revision-1.0
+record of the PR #78 verification at `988fbb99…`. This section records only what has changed since, and
+it changes no revision-1.0 observation.
+
+### 18.1 What changed in `main`
+
+| Item | Value (verified at reconciliation) |
+|---|---|
+| PR #80 — ATM-001-KF-06 "Knowledge Evidence Deletion Integrity" | **MERGED** |
+| Merge commit | `bfa18c7ffa4c7f46ffa1bfd31447f0f9360b254e` — a true two-parent merge of base `988fbb99…` and PR head `eb373e830c08fd88f28b60324d55b14c602fe548` |
+| Merged at | `2026-10-10T00:58:45Z` |
+| Branch | `atm-001-kf-06-knowledge-evidence-deletion-integrity` |
+| Diff introduced | **6 files, +1,125 / −4**; no change to `src/config/` (capability vocabulary and bundles), `src/routes/` (route guards), `database/postgresql/` or `database/migrations/` |
+| Post-merge CI (`push` / `main` / `bfa18c7…`) | run `38011317579` — **success** |
+
+The guard now present on `main` (`src/models/task-template.model.js`) is, in one transaction:
+
+1. `SELECT id FROM task_templates WHERE id = ? FOR UPDATE` — locks the **definition** row;
+2. `SELECT id FROM task_template_steps WHERE task_template_id = ? FOR UPDATE` — locks the **step** rows
+   (a step-level attachment takes its `FOR KEY SHARE` lock on the step row, not the definition);
+3. `countWorkingEvidence(id, conn)` — counts working evidence bound directly **or** through a step;
+4. a refusal with `error.code = 'EVIDENCE_PRESENT'` **before** any mutation; and
+5. the controller maps that code to **HTTP 409** (`src/controllers/task-template.controller.js`).
+
+The regression suite `tests/knowledge-evidence-deletion-integrity.test.js` is registered in both
+`scripts/run-integration-tests.js` and `tests/database-test-guard.test.js`.
+
+### 18.2 F-1 status
+
+| Field | Record |
+|---|---|
+| Finding | **F-1** — transitive working-evidence destruction (guard completeness) |
+| Status at revision 1.0 | **MAJOR — OPEN** |
+| **Status at reconciliation (revision 1.1)** | **MAJOR — REMEDIATED IN MAIN** |
+| Remediation | PR #80, merge `bfa18c7ffa4c7f46ffa1bfd31447f0f9360b254e` |
+| Independent verification | **ATIMAN-KF-06-VUDA** — an OWNER-authorised independent review mission executed in a separate reviewer context with its own disposable PostgreSQL cluster and its own fixtures. It reproduced the defect on the base revision (`988fbb99…`: a `knowledge.author`-only supervisor delete → **200**, evidence rows 1 → 0) and its closure on the merge head (→ **409 `EVIDENCE_PRESENT`**, template, steps and evidence intact), for **both** template-level and step-level evidence. Verdict: **PASS_WITH_MINOR_FINDINGS** |
+| Regression evidence at the merged revision | KF-06 focused suite **17/17**; sanctioned integration **915/915** (26 suites; one earlier run showed a single pre-existing parallel-execution deadlock, F-3); `npm test` **162/162** |
+| Concurrency evidence | Independent adversarial reproduction: a concurrent (uncommitted) template-level **and** step-level attachment each forces 409 with the evidence intact; the two locks are independently load-bearing (removing either makes the corresponding regression test fail); no deadlock, cascade loss or orphaned evidence was observed involving the KF-06 tables |
+| Residuals left open (bounded; none is a security blocker) | **R-2** guards remain application-layer (raw SQL / CLI deletion is not HTTP-reachable); **R-3** deleting a definition that has a published version but no working evidence surfaces as HTTP 500 through the existing immutability trigger (pre-existing; nothing destroyed); **R-4** a losing concurrent attach surfaces as HTTP 500 with a raw FK message (no evidence is created); **R-6** a definition that vanishes mid-flight answers an optimistic 200 |
+
+**Evidence-provenance note.** The ATIMAN-KF-06-VUDA review is an OWNER-authorised independent review
+mission. Its report is currently an **external mission record and is not yet a repository artifact**. A
+future record-accuracy action should commit the report (or a repository summary of it) so that the
+revision-1.1 evidence cited here is traceable from the repository alone. Until then, this reconciliation
+cites the mission by name rather than linking a repository path.
+
+### 18.3 Residual-record precision corrections (from the independent review)
+
+These correct statements in the merged KF-06 record. They are recorded here because this mission's scope
+is the three KF-01/02/register documents; the KF-06 record itself should receive a matching dated
+addendum in a future record-accuracy action.
+
+| Residual | Correction |
+|---|---|
+| **R-5 — source-version cascade** | The KF-06 record describes `fk_knowledge_template_evidence_source_version`'s `ON DELETE CASCADE` as latent and unreachable because no route, controller or model method deletes a source or a source version. The independent review established an additional, stronger protection the record does not mention: a **`BEFORE DELETE` trigger, `trg_knowledge_source_versions_immutable` (`immutable_source_version_check`), raises SQLSTATE `23503`** ("… is referenced by evidence and cannot be deleted") **before the cascade can run**, so the cascade is blocked even by a direct SQL delete. The cascade is therefore **not currently exploitable** and must not be described as such without contrary evidence |
+| **F-3 — CI deadlock relation** | The deadlock observed under parallel execution is between `knowledge_pack_membership_guard()` awaiting a `RowShareLock` on **`knowledge_pack_versions`** and a concurrent `AccessExclusiveLock` on **`knowledge_pack_version_task_template_versions`**. Neither is a KF-06 table. The KF-06 record's §8.0 attributes the DDL lock to `task_template_versions`; the verified relation is `knowledge_pack_version_task_template_versions` |
+
+### 18.4 Acceptance boundaries preserved
+
+- **Implementation acceptance** — the guard exists and behaves as specified on `main` (verified by
+  reading the merged source and the route/controller mapping).
+- **Integration acceptance** — the KF-06 suite, the sanctioned integration suite and `npm test` pass at
+  the merged revision, and the post-merge CI run is green.
+- **Production acceptance** — **NOT claimed.** The production health endpoint exposes no revision
+  identity, so the deployed revision cannot be identified. The current revision is recorded as
+  **`PRODUCTION_STATUS_UNVERIFIED`**. Nothing in this reconciliation asserts a verified production
+  deployment.
+- **Independent acceptance (register requirement 16)** — **still PENDING.** The KF-06 VUDA is one
+  independently authorised review *of one milestone*; it does **not** satisfy the whole-ATM-001
+  independent acceptance gate and is not offered as doing so.
+
+### 18.5 Effect on the KF-01 conclusion
+
+F-1 is **closed in `main`**. The revised finding ledger is: **no BLOCKER; zero MAJOR open** (F-1
+remediated); five MINOR (**F-3**, F-4, F-5, F-7, F-8) and three NIT (F-2, F-6, F-9) remain as recorded.
+The KF-01 verification objectives remain **PASS**, now with F-1 recorded as remediated rather than open.
+The V1 closure ledger's six stale statements (F-4) are unaffected by this reconciliation and still
+require their own dated addendum.

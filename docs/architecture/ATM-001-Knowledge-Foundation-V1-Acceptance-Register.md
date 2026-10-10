@@ -3,7 +3,9 @@
 **Document ID:** ATM-001-KF-AR
 **Mission:** ATIMAN-KF-01/02 — Knowledge Foundation Closure and Engineering Evidence Qualification
 **Status:** Verified acceptance register. **Records status only; authorises no implementation, no publication and no deployment.**
-**Repository baseline:** `origin/main` = `988fbb99f31737dbc8f6050511964091e7962ce0` (merge of PR #78)
+**Register revision:** 1.1 — dated reconciliation against current `main` (`bfa18c7ffa4c7f46ffa1bfd31447f0f9360b254e`, merge of PR #80 / ATM-001-KF-06). Revision 1.0 was verified against `988fbb99f31737dbc8f6050511964091e7962ce0` (merge of PR #78).
+**Repository baseline (current):** `origin/main` = `bfa18c7ffa4c7f46ffa1bfd31447f0f9360b254e` (merge of PR #80, KF-06)
+**Originating baseline (revision 1.0):** `988fbb99f31737dbc8f6050511964091e7962ce0` (merge of PR #78)
 **Register date:** 2026-10-10
 
 ---
@@ -11,7 +13,9 @@
 ## 0. How to read this register, and its one global limitation
 
 Statuses: **VERIFIED** · **PARTIAL** · **PENDING** · **BLOCKED** · **NOT_APPLICABLE**.
-A requirement is marked VERIFIED **only** where reproducible evidence exists in this mission.
+A requirement is marked VERIFIED **only** where reproducible evidence exists for the revision stated.
+Register revision 1.1 adds the merged KF-06 remediation and its independent verification to the evidence
+base (§0.1).
 
 > ## ⚠ Global qualification — integration acceptance ≠ production acceptance
 >
@@ -21,14 +25,39 @@ A requirement is marked VERIFIED **only** where reproducible evidence exists in 
 >
 > **This register does NOT claim production acceptance for the current revision.** The deployed production
 > revision could not be identified from repository or GitHub evidence (see
-> `ATM-001-KF-01-Post-Merge-Verification-and-Closure-Reconciliation.md` §10), and no production database
-> was read. Production acceptance for revision `988fbb99…` is recorded as
-> **`PRODUCTION_STATUS_UNVERIFIED`**.
+> `ATM-001-KF-01-Post-Merge-Verification-and-Closure-Reconciliation.md` §10 and §18.4), and no production
+> database was read. Production acceptance for the current revision (`bfa18c7…`) is recorded as
+> **`PRODUCTION_STATUS_UNVERIFIED`**. The KF-06 independent review verified **implementation and
+> integration** behaviour on disposable databases only; it is **not** production acceptance.
 >
 > The historical V1 closure ledger records production acceptance at its own baseline
 > (`922a0405…`, migration 021). That acceptance does **not** transfer forward to this revision.
 
-**Evidence base used throughout:**
+### 0.1 Revision reconciliation (revision 1.1, 2026-10-10)
+
+`main` advanced from `988fbb99…` (PR #78) to `bfa18c7ffa4c7f46ffa1bfd31447f0f9360b254e` (merge of
+**PR #80**, ATM-001-KF-06 "Knowledge Evidence Deletion Integrity") after revision 1.0 of this register.
+KF-06 closes the transitive working-evidence destruction path (KF-01 finding **F-1**, MAJOR) that made
+requirement 5 PARTIAL. It adds a guard at the model operation — both the definition row and its step rows
+are locked `FOR UPDATE` in one transaction, working evidence is counted, and the deletion is refused with
+`EVIDENCE_PRESENT` mapped to **HTTP 409** before any mutation — plus a registered regression suite. It
+changes no capability, no bundle, no route guard, no migration and no schema.
+
+| Evidence at revision 1.1 (`bfa18c7…`) | Result |
+|---|---|
+| Canonical migration runner against disposable PostgreSQL (`db:migrate:postgres`) | **23/23 applied**, no migration added by KF-06 |
+| KF-06 focused suite (`knowledge-evidence-deletion-integrity`) | **17/17 pass, 0 fail** |
+| Full sanctioned integration suite (26 suites, parallel) | **915/915 pass, 0 fail** (one earlier run showed a single pre-existing parallel-execution deadlock — F-3) |
+| `npm test` (non-destructive) | **162/162 pass, 0 fail** |
+| Independent KF-06 verification (**ATIMAN-KF-06-VUDA**, OWNER-authorised, separate reviewer context, own disposable database and fixtures) | **PASS_WITH_MINOR_FINDINGS** — reproduced the defect on the base revision and its closure on the merge head, for template-level and step-level evidence; both locks independently load-bearing under mutation testing |
+| Post-merge CI (`push` / `main` / `bfa18c7…`, run `38011317579`) | **success** |
+
+**Boundary.** The KF-06 review verified *one milestone* at integration level. It does **not** satisfy
+requirement 16 (independent acceptance), which requires an independent review mission over ATM-001 as a
+whole **and** production acceptance. Requirement 16 remains **PENDING**. The review's report is currently
+an external mission record, **not yet a repository artifact** (see KF-01 §18.2).
+
+**Evidence base — revision 1.0 (`988fbb99…`, PR #78):**
 
 | Evidence | Result |
 |---|---|
@@ -40,6 +69,15 @@ A requirement is marked VERIFIED **only** where reproducible evidence exists in 
 | Independent adversarial probe (separate database, own fixtures, checks A–N) | **45/45 pass** |
 | Post-merge CI (GitHub Actions, run `38003870422`) | **success** |
 
+**Evidence base — revision 1.1 (`bfa18c7…`, PR #80 / KF-06):** see §0.1 — KF-06 focused **17/17**,
+sanctioned integration **915/915** (26 suites), `npm test` **162/162**, independent KF-06 verification
+**PASS_WITH_MINOR_FINDINGS**, post-merge CI run `38011317579` **success**.
+
+> **Scope of the revision-1.1 reconciliation.** Only **requirement 5** changes status. Requirements 13,
+> 14, 15 and 16 are re-examined but **not** upgraded, because KF-06 supplies no new implementation
+> evidence for operational resolution, historical version attribution, operational consumption, or
+> whole-ATM-001 independent acceptance.
+
 ---
 
 ## 1. Summary register
@@ -50,7 +88,7 @@ A requirement is marked VERIFIED **only** where reproducible evidence exists in 
 | 2 | Legacy knowledge preservation | **VERIFIED** | — |
 | 3 | Source registration | **VERIFIED** | — |
 | 4 | Immutable source versions | **VERIFIED** | — |
-| 5 | Evidence attachment | **PARTIAL** | Transitive `ON DELETE CASCADE` path defeats the `evidence.attach` guard in effect (G-5 / KF-01 F-1) |
+| 5 | Evidence attachment and removal integrity | **VERIFIED** (integration level) | — (G-5 / KF-01 F-1 **remediated in `main`** by PR #80; bounded residuals recorded in §2 requirement 5) |
 | 6 | Tenant isolation | **VERIFIED** | — |
 | 7 | Global knowledge protection | **VERIFIED** | — |
 | 8 | Capability authorization | **VERIFIED** | — |
@@ -63,10 +101,12 @@ A requirement is marked VERIFIED **only** where reproducible evidence exists in 
 | 15 | Operational consumption | **PARTIAL** | Publication/version semantics not operationally present (G-15) |
 | 16 | Independent acceptance | **PENDING** | Independent VUDA mission + production acceptance (G-16) |
 
-**No requirement is BLOCKED and none is NOT_APPLICABLE.** The four PARTIAL items and the one PENDING
-item are **governed gaps with named next missions**. Three of them (13, 14, 15) are deliberate boundary
-gaps; one (5) is a **MAJOR guard-completeness defect** discovered by adversarial verification and referred
-to remediation mission KF-06. None of them is a defect in the V1 governance model itself.
+**No requirement is BLOCKED and none is NOT_APPLICABLE.** At revision 1.1, **twelve** requirements are
+VERIFIED at integration level; three PARTIAL items (13, 14, 15) are **governed boundary gaps with named
+next missions**; and one (16) is **PENDING** because independence and production acceptance cannot be
+self-granted. Requirement 5's former MAJOR guard-completeness defect (G-5 / F-1) is **remediated in
+`main`** by PR #80 and independently verified; its bounded residuals are recorded under requirement 5
+and none is a security blocker. None of the open items is a defect in the V1 governance model itself.
 
 ---
 
@@ -109,24 +149,25 @@ to remediation mission KF-06. None of them is a defect in the V1 governance mode
 
 | Field | Record |
 |---|---|
-| Supporting evidence | Source editions are insert-only: UPDATE refused unconditionally, DELETE refused once referenced by evidence; source identity (`organization_id`, `source_code`, `source_category`) locked after an edition exists |
-| Implementation reference | Migration `011`; `trg_knowledge_source_versions_immutable`, `trg_knowledge_sources_identity_lock` |
-| Existing tests | `tests/knowledge-provenance-authoring.test.js` (model-surface immutability assertions) |
+| Supporting evidence | Source editions are insert-only: UPDATE refused unconditionally, DELETE refused once referenced by evidence; source identity (`organization_id`, `source_code`, `source_category`) locked after an edition exists. The DELETE refusal is enforced **before** any cascade: `immutable_source_version_check()` raises SQLSTATE **`23503`** ("… is referenced by evidence and cannot be deleted") when a `knowledge_template_evidence` or `knowledge_template_version_evidence` row references the edition. `fk_knowledge_template_evidence_source_version` is declared `ON DELETE CASCADE`, but that cascade is **not currently reachable** for a referenced edition because the `BEFORE DELETE` trigger refuses first. (Precision correction recorded from the independent KF-06 review — see §0.1 and KF-01 §18.3; the cascade must not be described as currently exploitable without contrary evidence.) |
+| Implementation reference | Migration `011`; `trg_knowledge_source_versions_immutable` (`immutable_source_version_check`), `trg_knowledge_sources_identity_lock` |
+| Existing tests | `tests/knowledge-provenance-authoring.test.js` (model-surface and trigger immutability assertions); independently probed in the KF-06 verification, where a raw `DELETE FROM knowledge_source_versions` was refused with `23503` and the evidence row survived |
 | Missing acceptance evidence | None material |
 | Blockers | None |
 | Recommended next mission | None |
 
-### 5. Evidence attachment — **PARTIAL**
+### 5. Evidence attachment and removal integrity — **VERIFIED** (integration level, revision 1.1)
 
 | Field | Record |
 |---|---|
-| Status | **PARTIAL** — the evidence model and its mapped routes work exactly as ratified; the authorization boundary is **route-complete but not effect-complete** |
-| Supporting evidence | Working (`knowledge_template_evidence`) and frozen (`knowledge_template_version_evidence`) evidence with exactly-one-subject enforcement, tenant-scope trigger, confidence and supporting-role vocabularies; frozen rows immutable; `ON DELETE RESTRICT` accountability linkage; **post-K3-G2 the attachment/detachment routes require `evidence.attach`, and a `knowledge.author`-only principal is refused on those routes (403, no row removed)** |
-| Implementation reference | Migration `011`; `trg_knowledge_template_evidence_tenant_scope`, `trg_knowledge_template_version_evidence_immutable`; `src/models/knowledge-provenance.model.js` (`attachEvidence`, `detachWorkingEvidence`); `src/routes/knowledge-provenance.routes.js` |
-| Existing tests | `tests/knowledge-accession-authority.test.js` (16/16 — mapping, denial, no-write, tenancy), `tests/knowledge-provenance-authoring.test.js` (46/46), independent probe checks A/B/C/I |
-| **Missing acceptance evidence** | A guard that prevents working-evidence destruction by any route when the caller lacks `evidence.attach`, and a regression test proving it |
-| Blockers | **G-5 — transitive working-evidence destruction (MAJOR).** `DELETE /api/task-templates/:id` is guarded only by `knowledge.author`, and `fk_knowledge_template_evidence_template` is `ON DELETE CASCADE`, so a principal denied `evidence.attach` can delete a draft definition and destroy its working evidence. **Independently reproduced** (KF-01 §4.1: direct route 403, template delete 200, evidence rows 1 → 0). Pre-existing; not introduced by PR #78; bounded to working evidence and to principals already holding `knowledge.author`. Frozen/published evidence is unaffected |
-| Recommended next mission | **KF-06 (recommended): close the transitive working-evidence destruction path** — mirror the existing `STEP_EVIDENCE_PRESENT` guard onto definition deletion (service check and/or a `BEFORE DELETE` guard on `task_templates`) with regression tests. Requires an application-code change and therefore architectural review + OWNER authorisation |
+| Status | **VERIFIED at integration level.** The evidence model and its mapped routes work exactly as ratified, and the authorization boundary is now **effect-complete** for the F-1 path: a principal without `evidence.attach` can no longer destroy working evidence through a definition deletion. Historical status at revision 1.0 was **PARTIAL** (G-5 / F-1 OPEN) |
+| Supporting evidence | Working (`knowledge_template_evidence`) and frozen (`knowledge_template_version_evidence`) evidence with exactly-one-subject enforcement, tenant-scope trigger, confidence and supporting-role vocabularies; frozen rows immutable; `ON DELETE RESTRICT` accountability linkage; post-K3-G2 the attachment/detachment routes require `evidence.attach`, and a `knowledge.author`-only principal is refused on those routes (403, no row removed). **Post-KF-06 (PR #80, merge `bfa18c7…`), deleting a definition is additionally refused while working evidence is attached — directly or through any of its steps — with HTTP 409 `EVIDENCE_PRESENT`, before any mutation, in one transaction that locks the definition row and its step rows** |
+| Implementation reference | Migration `011`; `trg_knowledge_template_evidence_tenant_scope`, `trg_knowledge_template_version_evidence_immutable`; `src/models/knowledge-provenance.model.js` (`attachEvidence`, `detachWorkingEvidence`); `src/routes/knowledge-provenance.routes.js`; **`src/models/task-template.model.js` (`countWorkingEvidence`, guarded `deleteIfEditable`) and `src/controllers/task-template.controller.js` (409 mapping)** |
+| Existing tests | `tests/knowledge-accession-authority.test.js` (16/16 — mapping, denial, no-write, tenancy), `tests/knowledge-provenance-authoring.test.js` (46/46); **`tests/knowledge-evidence-deletion-integrity.test.js` (17/17; registered in the sanctioned runner and the database-test guard)**; independent KF-06 probe on a disposable database with the reviewer's own fixtures |
+| Independent verification | **ATIMAN-KF-06-VUDA** (OWNER-authorised independent review mission; separate reviewer context; own disposable PostgreSQL cluster and own fixtures). It reproduced the defect on the base revision (`988fbb99…`: a `knowledge.author`-only supervisor delete → **200**, evidence 1 → 0) and its closure on the merge head (→ **409**, evidence intact), for **both** template-level and step-level evidence; mutation testing confirmed both `FOR UPDATE` locks are independently load-bearing; verdict **PASS_WITH_MINOR_FINDINGS** |
+| Remaining acceptance evidence | Only the bounded residuals below; none defeats the requirement |
+| Blockers | **None** — G-5 / KF-01 F-1 is **REMEDIATED IN MAIN**. Bounded residuals recorded (not blockers): **R-2** the guard is application-layer (raw SQL / CLI deletion is not HTTP-reachable); **R-3** deleting a definition that has a published version but no working evidence surfaces as HTTP 500 through the existing immutability trigger (nothing destroyed); **R-4** a losing concurrent attach surfaces as HTTP 500 with a raw FK message (no evidence created); **R-6** a definition that vanishes mid-flight answers an optimistic 200 |
+| Recommended next mission | None required for the F-1 path. Optional bounded hardening: a `BEFORE DELETE` trigger on `task_templates` (or an explicit `delete()` override) to close R-2 at the database layer, and clean error-contract mapping for R-3/R-4/R-6 |
 
 ### 6. Tenant isolation — **VERIFIED**
 
@@ -157,7 +198,7 @@ to remediation mission KF-06. None of them is a defect in the V1 governance mode
 | Supporting evidence | Tenant-scoped, attributed, revocable capability grants (migration 022); resolver with two modes (`EXPLICIT_GRANTS` / `LEGACY_COMPATIBILITY`) and no union; explicit grants are revocable history, never deleted; bundles are explicit enumerations (operator 2 / supervisor 14 / admin 16) with no wildcard; **post-K3-G2 provenance mapping is exactly: sources + editions → `knowledge.author`; evidence attach/detach → `evidence.attach`; three reads → `KNOWLEDGE.VIEW`** |
 | Implementation reference | Migration `022`; `src/config/capabilities.js`; `src/services/capability.service.js`; `src/middleware/capability.middleware.js`; `src/routes/knowledge-provenance.routes.js` |
 | Existing tests | `tests/capability-grants.test.js` (63/63, includes the guard-to-capability ↔ bundle agreement block), `tests/knowledge-accession-authority.test.js` R15/R16, independent probe checks A–E, K, L, M |
-| Caveat | The capability **mechanism** is verified. One destructive **transitive path** is not capability-guarded — see requirement 5 / G-5 / KF-01 F-1 |
+| Caveat | The capability **mechanism** is verified. The former destructive **transitive path** (requirement 5 / G-5 / F-1) is now **remediated in `main`** by PR #80 and independently verified; only the bounded, non-security residuals recorded under requirement 5 remain. The K3-G2 mapping itself is unchanged: sources + editions → `knowledge.author`; evidence attach/detach → `evidence.attach`; three reads → `KNOWLEDGE.VIEW` |
 | Missing acceptance evidence | Production grant inventory (not read) |
 | Blockers | None |
 | Recommended next mission | Production read-only grant inventory in the production-acceptance mission (note: the closure ledger recorded 1 user / 0 organizations at the V1 baseline; whether grants now exist is unverified) |
@@ -247,37 +288,43 @@ to remediation mission KF-06. None of them is a defect in the V1 governance mode
 
 | Field | Record |
 |---|---|
-| Status | **PENDING** |
+| Status | **PENDING** (unchanged at revision 1.1) |
 | Supporting evidence (historical) | The V1 closure ledger records a **final whole-ATM-001 VUDA 29/29** (fresh, independent: own database, own fixtures, areas A–L) and production acceptance at baseline `922a0405…` |
-| Supporting evidence (this mission) | Repository integrity, merged-artifact verification, sanctioned suites (898/898), `npm test` (159/159), focused suites (16/16, 46/46, 17/17, 63/63) and an independent adversarial probe (45/45, own database and fixtures) |
-| **Missing acceptance evidence** | (a) An **independent review mission** (separate authority/context, per VUDA governance) executed against **this** revision; (b) **production acceptance** for this revision — the deployed revision could not be identified, so **`PRODUCTION_STATUS_UNVERIFIED`** |
-| Blockers | **G-16** — independence cannot be self-granted. The KF-01/02 adversarial reviews were **separate-context** reviews, explicitly **not** an independent review mission and **not** a human independent reviewer. Recorded as PENDING rather than fabricated |
-| Recommended next mission | **KF-05 (recommended): "Independent VUDA and Production Acceptance for revision `988fbb99…`"** — an independently authorised reviewer performs the VUDA, and an authorised read-only production reconciliation identifies the deployed revision and its schema/corpus state |
+| Supporting evidence (revision 1.0) | Repository integrity, merged-artifact verification, sanctioned suites (898/898), `npm test` (159/159), focused suites (16/16, 46/46, 17/17, 63/63) and an independent adversarial probe (45/45, own database and fixtures) |
+| Supporting evidence (revision 1.1) | The **ATIMAN-KF-06-VUDA** independent review mission (separate reviewer authority/context; own disposable database and fixtures) verified the KF-06 milestone: **PASS_WITH_MINOR_FINDINGS**, with base-versus-head falsification and mutation testing. **This is milestone-level, not whole-ATM-001, independent acceptance.** The KF-01 and KF-02 adversarial reviews remain **separate-context** reviews, explicitly **not** independent review missions and **not** human independent reviewers |
+| **Missing acceptance evidence** | (a) An **independent review mission** (separate authority/context, per VUDA governance) executed against the **whole** ATM-001 Knowledge Foundation at the current revision — the KF-06 mission covers one milestone only and does **not** discharge this gate; (b) **production acceptance** for the current revision (`bfa18c7…`) — the deployed revision could not be identified, so **`PRODUCTION_STATUS_UNVERIFIED`** |
+| Blockers | **G-16** — independence cannot be self-granted, and it cannot be assembled from milestone reviews. Recorded as PENDING rather than fabricated or partially claimed |
+| Recommended next mission | **KF-05 (recommended): "Independent VUDA and Production Acceptance for the current revision"** — an independently authorised reviewer performs the whole-ATM-001 VUDA, and an authorised read-only production reconciliation identifies the deployed revision and its schema/corpus state |
 
 ---
 
 ## 3. Register conclusions
 
-1. **Eleven of sixteen requirements are VERIFIED at integration level** with reproducible evidence, and
+Status at **register revision 1.1** (`bfa18c7…`, PR #80 / KF-06 merged):
+
+1. **Twelve of sixteen requirements are VERIFIED at integration level** with reproducible evidence, and
    none is BLOCKED or NOT_APPLICABLE.
-2. **Five requirements are open:** published-template resolution (13), historical inspection
-   attribution (14) and operational consumption (15) are governed gaps whose implementation is
-   deliberately outside the closed V1 governance boundary; independent acceptance (16) is PENDING because
-   independence and production acceptance cannot be fabricated; and **evidence attachment (5) is PARTIAL**
-   because one transitive destruction path defeats the `evidence.attach` guard in effect (G-5, MAJOR).
-3. **No regression was found, but one MAJOR guard-completeness defect was discovered (G-5).** Post-merge,
-   the knowledge governance and authorization surface behaves as ratified on every mapped route, including
-   the K3‑R1 global-write protection and the OWNER-approved K3‑G2 capability mapping; the G-5 defect is a
-   **pre-existing** path that PR #78 neither created nor widened.
+2. **Four requirements remain open, and none is a V1-governance defect:** published-template resolution
+   (13), historical inspection attribution (14) and operational consumption (15) are governed boundary
+   gaps whose implementation is deliberately outside the closed V1 governance boundary; independent
+   acceptance (16) is PENDING because independence and production acceptance cannot be fabricated.
+3. **The former MAJOR guard-completeness defect (G-5 / F-1) is REMEDIATED IN MAIN** by PR #80 (merge
+   `bfa18c7ffa4c7f46ffa1bfd31447f0f9360b254e`) and independently verified (**ATIMAN-KF-06-VUDA**,
+   PASS_WITH_MINOR_FINDINGS). Requirement 5 is therefore **VERIFIED at integration level** — a status
+   change from revision 1.0, where it was PARTIAL. The revision-1.0 record of the defect is preserved in
+   `ATM-001-KF-01-Post-Merge-Verification-and-Closure-Reconciliation.md` §4.1, §17.1 and the appended
+   §18. The remediation changes no capability, bundle, route guard, migration or schema, and leaves only
+   bounded, non-security residuals (R-2 / R-3 / R-4 / R-6, recorded under requirement 5).
 4. **Production acceptance is NOT claimed.** The register's VERIFIED statuses are integration-level only;
-   the deployed revision is unidentified and is recorded as `PRODUCTION_STATUS_UNVERIFIED`.
+   the deployed revision is unidentified and is recorded as `PRODUCTION_STATUS_UNVERIFIED` for the current
+   revision.
 5. The two dated debts **G1** (rights/licence status not structurally represented) and **G2** (evidence
    subject granularity) remain recorded and un-fired **until** an authored procedure is attempted. The
-   KF-02 evidence qualification shows that the **G1 trigger is now the next live gate** for the Knife Gate
-   Valve pilot.
+   KF-02 evidence qualification shows that the **G1 trigger is the next live gate** for the Knife Gate
+   Valve pilot, and G2 is engaged by any type-specific evidenced safety/applicability claim.
 
 **Recommended next engineering mission (single):** **KF-03 — Knife Gate Valve Asset Identity and Rights
-Adjudication** (evidence prerequisites; see `ATM-001-KF-02` §10), then **KF-06 — Close the transitive
-working-evidence destruction path** (G-5, MAJOR), then **KF-04 — Published Knowledge Resolution for
-Operational Execution**, with **KF-05 — Independent VUDA and Production Acceptance** as the closing gate.
-None may start without architectural review and OWNER authorisation.
+Adjudication** (evidence prerequisites; see `ATM-001-KF-02` §10 and §13), then **KF-04 — Published
+Knowledge Resolution for Operational Execution** (requirements 13/14/15), with **KF-05 — Independent VUDA
+and Production Acceptance** as the closing gate. **KF-06 is complete** and is removed from the forward
+sequence. None of the remaining missions may start without architectural review and OWNER authorisation.
