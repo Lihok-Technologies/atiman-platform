@@ -192,11 +192,26 @@ class PublishedKnowledgeModel extends BaseModel {
   }
 
   /**
-   * Frozen provenance evidence with the immutable source-edition identity it
-   * cites. `task_template_step_version_id` distinguishes step-level evidence
-   * (NULL = attached to the version as a whole).
+   * ALL frozen provenance evidence of a published version, with the immutable
+   * source-edition identity it cites.
+   *
+   * A frozen evidence row is attached to EITHER the version as a whole OR one of
+   * its step versions, never both (migration 011
+   * `chk_knowledge_template_version_evidence_exactly_one_subject`). The step-level
+   * rows carry `task_template_version_id = NULL` and are reachable only through
+   * `task_template_step_version_id`, so a version-only predicate would silently
+   * drop them — the publication admission trigger explicitly accepts a version
+   * whose only provenance is step-level (migration 020). Both shapes are returned
+   * here, and the exactly-one-subject check means no row can match twice.
+   *
+   * Evidence sources are scoped to the caller: a global (`organization_id IS
+   * NULL`) source, or one owned by the caller's tenant. Migration 011's scope
+   * trigger anchors on the MUTABLE working template's organization, not on the
+   * frozen version's, so a globally readable version can legally cite a
+   * tenant-private source; without this predicate the resolver would disclose
+   * that tenant's source identity to every other tenant.
    */
-  async listVersionEvidence(versionId) {
+  async listVersionEvidence(versionId, organizationId = null) {
     return this.query(
       `SELECT
          e.id,
@@ -218,9 +233,13 @@ class PublishedKnowledgeModel extends BaseModel {
        FROM knowledge_template_version_evidence e
        JOIN knowledge_source_versions sv ON sv.id = e.knowledge_source_version_id
        JOIN knowledge_sources s ON s.id = sv.knowledge_source_id
-       WHERE e.task_template_version_id = ?
+       WHERE (e.task_template_version_id = ?
+              OR e.task_template_step_version_id IN (
+                   SELECT stv.id FROM task_template_step_versions stv
+                    WHERE stv.task_template_version_id = ?))
+         AND (s.organization_id IS NULL OR s.organization_id = ?)
        ORDER BY e.id`,
-      [versionId]
+      [versionId, versionId, organizationId]
     );
   }
 

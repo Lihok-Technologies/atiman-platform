@@ -330,7 +330,9 @@ async function resolvePublishedVersion(versionId, { organizationId = null } = {}
     PublishedKnowledge.listVersionSteps(id),
     PublishedKnowledge.listVersionSafetyControls(id),
     PublishedKnowledge.listVersionApplicability(id),
-    PublishedKnowledge.listVersionEvidence(id)
+    // Evidence sources are scoped to the caller, so a globally readable version
+    // can never disclose another tenant's private source identity.
+    PublishedKnowledge.listVersionEvidence(id, toScopeId(organizationId))
   ]);
 
   if (steps.length === 0) {

@@ -163,15 +163,25 @@ async function publishVersion(templateId, {
   knowledgeScope = 'customer',
   templateName = 'KF04A Published Version',
   sourceVersionId = null,
+  sourceOrganizationId,
   applicabilityTypeId = EQUIPMENT_TYPE,
-  withSafety = true
+  withSafety = true,
+  evidenceMode = 'version',
+  stepIndex = 0,
+  stepSourceVersionId = null,
+  evidenceOrder = 'version-first'
 } = {}) {
   // The publication-admission trigger requires a frozen provenance evidence row,
   // and a safety attestation that matches the frozen control set. Fixtures must
   // therefore always carry evidence; one is created when the caller omits it.
+  // `sourceOrganizationId` overrides the evidence source's tenant independently
+  // of the frozen version's scope, to exercise the (DB-legal) divergent case.
   let evidenceSourceVersionId = sourceVersionId;
   if (!evidenceSourceVersionId) {
-    const created = await createSourceVersion(organizationId === null ? null : organizationId);
+    const sourceOrg = sourceOrganizationId === undefined
+      ? (organizationId === null ? null : organizationId)
+      : sourceOrganizationId;
+    const created = await createSourceVersion(sourceOrg);
     evidenceSourceVersionId = created.sourceVersionId;
   }
   const safetyReviewState = withSafety ? 'reviewed_controls_defined' : 'reviewed_no_control_required';
@@ -203,10 +213,12 @@ async function publishVersion(templateId, {
       `INSERT INTO task_template_version_equipment_types (task_template_version_id, equipment_type_id, is_primary)
        VALUES (?, ?, true)`, [version.id, applicabilityTypeId]);
 
+    const stepVersionIds = [];
     for (const step of steps) {
-      await query(conn,
+      const [stepVersion] = await query(conn,
         `INSERT INTO task_template_step_versions (task_template_version_id, step_no, task_template_step_id, step_type, instruction)
-         VALUES (?, ?, ?, ?, ?)`, [version.id, step.step_no, step.id, step.step_type, step.instruction]);
+         VALUES (?, ?, ?, ?, ?) RETURNING id`, [version.id, step.step_no, step.id, step.step_type, step.instruction]);
+      stepVersionIds.push(stepVersion.id);
     }
     if (withSafety) {
       const [control] = await query(conn,
@@ -216,10 +228,29 @@ async function publishVersion(templateId, {
         `INSERT INTO task_template_safety_control_versions (task_template_version_id, task_template_safety_control_id, safety_type, description, is_mandatory)
          VALUES (?, ?, 'isolation', 'KF04A isolate before work', true)`, [version.id, control.id]);
     }
-    await query(conn,
+    // NEW-1: frozen provenance is attached to EITHER the version as a whole OR
+    // one of its step versions, never both (migration 011
+    // chk_knowledge_template_version_evidence_exactly_one_subject). All three
+    // shapes satisfy the publication admission trigger; `none` deliberately
+    // violates it so the negative case can be exercised.
+    const stepEvidenceSourceVersionId = stepSourceVersionId || evidenceSourceVersionId;
+    const insertVersionEvidence = () => query(conn,
       `INSERT INTO knowledge_template_version_evidence
          (task_template_version_id, knowledge_source_version_id, section_or_clause, confidence_level, supporting_role)
        VALUES (?, ?, 'S1', 'established', 'primary')`, [version.id, evidenceSourceVersionId]);
+    const insertStepEvidence = () => query(conn,
+      `INSERT INTO knowledge_template_version_evidence
+         (task_template_step_version_id, knowledge_source_version_id, section_or_clause, confidence_level, supporting_role)
+       VALUES (?, ?, 'STEP-1', 'established', 'supporting')`,
+      [stepVersionIds[stepIndex], stepEvidenceSourceVersionId]);
+
+    const wantsVersionEvidence = evidenceMode === 'version' || evidenceMode === 'mixed';
+    const wantsStepEvidence = evidenceMode === 'step' || evidenceMode === 'mixed';
+    const stepFirst = evidenceOrder === 'step-first';
+    if (wantsStepEvidence && stepFirst) await insertStepEvidence();
+    if (wantsVersionEvidence) await insertVersionEvidence();
+    if (wantsStepEvidence && !stepFirst) await insertStepEvidence();
+
     await query(conn, `UPDATE task_template_versions SET is_step_set_sealed = TRUE WHERE id = ?`, [version.id]);
     return version.id;
   });
@@ -229,6 +260,8 @@ const templateVersionCount = (templateId) => withConn((conn) =>
   query(conn, `SELECT COUNT(*)::int AS n FROM task_template_versions WHERE task_template_id = ?`, [templateId]));
 const versionState = (versionId) => withConn((conn) =>
   query(conn, `SELECT lifecycle_state_at_publish FROM task_template_versions WHERE id = ?`, [versionId]));
+const versionStepVersionIds = (versionId) => withConn((conn) =>
+  query(conn, `SELECT id FROM task_template_step_versions WHERE task_template_version_id = ? ORDER BY step_no`, [versionId]));
 
 // ---------------------------------------------------------------- HTTP helpers
 let server;
@@ -492,6 +525,257 @@ describe('Published Knowledge Resolution (ATM-001-KF-04A)', { skip: DB_TEST_SKIP
     const foreign = await listForType(EQUIPMENT_TYPE, OPERATOR);
     assert.ok(!foreign.body.data.versions.map((v) => v.id).includes(foreignVersion),
       'another tenant must not discover it');
+  });
+
+  // =========================================================================
+  // NEW-1 — step-level frozen provenance is served, not silently dropped
+  // =========================================================================
+  it('NEW-1a — STEP-ONLY frozen provenance is returned, with its step version and edition identity', async () => {
+    const templateId = await createWorkingTemplate();
+    await addWorkingStep(templateId, 'KF04A step-only evidence step');
+    const versionId = await publishVersion(templateId, {
+      evidenceMode: 'step', templateName: 'KF04A Step-Only Evidence'
+    });
+
+    const res = await resolveVersion(versionId, ADMIN);
+    assert.strictEqual(res.status, 200, `expected 200: ${JSON.stringify(res.body)}`);
+    assert.strictEqual(res.body.data.evidence.length, 1, 'the step-level evidence must be served');
+
+    const [evidence] = res.body.data.evidence;
+    assert.strictEqual(evidence.subject, 'step');
+    assert.strictEqual(evidence.sectionOrClause, 'STEP-1');
+    assert.strictEqual(evidence.confidenceLevel, 'established');
+    assert.strictEqual(evidence.supportingRole, 'supporting');
+    assert.strictEqual(evidence.versionDesignation, '1.0', 'exact source-edition identity preserved');
+    assert.ok(evidence.sourceCode, 'source identity preserved');
+
+    const stepIds = (await versionStepVersionIds(versionId)).map((row) => Number(row.id));
+    assert.ok(stepIds.includes(evidence.stepVersionId),
+      'stepVersionId must belong to the resolved version');
+  });
+
+  it('NEW-1b — VERSION-ONLY frozen provenance is returned unchanged', async () => {
+    const templateId = await createWorkingTemplate();
+    await addWorkingStep(templateId, 'KF04A version-only evidence step');
+    const versionId = await publishVersion(templateId, {
+      evidenceMode: 'version', templateName: 'KF04A Version-Only Evidence'
+    });
+
+    const res = await resolveVersion(versionId, ADMIN);
+    assert.strictEqual(res.status, 200, `expected 200: ${JSON.stringify(res.body)}`);
+    assert.strictEqual(res.body.data.evidence.length, 1);
+    const [evidence] = res.body.data.evidence;
+    assert.strictEqual(evidence.subject, 'version');
+    assert.strictEqual(evidence.stepVersionId, null);
+    assert.strictEqual(evidence.sectionOrClause, 'S1');
+    assert.strictEqual(evidence.versionDesignation, '1.0');
+  });
+
+  it('NEW-1c — MIXED provenance returns both subjects exactly once, deterministically', async () => {
+    const templateId = await createWorkingTemplate();
+    await addWorkingStep(templateId, 'KF04A mixed evidence step');
+    const versionId = await publishVersion(templateId, {
+      evidenceMode: 'mixed', templateName: 'KF04A Mixed Evidence'
+    });
+
+    const res = await resolveVersion(versionId, ADMIN);
+    assert.strictEqual(res.status, 200, `expected 200: ${JSON.stringify(res.body)}`);
+
+    const evidence = res.body.data.evidence;
+    assert.strictEqual(evidence.length, 2, 'both the version-level and the step-level row are served');
+    assert.deepStrictEqual(evidence.map((e) => e.subject).sort(), ['step', 'version']);
+    assert.strictEqual(new Set(evidence.map((e) => e.id)).size, 2, 'no row is duplicated by the join');
+    assert.deepStrictEqual(evidence.map((e) => e.id), [...evidence.map((e) => e.id)].sort((a, b) => a - b),
+      'ordering is deterministic (by evidence id)');
+    assert.strictEqual(evidence.find((e) => e.subject === 'step').stepVersionId !== null, true);
+    assert.strictEqual(evidence.find((e) => e.subject === 'version').stepVersionId, null);
+  });
+
+  it('NEW-1d — step-level evidence never leaks across versions', async () => {
+    const templateA = await createWorkingTemplate();
+    await addWorkingStep(templateA, 'KF04A evidence isolation A');
+    const versionA = await publishVersion(templateA, { evidenceMode: 'step', templateName: 'KF04A Evidence A' });
+
+    const templateB = await createWorkingTemplate();
+    await addWorkingStep(templateB, 'KF04A evidence isolation B');
+    const versionB = await publishVersion(templateB, { evidenceMode: 'step', templateName: 'KF04A Evidence B' });
+
+    const a = await resolveVersion(versionA, ADMIN);
+    const b = await resolveVersion(versionB, ADMIN);
+
+    assert.strictEqual(a.body.data.evidence.length, 1);
+    assert.strictEqual(b.body.data.evidence.length, 1);
+    assert.notStrictEqual(a.body.data.evidence[0].id, b.body.data.evidence[0].id,
+      'each version returns only its own evidence');
+    assert.notStrictEqual(a.body.data.evidence[0].stepVersionId, b.body.data.evidence[0].stepVersionId);
+
+    const stepIdsA = (await versionStepVersionIds(versionA)).map((row) => Number(row.id));
+    assert.ok(stepIdsA.includes(a.body.data.evidence[0].stepVersionId));
+    assert.ok(!stepIdsA.includes(b.body.data.evidence[0].stepVersionId));
+  });
+
+  it('NEW-1e — sibling versions of the SAME template keep their own step evidence', async () => {
+    const templateId = await createWorkingTemplate();
+    await addWorkingStep(templateId, 'KF04A sibling evidence step');
+    const v1 = await publishVersion(templateId, { evidenceMode: 'step', templateName: 'KF04A Sibling v1' });
+    const v2 = await publishVersion(templateId, { evidenceMode: 'step', templateName: 'KF04A Sibling v2' });
+
+    const r1 = await resolveVersion(v1, ADMIN);
+    const r2 = await resolveVersion(v2, ADMIN);
+    assert.strictEqual(r1.body.data.evidence.length, 1);
+    assert.strictEqual(r2.body.data.evidence.length, 1);
+
+    const [e1] = r1.body.data.evidence;
+    const [e2] = r2.body.data.evidence;
+    assert.notStrictEqual(e1.id, e2.id, 'sibling versions must not share evidence rows');
+    assert.notStrictEqual(e1.stepVersionId, e2.stepVersionId);
+
+    const v1Steps = (await versionStepVersionIds(v1)).map((row) => Number(row.id));
+    const v2Steps = (await versionStepVersionIds(v2)).map((row) => Number(row.id));
+    assert.ok(v1Steps.includes(e1.stepVersionId) && !v2Steps.includes(e1.stepVersionId),
+      'v1 evidence must belong to v1 steps only');
+    assert.ok(v2Steps.includes(e2.stepVersionId) && !v1Steps.includes(e2.stepVersionId),
+      'v2 evidence must belong to v2 steps only');
+  });
+
+  it('NEW-1f — a globally readable version never discloses another tenant\'s private source', async () => {
+    // The frozen version scope is global, but its parent template belongs to ORG
+    // and its evidence cites an ORG-private source. Migration 011's scope trigger
+    // anchors on the MUTABLE template organization, so this state is DB-legal; the
+    // resolver must still not disclose ORG's source identity to another tenant.
+    const templateId = await createWorkingTemplate(ORG);
+    await addWorkingStep(templateId, 'KF04A divergent evidence step');
+    const versionId = await publishVersion(templateId, {
+      organizationId: null,
+      knowledgeScope: 'shared',
+      sourceOrganizationId: ORG,
+      templateName: 'KF04A Divergent Evidence'
+    });
+
+    const owner = await resolveVersion(versionId, OPERATOR); // ORG
+    assert.strictEqual(owner.status, 200, JSON.stringify(owner.body));
+    assert.strictEqual(owner.body.data.evidence.length, 1,
+      'the owning tenant still receives its own source evidence');
+    assert.ok(owner.body.data.evidence[0].sourceCode, 'source identity preserved for the owner');
+
+    const foreign = await resolveVersion(versionId, OPERATOR_B); // ORG_B
+    assert.strictEqual(foreign.status, 200, 'the version itself is globally readable');
+    assert.deepStrictEqual(foreign.body.data.evidence, [],
+      'another tenant must not receive ORG-private provenance');
+  });
+
+  it('NEW-1g — step evidence is routed to the correct step version, not the first or a step_no position', async () => {
+    const templateId = await createWorkingTemplate();
+    await addWorkingStep(templateId, 'KF04A multi step one');
+    await addWorkingStep(templateId, 'KF04A multi step two');
+    await addWorkingStep(templateId, 'KF04A multi step three');
+    const { sourceVersionId: stepSource } = await createSourceVersion(ORG);
+    const versionId = await publishVersion(templateId, {
+      evidenceMode: 'step', stepIndex: 1, stepSourceVersionId: stepSource,
+      evidenceOrder: 'step-first', templateName: 'KF04A Multi-Step Routing'
+    });
+
+    const res = await resolveVersion(versionId, ADMIN);
+    assert.strictEqual(res.body.data.evidence.length, 1);
+    const [evidence] = res.body.data.evidence;
+    assert.strictEqual(evidence.subject, 'step');
+    assert.strictEqual(Number(evidence.knowledgeSourceVersionId), Number(stepSource),
+      'the step row carries its own source edition');
+
+    const stepIds = (await versionStepVersionIds(versionId)).map((row) => Number(row.id));
+    assert.strictEqual(stepIds.length, 3);
+    assert.strictEqual(evidence.stepVersionId, stepIds[1], 'routed to the second step version');
+    assert.notStrictEqual(evidence.stepVersionId, stepIds[0]);
+    assert.notStrictEqual(evidence.stepVersionId, stepIds[2]);
+  });
+
+  it('NEW-1h — mixed evidence is ordered by evidence id even when the step row is inserted first', async () => {
+    const templateId = await createWorkingTemplate();
+    await addWorkingStep(templateId, 'KF04A ordering step');
+    const versionId = await publishVersion(templateId, {
+      evidenceMode: 'mixed', evidenceOrder: 'step-first', templateName: 'KF04A Ordering'
+    });
+
+    const first = await resolveVersion(versionId, ADMIN);
+    const second = await resolveVersion(versionId, ADMIN);
+    const ids = first.body.data.evidence.map((e) => e.id);
+    assert.deepStrictEqual(ids, [...ids].sort((a, b) => a - b), 'ascending evidence id');
+    assert.deepStrictEqual(second.body.data.evidence.map((e) => e.id), ids, 'deterministic across reads');
+    assert.deepStrictEqual(first.body.data.evidence.map((e) => e.subject), ['step', 'version'],
+      'the step row was inserted first, so it is returned first');
+  });
+
+  it('NEW-1i — cross-tenant step evidence is unreachable', async () => {
+    const templateB = await createWorkingTemplate(ORG_B);
+    await addWorkingStep(templateB, 'KF04A ORG_B step evidence');
+    const versionB = await publishVersion(templateB, { organizationId: ORG_B, evidenceMode: 'step' });
+
+    const foreign = await resolveVersion(versionB, ADMIN); // ORG
+    assert.strictEqual(foreign.status, 404, 'another tenant cannot reach the version, so not its evidence');
+
+    const owner = await resolveVersion(versionB, OPERATOR_B);
+    assert.strictEqual(owner.status, 200);
+    assert.strictEqual(owner.body.data.evidence.length, 1);
+  });
+
+  it('NEW-1j — admission REFUSES a version with no frozen provenance (lawful shapes only)', async () => {
+    const templateId = await createWorkingTemplate();
+    await addWorkingStep(templateId, 'KF04A no-evidence step');
+
+    await assert.rejects(
+      () => publishVersion(templateId, { evidenceMode: 'none', templateName: 'KF04A No Evidence' }),
+      (error) => {
+        const text = `${error.message} ${error.code}`;
+        assert.match(text, /frozen evidence|23514|check_violation/i,
+          'admission must refuse a version with no frozen evidence row');
+        return true;
+      }
+    );
+  });
+
+  it('NEW-1k — frozen evidence is still served when its source is deactivated', async () => {
+    const templateId = await createWorkingTemplate();
+    await addWorkingStep(templateId, 'KF04A deactivated source step');
+    const versionId = await publishVersion(templateId, {
+      evidenceMode: 'step', templateName: 'KF04A Deactivated Source'
+    });
+
+    const sourceRow = await withConn((conn) => query(conn,
+      `SELECT sv.knowledge_source_id AS id
+         FROM knowledge_template_version_evidence e
+         JOIN knowledge_source_versions sv ON sv.id = e.knowledge_source_version_id
+        WHERE e.task_template_version_id IS NULL
+          AND e.task_template_step_version_id IN (
+                SELECT id FROM task_template_step_versions WHERE task_template_version_id = ?)
+        LIMIT 1`, [versionId]));
+    assert.ok(sourceRow[0], 'the fixture must have a step-level evidence source');
+    await withConn((conn) => query(conn,
+      `UPDATE knowledge_sources SET is_active = FALSE WHERE id = ?`, [sourceRow[0].id]));
+
+    const res = await resolveVersion(versionId, ADMIN);
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.body.data.evidence.length, 1,
+      'frozen provenance must not depend on the live source activation flag');
+  });
+
+  it('NEW-1l — the evidence DTO exposes exactly the frozen contract and no internal identifiers', async () => {
+    const templateId = await createWorkingTemplate();
+    await addWorkingStep(templateId, 'KF04A dto shape step');
+    const versionId = await publishVersion(templateId, { evidenceMode: 'step' });
+
+    const res = await resolveVersion(versionId, ADMIN);
+    const [evidence] = res.body.data.evidence;
+    assert.deepStrictEqual(Object.keys(evidence).sort(), [
+      'confidenceLevel', 'derivationNotes', 'id', 'issuingOrganization', 'knowledgeSourceVersionId',
+      'pageOrParagraph', 'sectionOrClause', 'sourceCategory', 'sourceCode', 'sourceTitle',
+      'sourceVersionReference', 'sourceVersionTitle', 'stepVersionId', 'subject', 'supportingRole',
+      'versionDesignation'
+    ].sort(), 'the DTO contract is exactly the approved field set');
+    assert.strictEqual(evidence.task_template_version_id, undefined, 'no internal column leaks');
+    assert.strictEqual(evidence.taskTemplateVersionId, undefined, 'no internal identifier leaks');
+    assert.strictEqual(typeof evidence.stepVersionId, 'number');
+    assert.ok(evidence.stepVersionId > 0);
+    assert.strictEqual(evidence.subject, 'step');
   });
 
   // =========================================================================
