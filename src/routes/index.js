@@ -84,6 +84,10 @@ router.use('/knowledge-packs', require('./knowledge-pack.routes'));
 // Governed External Classification Crosswalk (ATM-001 M5R.3E)
 router.use('/knowledge-crosswalks', require('./knowledge-crosswalk.routes'));
 
+// Published Knowledge Resolution (ATM-001-KF-04A): read-only operational
+// resolution of immutable PUBLISHED task-template versions.
+router.use('/knowledge-published', require('./published-knowledge.routes'));
+
 // Mobile Inspection Workflow (API)
 router.use('/m', require('./mobile-inspection.routes'));
 

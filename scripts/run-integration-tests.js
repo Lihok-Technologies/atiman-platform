@@ -81,7 +81,11 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   // ATM-001-KF-06: knowledge evidence deletion integrity — a definition deletion
   // may not destroy working provenance evidence as a cascade side effect, so
   // authorization covers the operation's effect and not merely its route.
-  'tests/knowledge-evidence-deletion-integrity.test.js'
+  'tests/knowledge-evidence-deletion-integrity.test.js',
+  // ATM-001-KF-04A: published knowledge resolution — an operational consumer is
+  // served the IMMUTABLE PUBLISHED version (never the mutable working
+  // definition, never a draft), fail-closed and tenant-scoped.
+  'tests/published-knowledge-resolution.test.js'
 ];
 
 /**

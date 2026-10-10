@@ -84,6 +84,10 @@ const DB_MUTATING_SUITES = [
   // steps, sources, versions, working evidence, a global source fixture and
   // out-of-band published versions).
   'knowledge-evidence-deletion-integrity.test.js',
+  // ATM-001-KF-04A published knowledge resolution (writes definitions, steps,
+  // sources, editions, frozen versions and applicability across two tenants,
+  // including a global version fixture).
+  'published-knowledge-resolution.test.js',
   'step6-access-control.test.js',
   'step6-coverage-e2e.test.js',
   'step6-performance.test.js',
@@ -121,7 +125,8 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'report-capture.test.js',
   'knowledge-accession-authority.test.js',
   'provenance-write-scope.test.js',
-  'knowledge-evidence-deletion-integrity.test.js'
+  'knowledge-evidence-deletion-integrity.test.js',
+  'published-knowledge-resolution.test.js'
 ];
 
 const REPO_ROOT = path.resolve(__dirname, '..');
