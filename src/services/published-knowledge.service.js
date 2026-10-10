@@ -9,7 +9,9 @@
  * Fail-closed rules enforced here:
  *   1. The version must exist                        -> 404 (non-disclosing)
  *   2. The version must be in the caller's scope     -> 404 (non-disclosing)
- *      (global `organization_id IS NULL`, or the caller's tenant)
+ *      (global `organization_id IS NULL`, or the caller's tenant). A scope
+ *      that is MISSING or malformed fails closed: only an explicit database
+ *      NULL is global, so an absent column cannot widen a tenant read.
  *   3. `lifecycle_state_at_publish` must be          -> 409 PUBLISHED_VERSION_NOT_CURRENT
  *      `published` (superseded/retired are refused, and a draft cannot
  *      reach this table at all)
@@ -104,11 +106,42 @@ const toPositiveInt = (value) => {
 const IDENTIFIER_REQUIREMENT =
   'must be a positive integer within the PostgreSQL INTEGER range (1-2147483647)';
 
-/** A row is in scope when it is global, or owned by the caller's tenant. */
-const isInScope = (row, organizationId) =>
-  row.organization_id === null
-  || row.organization_id === undefined
-  || Number(row.organization_id) === Number(organizationId);
+/**
+ * Canonical organization scope id, or null when the value is not a valid scope.
+ *
+ * Accepts a positive integer or a plain decimal integer string (a PostgreSQL
+ * `integer` column may be returned as either). `0`, negatives, fractions,
+ * booleans, blanks and non-numeric strings are rejected rather than coerced into
+ * a value that could compare equal to a real tenant.
+ */
+const toScopeId = (value) => {
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value > 0 ? value : null;
+  }
+  if (typeof value === 'string' && /^[0-9]+$/.test(value)) {
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+  }
+  return null;
+};
+
+/**
+ * A row is in scope when its FROZEN organization scope is EXPLICITLY global
+ * (database NULL) or EXPLICITLY the caller's tenant.
+ *
+ * Fail closed, never open: only an explicit database NULL is global. Migration
+ * 020 models shared reference knowledge as `organization_id IS NULL`, and
+ * `chk_task_template_versions_scope_organization` binds a non-null scope to a
+ * real organization — so a scope that is MISSING or malformed is never global.
+ * An absent column must not widen a tenant read; a caller with no tenant scope
+ * therefore sees only global knowledge.
+ */
+const isInScope = (row, organizationId) => {
+  if (row.organization_id === null) return true;
+  const scope = toScopeId(row.organization_id);
+  if (scope === null) return false;
+  return scope === toScopeId(organizationId);
+};
 
 const isPublished = (row) => row.lifecycle_state_at_publish === PUBLISHED_LIFECYCLE_STATE;
 
@@ -334,7 +367,10 @@ async function listPublishedVersionsForTemplate(templateId, { organizationId = n
       { field: 'templateId', message: IDENTIFIER_REQUIREMENT }
     ]);
   }
-  const rows = await PublishedKnowledge.listPublishedVersionsForTemplate(id, organizationId);
+  // A malformed caller scope must not reach SQL as a raw value: it is normalized
+  // to NULL, which the list predicate reads as "global rows only" — the same
+  // fail-closed answer isInScope gives, rather than a driver-level type error.
+  const rows = await PublishedKnowledge.listPublishedVersionsForTemplate(id, toScopeId(organizationId));
   return rows.map(toVersionSummary);
 }
 
@@ -346,7 +382,7 @@ async function listPublishedVersionsForEquipmentType(equipmentTypeId, { organiza
       { field: 'equipmentTypeId', message: IDENTIFIER_REQUIREMENT }
     ]);
   }
-  const rows = await PublishedKnowledge.listPublishedVersionsForEquipmentType(id, organizationId);
+  const rows = await PublishedKnowledge.listPublishedVersionsForEquipmentType(id, toScopeId(organizationId));
   return rows.map(toVersionSummary);
 }
 
@@ -355,6 +391,7 @@ module.exports = {
   listPublishedVersionsForTemplate,
   listPublishedVersionsForEquipmentType,
   assertServableVersion,
+  isInScope,
   toPositiveInt,
   MAX_POSTGRES_INTEGER,
   PublishedKnowledgeValidationError,

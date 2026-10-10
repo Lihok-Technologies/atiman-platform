@@ -53,6 +53,7 @@ const SUPERVISOR = 995512; // ORG supervisor
 const OPERATOR = 995513;   // ORG operator
 const ADMIN_B = 995514;    // ORG_B admin
 const OPERATOR_B = 995515; // ORG_B operator
+const OPERATOR_NO_ORG = 995516; // authenticated principal with NO organization (organization_id NULL)
 const CATEGORY = 995521;
 const CLASS = 995522;
 const EQUIPMENT_TYPE = 995523;
@@ -88,7 +89,8 @@ async function ensureFixture() {
       [SUPERVISOR, 'kf04a-supervisor', 'supervisor', ORG],
       [OPERATOR, 'kf04a-operator', 'operator', ORG],
       [ADMIN_B, 'kf04a-admin-b', 'admin', ORG_B],
-      [OPERATOR_B, 'kf04a-operator-b', 'operator', ORG_B]
+      [OPERATOR_B, 'kf04a-operator-b', 'operator', ORG_B],
+      [OPERATOR_NO_ORG, 'kf04a-operator-no-org', 'operator', null]
     ]) {
       await query(conn,
         `INSERT INTO users (id, username, email, password_hash, full_name, role, organization_id, is_active)
@@ -419,6 +421,80 @@ describe('Published Knowledge Resolution (ATM-001-KF-04A)', { skip: DB_TEST_SKIP
   });
 
   // =========================================================================
+  // SEC-01 — tenant scope is fail-closed on the FROZEN version row
+  // =========================================================================
+  it('SEC-01a — an organization-less principal sees only global knowledge', async () => {
+    const globalTemplate = await createWorkingTemplate();
+    await addWorkingStep(globalTemplate, 'KF04A shared step for an org-less principal');
+    const globalVersion = await publishVersion(globalTemplate, {
+      organizationId: null, knowledgeScope: 'shared', templateName: 'KF04A Shared For Org-Less'
+    });
+
+    const tenantTemplate = await createWorkingTemplate(ORG);
+    await addWorkingStep(tenantTemplate, 'KF04A tenant step for an org-less principal');
+    const tenantVersion = await publishVersion(tenantTemplate, { templateName: 'KF04A Tenant For Org-Less' });
+
+    const shared = await resolveVersion(globalVersion, OPERATOR_NO_ORG);
+    assert.strictEqual(shared.status, 200, `global knowledge must stay readable: ${JSON.stringify(shared.body)}`);
+    assert.strictEqual(shared.body.data.version.organizationScope, 'global');
+
+    const tenant = await resolveVersion(tenantVersion, OPERATOR_NO_ORG);
+    assert.strictEqual(tenant.status, 404, 'an org-less principal must not read tenant knowledge');
+    assert.strictEqual(tenant.body.code, 'PUBLISHED_VERSION_NOT_FOUND');
+
+    const tenantList = await listForTemplate(tenantTemplate, OPERATOR_NO_ORG);
+    assert.deepStrictEqual(tenantList.body.data.versions, [],
+      'a tenant definition exposes nothing to an org-less principal');
+
+    const globalList = await listForTemplate(globalTemplate, OPERATOR_NO_ORG);
+    assert.deepStrictEqual(globalList.body.data.versions.map((v) => v.id), [globalVersion],
+      'a global definition remains listable for an org-less principal');
+  });
+
+  it('SEC-01b — caller tenant scope cannot be widened by query string or body', async () => {
+    const templateId = await createWorkingTemplate(ORG_B);
+    await addWorkingStep(templateId, 'KF04A scope-spoof step');
+    const foreignVersion = await publishVersion(templateId, {
+      organizationId: ORG_B, templateName: 'KF04A Scope-Spoof Target'
+    });
+
+    const baseline = await resolveVersion(foreignVersion, ADMIN);
+    assert.strictEqual(baseline.status, 404, 'baseline: another tenant version is not readable');
+
+    const attempts = [
+      `/api/knowledge-published/versions/${foreignVersion}?organizationId=${ORG_B}`,
+      `/api/knowledge-published/versions/${foreignVersion}?organization_id=${ORG_B}`,
+      `/api/knowledge-published/versions/${foreignVersion}?scope[organizationId]=${ORG_B}`
+    ];
+    for (const path_ of attempts) {
+      const res = await call('GET', path_, { userId: ADMIN });
+      assert.strictEqual(res.status, 404, `scope must not be widenable via ${path_}`);
+    }
+
+    const withBody = await call('GET', `/api/knowledge-published/versions/${foreignVersion}`, {
+      userId: ADMIN,
+      body: { organizationId: ORG_B, user: { organization_id: ORG_B } }
+    });
+    assert.strictEqual(withBody.status, 404, 'a request body must not widen scope');
+  });
+
+  it('SEC-01c — cross-tenant discovery exposes nothing on the equipment-type endpoint', async () => {
+    const templateId = await createWorkingTemplate(ORG_B);
+    await addWorkingStep(templateId, 'KF04A discovery-isolation step');
+    const foreignVersion = await publishVersion(templateId, {
+      organizationId: ORG_B, applicabilityTypeId: EQUIPMENT_TYPE
+    });
+
+    const own = await listForType(EQUIPMENT_TYPE, OPERATOR_B);
+    assert.ok(own.body.data.versions.map((v) => v.id).includes(foreignVersion),
+      'the owner tenant discovers its own version');
+
+    const foreign = await listForType(EQUIPMENT_TYPE, OPERATOR);
+    assert.ok(!foreign.body.data.versions.map((v) => v.id).includes(foreignVersion),
+      'another tenant must not discover it');
+  });
+
+  // =========================================================================
   // H — authorization
   // =========================================================================
   it('H — an unauthenticated caller is refused', async () => {
@@ -556,7 +632,7 @@ describe('Published Knowledge Resolution (ATM-001-KF-04A)', { skip: DB_TEST_SKIP
 
   it('R12 — fixture identifiers stay disjoint from every sibling suite', async () => {
     const fixtureIds = [ORG, ORG_B, ADMIN, SUPERVISOR, OPERATOR, ADMIN_B, OPERATOR_B,
-      CATEGORY, CLASS, EQUIPMENT_TYPE, EQUIPMENT_TYPE_OTHER];
+      OPERATOR_NO_ORG, CATEGORY, CLASS, EQUIPMENT_TYPE, EQUIPMENT_TYPE_OTHER];
     const self = path.basename(__filename);
     const siblings = fs.readdirSync(__dirname).filter((n) => n.endsWith('.test.js') && n !== self);
     assert.ok(siblings.length > 10, 'expected a populated test corpus to check against');
