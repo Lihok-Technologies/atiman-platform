@@ -11,10 +11,11 @@
  * Boundary (deliberate):
  *   - READ ONLY. This model issues no INSERT, UPDATE or DELETE. It cannot
  *     change publication semantics, immutability, or any business rule.
- *   - The generic BaseModel update()/delete() helpers are REFUSED outright
- *     (PUBLISHED_KNOWLEDGE_IMMUTABLE) instead of being inherited. Migration 009's
- *     immutability triggers remain the real enforcement; the refusal keeps the
- *     model honest about a mutation surface it must not advertise.
+ *   - The generic BaseModel create()/update()/delete() helpers are REFUSED
+ *     outright (PUBLISHED_KNOWLEDGE_IMMUTABLE) instead of being inherited.
+ *     Migration 009's immutability triggers remain the real enforcement; the
+ *     refusals keep the model honest about a mutation surface it must not
+ *     advertise.
  *   - It does not choose a version. There is no implicit "latest"/"active
  *     default" resolution: ATM-001 §8.3 reserves `effective_from`/`effective_to`
  *     for an active default that is NOT implemented, so selecting one here
@@ -76,6 +77,19 @@ class PublishedKnowledgeModel extends BaseModel {
   constructor() {
     super('task_template_versions');
   }
+
+  /**
+   * Not exposed. BaseModel.create() would issue an unguarded
+   * `INSERT INTO task_template_versions`, bypassing the governed publication
+   * path's admission validation, attribution and sealing. A version row is
+   * created only by the publication workflow (TaskTemplate.publishVersion),
+   * which is a separate code path from this read model.
+   */
+  create = refuseMutation(
+    'Creating a published knowledge version',
+    'Published knowledge is immutable and is created only by the governed publication '
+      + 'path; publish through the task-template publication workflow instead.'
+  );
 
   /**
    * Not exposed. Published versions are immutable: migration 009's
