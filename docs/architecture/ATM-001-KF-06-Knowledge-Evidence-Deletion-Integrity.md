@@ -238,3 +238,40 @@ acceptance is claimed.
 It does not merge, deploy, alter production, change a capability or bundle, change the database schema,
 or modify PR #27 or PR #79. It records one bounded authorization-integrity correction and the residual
 risks that remain.
+
+---
+
+## 10. Dated addendum — independent verification and residual-record corrections (2026-10-10)
+
+**This addendum is appended, not substituted.** §1–§9 remain the implementing mission's record.
+
+### 10.1 Independent verification
+
+PR #80 was merged to `main` at `bfa18c7ffa4c7f46ffa1bfd31447f0f9360b254e` (2026-10-10T00:58:45Z,
+post-merge CI run `38011317579` success). It was then subjected to an **OWNER-authorised independent
+adversarial verification mission** conducted in a separate reviewer context with its own disposable
+PostgreSQL cluster and its own fixtures — **not** the separate-context review recorded in §8.1. Its
+report is committed in this repository as
+`ATM-001-KF-06-VUDA-Independent-Verification.md`.
+
+| Independent result | Finding |
+|---|---|
+| Verdict | **PASS_WITH_MINOR_FINDINGS** |
+| Base-versus-head falsification | The defect was reproduced on base `988fbb99…` (a `knowledge.author`-only supervisor delete → 200, evidence rows 1 → 0) and its closure on the merge head (→ 409 `EVIDENCE_PRESENT`, template, steps and evidence intact), for **both** template-level and step-level evidence |
+| Mutation testing | Removing the definition lock fails R13; removing the step lock fails R14; neutering the evidence check fails B/B2/B3/C/G2. Both locks and the check are independently load-bearing |
+| Concurrency | An 8-way attach/delete stress produced no deadlock, no cascade loss and no orphaned evidence |
+| Regression | KF-06 focused 17/17; sanctioned integration 915/915 (26 suites; one earlier run showed a single pre-existing parallel-execution deadlock, KF-01 F-3); `npm test` 162/162 |
+
+**Independence qualification.** This is an independent review of **one milestone**. It does **not**
+discharge the whole-ATM-001 independent acceptance gate (acceptance register requirement 16, G-16),
+which remains **PENDING**, and it is **not** production acceptance (`PRODUCTION_STATUS_UNVERIFIED`).
+
+### 10.2 Residual-record corrections
+
+| Residual | Correction to this record |
+|---|---|
+| **R-5 — source-version cascade** | §7 describes `fk_knowledge_template_evidence_source_version`'s `ON DELETE CASCADE` as latent and unreachable because no route, controller or model method deletes a source or a source version. The independent review established an **additional, stronger** protection this record does not mention: the `BEFORE DELETE` trigger `trg_knowledge_source_versions_immutable` (`immutable_source_version_check`) raises **SQLSTATE `23503`** ("… is referenced by evidence and cannot be deleted") **before the cascade can run**, so the cascade is blocked even by a direct SQL delete. The cascade is therefore **not currently exploitable** and must not be described as such without contrary evidence |
+| **F-3 — CI deadlock relation** | §8.0 attributes the parallel-execution deadlock's DDL lock to `task_template_versions`. The independently observed cycle is `knowledge_pack_membership_guard()` awaiting a `RowShareLock` on **`knowledge_pack_versions`** against a concurrent `AccessExclusiveLock` on **`knowledge_pack_version_task_template_versions`**. Neither relation belongs to this change; the conclusion (KF-06 is not part of the cycle) is unchanged |
+
+**Boundary.** This addendum changes no code, no schema, no migration, no capability and no business
+rule. It records verification provenance and corrects two factual statements.
