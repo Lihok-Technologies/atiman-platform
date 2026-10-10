@@ -11,6 +11,10 @@
  * Boundary (deliberate):
  *   - READ ONLY. This model issues no INSERT, UPDATE or DELETE. It cannot
  *     change publication semantics, immutability, or any business rule.
+ *   - The generic BaseModel update()/delete() helpers are REFUSED outright
+ *     (PUBLISHED_KNOWLEDGE_IMMUTABLE) instead of being inherited. Migration 009's
+ *     immutability triggers remain the real enforcement; the refusal keeps the
+ *     model honest about a mutation surface it must not advertise.
  *   - It does not choose a version. There is no implicit "latest"/"active
  *     default" resolution: ATM-001 §8.3 reserves `effective_from`/`effective_to`
  *     for an active default that is NOT implemented, so selecting one here
@@ -31,10 +35,63 @@ const BaseModel = require('./base.model');
 /** The only lifecycle state an operational consumer may be served. */
 const PUBLISHED_LIFECYCLE_STATE = 'published';
 
+/**
+ * Stable refusal code for every generic mutation this read model does not expose.
+ * Callers and tests assert on this code, never on the message text.
+ */
+const PUBLISHED_KNOWLEDGE_IMMUTABLE = 'PUBLISHED_KNOWLEDGE_IMMUTABLE';
+
+/**
+ * Thrown when a generic mutation is attempted against the published-version read
+ * model. Published knowledge is immutable, so no such operation can be servable.
+ */
+class PublishedKnowledgeImmutableError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'PublishedKnowledgeImmutableError';
+    this.statusCode = 409;
+    this.code = PUBLISHED_KNOWLEDGE_IMMUTABLE;
+  }
+}
+
+/**
+ * Refuse an operation this capability deliberately does not expose.
+ *
+ * BaseModel provides generic update()/delete() helpers. Inheriting them would
+ * advertise a mutation surface this read model must not have, so both are
+ * overridden explicitly (mirroring the established refusal pattern in
+ * knowledge-provenance.model.js). Migration 009's immutability triggers remain
+ * the real enforcement; these make the model honest about its boundary rather
+ * than relying on a trigger to say no.
+ */
+function refuseMutation(operation, guidance) {
+  return () => {
+    throw new PublishedKnowledgeImmutableError(
+      `${operation} is not available through published knowledge resolution. ${guidance}`
+    );
+  };
+}
+
 class PublishedKnowledgeModel extends BaseModel {
   constructor() {
     super('task_template_versions');
   }
+
+  /**
+   * Not exposed. Published versions are immutable: migration 009's
+   * immutable_version_update_check trigger refuses every content change, and a
+   * correction is a NEW published version — never an edit of a frozen one.
+   */
+  update = refuseMutation(
+    'Updating a published knowledge version',
+    'Published versions are immutable; publish a new version instead.'
+  );
+
+  /** Not exposed. Deleting a frozen version would destroy published provenance. */
+  delete = refuseMutation(
+    'Deleting a published knowledge version',
+    'Published versions are immutable; a frozen version cannot be deleted.'
+  );
 
   /**
    * Read one frozen version header by id, unrestricted by tenant.
@@ -225,5 +282,7 @@ const PublishedKnowledge = new PublishedKnowledgeModel();
 module.exports = {
   PublishedKnowledge,
   PublishedKnowledgeModel,
-  PUBLISHED_LIFECYCLE_STATE
+  PublishedKnowledgeImmutableError,
+  PUBLISHED_LIFECYCLE_STATE,
+  PUBLISHED_KNOWLEDGE_IMMUTABLE
 };
