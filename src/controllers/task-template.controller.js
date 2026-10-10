@@ -531,6 +531,17 @@ const remove = async (req, res, next) => {
         code: 'SYSTEM_TEMPLATE_IMMUTABLE'
       });
     }
+    // Refused because working provenance evidence is attached: deleting the
+    // definition would remove it by cascade. The caller must detach the evidence
+    // explicitly first, which requires `evidence.attach` (ATM-001 M3 / K3-G2),
+    // so a `knowledge.author`-only principal cannot destroy provenance.
+    if (error && error.code === 'EVIDENCE_PRESENT') {
+      return res.status(409).json({
+        success: false,
+        message: error.message,
+        code: 'EVIDENCE_PRESENT'
+      });
+    }
     next(error);
   }
 };
