@@ -84,6 +84,10 @@ const DB_MUTATING_SUITES = [
   // steps, sources, versions, working evidence, a global source fixture and
   // out-of-band published versions).
   'knowledge-evidence-deletion-integrity.test.js',
+  // ATM-001-SEC-00C organization-deletion containment (writes real organizations
+  // and users as disposable fixtures, and its mechanism control deletes a
+  // throwaway tenant to prove the retained cascade is real).
+  'organization-delete-containment.test.js',
   'step6-access-control.test.js',
   'step6-coverage-e2e.test.js',
   'step6-performance.test.js',
@@ -121,7 +125,10 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'report-capture.test.js',
   'knowledge-accession-authority.test.js',
   'provenance-write-scope.test.js',
-  'knowledge-evidence-deletion-integrity.test.js'
+  'knowledge-evidence-deletion-integrity.test.js',
+  // ATM-001-SEC-00C: organization-deletion containment (DELETE
+  // /api/organizations/:id denies every role before any destructive call).
+  'organization-delete-containment.test.js'
 ];
 
 const REPO_ROOT = path.resolve(__dirname, '..');

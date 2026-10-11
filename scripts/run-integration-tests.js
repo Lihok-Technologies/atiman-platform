@@ -81,7 +81,11 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   // ATM-001-KF-06: knowledge evidence deletion integrity — a definition deletion
   // may not destroy working provenance evidence as a cascade side effect, so
   // authorization covers the operation's effect and not merely its route.
-  'tests/knowledge-evidence-deletion-integrity.test.js'
+  'tests/knowledge-evidence-deletion-integrity.test.js',
+  // ATM-001-SEC-00C: organization-deletion containment — DELETE
+  // /api/organizations/:id denies every role with a stable 403 before any
+  // controller or model call, so no organization, user or cascade is touched.
+  'tests/organization-delete-containment.test.js'
 ];
 
 /**
