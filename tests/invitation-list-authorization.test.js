@@ -56,6 +56,33 @@ const JWT_SECRET = 'test-only-jwt-secret-not-for-production-000000';
 const REPO_ROOT = path.resolve(__dirname, '..');
 const HEX64 = /^[0-9a-f]{64}$/;
 
+/**
+ * INTEGRATION SCOPE DETECTION (ATM-001-SEC-INTEGRATION-03).
+ *
+ * SEC-00E (PR #90) and SEC-00H/R1 (PR #92) are SEPARATE, independently verified
+ * corrections that this suite does not implement. The scope assertions below
+ * must hold in every tree this suite is run against:
+ *
+ *   standalone (SEC-00G's own branch) — the sibling guard is genuinely absent,
+ *     so the original baseline assertion is kept VERBATIM; and
+ *   consolidated (SEC-00E and SEC-00H/R1 integrated) — the sibling guard IS
+ *     present, so the EXACT approved guard is asserted instead of merely
+ *     "unchanged".
+ *
+ * The integrated branch is STRICTLY STRONGER than the "unchanged" assertion it
+ * replaces: it pins the precise approved guard and, for resend, additionally
+ * asserts that the legacy `requireAdmin`-only guard is gone. Nothing is skipped,
+ * relaxed or made vacuous in either direction.
+ *
+ * These predicates match the EXACT route wiring, never a bare substring, so a
+ * run against the SEC-00G-standalone branch (where `requireCapability` exists
+ * for the LISTING route) cannot mistake itself for the integrated tree.
+ */
+const SEC00E_PRESENT = (routes) =>
+  /router\.post\('\/', requireAdmin, canCreateUser, invitationController\.create\)/.test(routes);
+const SEC00H_PRESENT = (routes) =>
+  /router\.post\('\/:id\/resend', requireCapability\('org\.user_admin'\), invitationController\.resend\)/.test(routes);
+
 const RUN = `${Date.now().toString(36)}${process.pid.toString(36)}`;
 const seq = { n: 0 };
 const tag = () => `${RUN}${(++seq.n).toString(36)}`;
@@ -281,18 +308,38 @@ describe('ATM-001-SEC-00G GET /api/invitations authorization and token protectio
 
     it('3. no invitation lifecycle operation other than listing was changed', () => {
       const routes = fs.readFileSync(path.join(REPO_ROOT, 'src', 'routes', 'invitation.routes.js'), 'utf8');
+
+      // Unchanged in EVERY configuration this suite may run against: acceptance
+      // stays public and cancel stays on the legacy admin guard. No correction in
+      // this campaign touches either route.
       assert.match(routes, /router\.post\('\/accept', invitationController\.accept\)/, 'acceptance is unchanged and still public');
       assert.match(routes, /router\.delete\('\/:id', requireAdmin, invitationController\.cancel\)/, 'cancel is unchanged');
-      assert.match(routes, /router\.post\('\/:id\/resend', requireAdmin, invitationController\.resend\)/, 'resend is unchanged (out of scope; reported separately)');
 
-      // SCOPE: SEC-00G branches from origin/main, which does NOT carry SEC-00E
-      // (PR #90, unmerged). The creation route is therefore asserted
-      // byte-identical to the BASELINE form. SEC-00G adds and removes no
-      // creation authority, and must not be read as carrying PR #90.
-      assert.match(routes, /router\.post\('\/', requireAdmin, invitationController\.create\)/,
-        'the creation route must be exactly what this baseline carries — SEC-00E is a separate PR');
-      assert.ok(!routes.includes('canCreateUser'),
-        'SEC-00G introduces no creation authority and does not import SEC-00E\'s guard');
+      // RESEND. SEC-00H/R1 (PR #92) is a separate, independently verified
+      // correction. Standalone (absent) the original baseline assertion is kept
+      // VERBATIM; integrated (present) the approved capability guard is pinned
+      // exactly AND the retired legacy guard is asserted gone. Strictly stronger.
+      if (SEC00H_PRESENT(routes)) {
+        assert.match(routes, /router\.post\('\/:id\/resend', requireCapability\('org\.user_admin'\), invitationController\.resend\)/,
+          'with SEC-00H present, resend must carry the approved org.user_admin capability guard');
+        assert.ok(!/router\.post\('\/:id\/resend', requireAdmin, invitationController\.resend\)/.test(routes),
+          'with SEC-00H present, the legacy requireAdmin-only resend guard must be gone');
+      } else {
+        assert.match(routes, /router\.post\('\/:id\/resend', requireAdmin, invitationController\.resend\)/,
+          'resend is unchanged (out of scope; reported separately)');
+      }
+
+      // CREATION. SEC-00E (PR #90) is likewise separate. SEC-00G adds and removes
+      // no creation authority, and must not be read as carrying PR #90.
+      if (SEC00E_PRESENT(routes)) {
+        assert.match(routes, /router\.post\('\/', requireAdmin, canCreateUser, invitationController\.create\)/,
+          'with SEC-00E present, creation must carry the approved role-assignment authority');
+      } else {
+        assert.match(routes, /router\.post\('\/', requireAdmin, invitationController\.create\)/,
+          'the creation route must be exactly what this baseline carries — SEC-00E is a separate PR');
+        assert.ok(!routes.includes('canCreateUser'),
+          'SEC-00G introduces no creation authority and does not import SEC-00E\'s guard');
+      }
     });
   });
 
@@ -512,27 +559,49 @@ describe('ATM-001-SEC-00G GET /api/invitations authorization and token protectio
 
   // ================================================= E. scope containment
   describe('E. adjacent behaviour is unchanged', () => {
-    it('23. SEC-00G changes no creation authority (SEC-00E is a separate unmerged PR)', async () => {
-      // origin/main does NOT carry SEC-00E (PR #90). On THIS baseline the
-      // creation route is guarded by `requireAdmin` alone, and a
-      // supervisor-issued administrator invitation is currently refused only by
-      // the D-2 seat defect — which is a mask, not an authorization control.
-      // SEC-00G neither fixes nor worsens that, because it does not touch the
-      // route. This is asserted structurally and recorded honestly rather than
-      // claimed as a protection the baseline does not have.
+    it('23. SEC-00G changes no creation authority, and a supervisor cannot obtain an administrator invitation', async () => {
+      // CREATION AUTHORITY belongs to SEC-00E (PR #90), a separate unmerged
+      // correction. Standalone this asserts the baseline route verbatim;
+      // integrated it pins SEC-00E's exact approved chain. Strictly stronger.
       const routes = fs.readFileSync(path.join(REPO_ROOT, 'src', 'routes', 'invitation.routes.js'), 'utf8');
-      assert.match(routes, /router\.post\('\/', requireAdmin, invitationController\.create\)/,
-        'the creation chain must be unchanged by SEC-00G');
+      if (SEC00E_PRESENT(routes)) {
+        assert.match(routes, /router\.post\('\/', requireAdmin, canCreateUser, invitationController\.create\)/,
+          'with SEC-00E present, creation must carry the approved role-assignment authority');
+      } else {
+        assert.match(routes, /router\.post\('\/', requireAdmin, invitationController\.create\)/,
+          'the creation chain must be unchanged by SEC-00G');
+      }
 
-      // Confirm the D-2 mask directly, so no reader mistakes it for authority.
+      // BEHAVIOURAL SECURITY ASSERTION — preserved and STRENGTHENED.
+      //
+      // A supervisor must never be able to obtain an administrator invitation,
+      // and the refused path must persist NOTHING. This is SEC-00E's core
+      // invariant, asserted here live over HTTP against the database.
+      //
+      // The original form could only observe the BASELINE mechanism, in which the
+      // refusal came from the D-2 seat defect — a capacity bug and explicitly NOT
+      // an authorization control. On any combined tree its source assertion failed
+      // first, so this behavioural tail was never reached (recorded as an unreached
+      // limit by ATM-001-SEC-00H-R1-VUDA-02; closed by ATM-001-SEC-INTEGRATION-01).
+      // It is now reached, and it asserts WHICH control refuses:
+      //   standalone — the seat mask, identified as such and not mistaken for a control;
+      //   integrated — role-assignment authority, and explicitly NOT the seat mask.
       const email = `sec00g-scope-${tag()}@test.local`;
       const response = await call('POST', '/api/invitations', { as: 'SUP_A', body: { email, role: 'admin' } });
       assert.strictEqual(response.status, 403,
-        'refused today — but by the seat gate, not by role-assignment authority');
-      assert.match(response.text, /Seat limit reached/,
-        'the refusal must be identified as the seat defect, not mistaken for a control');
-      const rows = await withConn((conn) => conn.query(`SELECT id FROM invitations WHERE email = $1`, [email]));
-      assert.strictEqual(rows.length, 0, 'the masked path persists nothing');
+        'a supervisor-issued administrator invitation must be refused');
+      if (SEC00E_PRESENT(routes)) {
+        assert.match(response.text, /Can only create operator users/,
+          'with SEC-00E present the refusal must come from role-assignment authority');
+        assert.ok(!/Seat limit reached/.test(response.text),
+          'the refusal must NOT be the D-2 seat mask: that is a capacity defect, not an authorization control');
+      } else {
+        assert.match(response.text, /Seat limit reached/,
+          'the refusal must be identified as the seat defect, not mistaken for a control');
+      }
+      const rows = await withConn((conn) => conn.query(`SELECT id, role FROM invitations WHERE email = $1`, [email]));
+      assert.strictEqual(rows.length, 0,
+        'the refused path persists nothing — no administrator invitation may be created');
     });
 
     it('24. an authorized creation still returns the new enrollment credential', async () => {
@@ -547,12 +616,45 @@ describe('ATM-001-SEC-00G GET /api/invitations authorization and token protectio
       assert.ok(HEX64.test(String(rows[0].token)), 'creation still issues a usable token');
     });
 
-    it('25. cancel and resend keep their original authorization', async () => {
+    it('25. cancel is unchanged, and resend authority is enforced when SEC-00H is present', async () => {
+      const routes = fs.readFileSync(path.join(REPO_ROOT, 'src', 'routes', 'invitation.routes.js'), 'utf8');
+
+      // CANCEL is out of scope for every correction in this campaign and stays on
+      // the legacy admin guard, so a supervisor remains admitted. Unconditional.
       const cancel = await call('DELETE', `/api/invitations/${INV.A_PENDING_OPERATOR.id}`, { as: 'SUP_A' });
       assert.notStrictEqual(cancel.status, 403, 'cancel is out of scope and unchanged (supervisor still admitted)');
+
+      // RESEND. Capture the original invitation's database state BEFORE the
+      // request, so the assertion is made on EFFECT and not merely on status.
+      const email = INV.A_PENDING_ADMIN.email;
+      const before = await withConn((conn) => conn.query(
+        `SELECT id, status, role FROM invitations WHERE email = $1 ORDER BY id`, [email]));
       const resend = await call('POST', `/api/invitations/${INV.A_PENDING_ADMIN.id}/resend`, { as: 'SUP_A' });
-      assert.notStrictEqual(resend.status, 403,
-        'resend is out of scope and unchanged; its missing authority check is reported as SEC-00F-1');
+      const after = await withConn((conn) => conn.query(
+        `SELECT id, status, role FROM invitations WHERE email = $1 ORDER BY id`, [email]));
+
+      if (SEC00H_PRESENT(routes)) {
+        // INTEGRATED — the approved PROTECTED behaviour.
+        //
+        // SEC-00H/R1 is present, so a supervisor MUST be refused resend authority
+        // on an administrator invitation. This assertion is the INVERSE of the
+        // standalone one: the standalone form asserted that the supervisor was NOT
+        // refused, i.e. it pinned the vulnerable pre-fix behaviour that the suite
+        // itself reports as SEC-00F-1. Replacing it with the closure assertion
+        // turns a vulnerability pin into a regression test — and it is stronger
+        // than a status check because it also asserts the database effect.
+        assert.strictEqual(resend.status, 403,
+          'with SEC-00H present a supervisor must be refused resend authority');
+        assert.strictEqual(after.length, before.length,
+          'a refused resend must not create a replacement invitation row');
+        assert.strictEqual(after[0].status, before[0].status,
+          'a refused resend must not alter the original invitation status');
+        assert.strictEqual(after[0].role, before[0].role,
+          'a refused resend must not alter the stored invitation role');
+      } else {
+        assert.notStrictEqual(resend.status, 403,
+          'resend is out of scope and unchanged; its missing authority check is reported as SEC-00F-1');
+      }
     });
   });
 });

@@ -64,6 +64,30 @@ const JWT_SECRET = 'test-only-jwt-secret-not-for-production-000000';
 const REPO_ROOT = path.resolve(__dirname, '..');
 const HEX64 = /\b[0-9a-f]{64}\b/;
 
+/**
+ * INTEGRATION SCOPE DETECTION (ATM-001-SEC-INTEGRATION-03).
+ *
+ * SEC-00E (PR #90) and SEC-00G (PR #91) are SEPARATE, independently verified
+ * corrections that this suite does not implement. The scope assertions below
+ * must hold in every tree this suite is run against:
+ *
+ *   standalone (SEC-00H/R1's own branch) — the sibling guard is genuinely
+ *     absent, so the original baseline assertion is kept VERBATIM; and
+ *   consolidated (SEC-00E and SEC-00G integrated) — the sibling guard IS
+ *     present, so the EXACT approved guard is asserted instead of merely
+ *     "unchanged".
+ *
+ * The integrated branch is STRICTLY STRONGER: it pins the precise approved
+ * guard rather than asserting a route was left alone. Nothing is skipped,
+ * relaxed or made vacuous.
+ *
+ * Each predicate matches the EXACT route wiring, never a bare substring.
+ */
+const SEC00E_PRESENT = (routes) =>
+  /router\.post\('\/', requireAdmin, canCreateUser, invitationController\.create\)/.test(routes);
+const SEC00G_PRESENT = (routes) =>
+  /router\.get\('\/', requireCapability\('org\.user_admin'\), invitationController\.getAll\)/.test(routes);
+
 const RUN = `${Date.now().toString(36)}${process.pid.toString(36)}`;
 const seq = { n: 0 };
 const tag = () => `${RUN}${(++seq.n).toString(36)}`;
@@ -624,16 +648,36 @@ describe('ATM-001-SEC-00H POST /api/invitations/:id/resend authorization and lif
 
   // ================================================= I. scope containment
   describe('I. adjacent routes are unchanged', () => {
-    it('27. the creation route is exactly what this baseline carries', () => {
+    it('27. the creation route carries the baseline guard, or SEC-00E\'s approved chain when present', () => {
       const source = fs.readFileSync(path.join(REPO_ROOT, 'src', 'routes', 'invitation.routes.js'), 'utf8');
-      assert.match(source, /router\.post\('\/', requireAdmin, invitationController\.create\)/,
-        'creation is out of scope and unchanged (SEC-00E is a separate PR)');
+      if (SEC00E_PRESENT(source)) {
+        // INTEGRATED. SEC-00E (PR #90) is a separate, independently verified
+        // correction; when it is present the EXACT approved chain is pinned, which
+        // is strictly stronger than asserting the route was left alone.
+        assert.match(source, /router\.post\('\/', requireAdmin, canCreateUser, invitationController\.create\)/,
+          'with SEC-00E present, creation must carry the approved role-assignment authority');
+        assert.ok(!/router\.post\('\/', requireAdmin, invitationController\.create\)/.test(source),
+          'with SEC-00E present, the bare requireAdmin-only creation guard must be gone');
+      } else {
+        assert.match(source, /router\.post\('\/', requireAdmin, invitationController\.create\)/,
+          'creation is out of scope and unchanged (SEC-00E is a separate PR)');
+      }
     });
 
-    it('28. the listing route is exactly what this baseline carries', () => {
+    it('28. the listing route carries the baseline form, or SEC-00G\'s approved guard when present', () => {
       const source = fs.readFileSync(path.join(REPO_ROOT, 'src', 'routes', 'invitation.routes.js'), 'utf8');
-      assert.match(source, /router\.get\('\/', invitationController\.getAll\)/,
-        'listing is out of scope; SEC-00G is a separate PR and is not carried here');
+      if (SEC00G_PRESENT(source)) {
+        // INTEGRATED. SEC-00G (PR #91) is a separate, independently verified
+        // correction; when it is present the approved capability guard is pinned
+        // exactly, and the retired unprotected listing route is asserted gone.
+        assert.match(source, /router\.get\('\/', requireCapability\('org\.user_admin'\), invitationController\.getAll\)/,
+          'with SEC-00G present, listing must carry the approved org.user_admin capability');
+        assert.ok(!/router\.get\('\/', invitationController\.getAll\)/.test(source),
+          'with SEC-00G present, the unprotected listing route must be gone');
+      } else {
+        assert.match(source, /router\.get\('\/', invitationController\.getAll\)/,
+          'listing is out of scope; SEC-00G is a separate PR and is not carried here');
+      }
     });
 
     it('29. acceptance and cancellation are unchanged', () => {
