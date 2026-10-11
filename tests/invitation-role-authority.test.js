@@ -513,6 +513,38 @@ describe('ATM-001-SEC-00E POST /api/invitations role-assignment authority', { sk
       }
     });
 
+    // Adversarial challenge: the cases above are refused by canCreateUser. These
+    // assert the SECOND gate — a role outside the approved vocabulary must never
+    // be persisted even where the authority gate PASSES, so the refusal cannot
+    // depend on canCreateUser alone.
+    it('16a. an organization administrator cannot persist a role outside the approved vocabulary', async () => {
+      for (const role of ['superadmin', 'ADMIN', 'admin ', 'owner', 'root']) {
+        const email = newEmail('orgadmin-invalid');
+        delivered = [];
+        const response = await withSeatMaskNeutralized(() => invite('ADMIN_A', inviteBody(email, { role })));
+
+        assert.notStrictEqual(response.status, 201,
+          `role ${JSON.stringify(role)} must never be accepted`);
+        assert.strictEqual((await invitationFor(email)).length, 0,
+          `role ${JSON.stringify(role)} must never be persisted`);
+        assert.ok(!TOKEN_SHAPE.test(response.text),
+          `role ${JSON.stringify(role)} must never yield a usable token`);
+      }
+    });
+
+    it('16b. an organization administrator cannot persist a malformed role value', async () => {
+      for (const role of [['admin'], { role: 'admin' }, 1, true]) {
+        const email = newEmail('orgadmin-malformed');
+        delivered = [];
+        const response = await withSeatMaskNeutralized(() => invite('ADMIN_A', inviteBody(email, { role })));
+
+        assert.notStrictEqual(response.status, 201,
+          `malformed role ${JSON.stringify(role)} must never be accepted`);
+        assert.strictEqual((await invitationFor(email)).length, 0,
+          `malformed role ${JSON.stringify(role)} must never be persisted`);
+      }
+    });
+
     it('17. every refused supervisor or plain-administrator attempt left the invitation population unchanged', async () => {
       const before = await fixtureInvitations();
       const attempts = [
@@ -699,6 +731,43 @@ describe('ATM-001-SEC-00E POST /api/invitations role-assignment authority', { sk
       assert.strictEqual(rows[0].is_organization_admin, false,
         'acceptance confers the role but not the organization-administrator flag');
     });
+
+    // ---------------------------------------------------------------------
+    // RESIDUAL — this test asserts a LIMITATION, not a control.
+    //
+    // SEC-00E gates invitation CREATION. It deliberately does not change
+    // acceptance (mission §6.10), and it introduces no migration (mission §7).
+    // An administrator invitation that a supervisor persisted BEFORE this
+    // change is therefore still acceptable by the unchanged acceptance path.
+    //
+    // This is recorded so that nobody reads the fix as retroactive. Closing it
+    // requires an OWNER decision about existing rows, and would exceed SEC-00E:
+    // the permitted scope carries no data remediation and no schema change.
+    // ---------------------------------------------------------------------
+    it('28. RESIDUAL: a pre-existing pending administrator invitation is still acceptable', async () => {
+      const email = newEmail('preexisting-admin');
+      const username = `sec00e-accepted-preexisting-${tag()}`;
+
+      // Insert the row directly, exactly as the pre-fix code would have left it.
+      await withConn((conn) => conn.query(
+        `INSERT INTO invitations (organization_id, email, role, invited_by, token, status, expires_at)
+         VALUES ($1, $2, 'admin', $3, $4, 'pending', NOW() + INTERVAL '7 days')`,
+        [ORG_B, email, USERS.ADMIN_B, 'f'.repeat(64)]));
+
+      await withSeatMaskNeutralized(() => call('POST', '/api/invitations/accept', {
+        body: {
+          token: 'f'.repeat(64), username,
+          password: 'Sec00e-Password-123', full_name: 'SEC00E Pre-existing'
+        }
+      }));
+
+      const rows = await withConn((conn) => conn.query(
+        `SELECT role, organization_id FROM users WHERE username = ?`, [username]));
+      assert.strictEqual(rows.length, 1,
+        'RESIDUAL: the unchanged acceptance path still creates the account');
+      assert.strictEqual(rows[0].role, 'admin',
+        'RESIDUAL: and still grants the invited role — creation is the ONLY control point');
+    });
   });
 
   // =====================================================================
@@ -706,7 +775,7 @@ describe('ATM-001-SEC-00E POST /api/invitations role-assignment authority', { sk
   //    channel) — asserted because the response is new surface under test.
   // =====================================================================
   describe('F. the invitation response discloses no credential', () => {
-    it('27. no password hash is present in any invitation response', async () => {
+    it('29. no password hash is present in any invitation response', async () => {
       const email = newEmail('no-credential');
       delivered = [];
       const response = await withSeatMaskNeutralized(() => invite('ADMIN_A', inviteBody(email, { role: 'operator' })));
