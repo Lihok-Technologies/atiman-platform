@@ -430,6 +430,55 @@ const canManageSchedule = async (req, res, next) => {
 };
 
 /**
+ * Role-issuance AUTHORITY.
+ *
+ * Answers: may this principal issue an account or invitation for `role`?
+ *
+ * This is the single expression of the approved role-assignment authority that
+ * `POST /api/users` and the ATM-001-SEC-00E invitation-creation route already
+ * apply at creation time. It is pure and synchronous, so the SAME authority can
+ * also be applied to a role that does not come from the client - in particular
+ * the role stored on an existing invitation, which ATM-001-SEC-00H-R1 requires
+ * before an invitation may be re-issued.
+ *
+ * It decides AUTHORITY only. Creation-only capacity limits (the per-organization
+ * administrator cap) and request-shape constraints (a supervisor's facility
+ * match) are not authority: `canCreateUser` applies them on the creation path
+ * and they are deliberately NOT applied to a resend, which creates no new
+ * account.
+ *
+ * Returns `null` when the principal may issue `role`, otherwise a refusal
+ * `{ status, message }` identical to the one creation returns.
+ */
+const roleIssuanceAuthority = (user, role) => {
+  const userRole = user?.role;
+
+  if (userRole === 'admin') {
+    // An administrator may create users, but NOT other administrators: only an
+    // organization administrator may issue the administrator role. This is the
+    // pre-existing privilege-escalation control the creation policy enforces.
+    if (role === 'admin' && !user?.is_organization_admin) {
+      return { status: 403, message: 'Only organization administrators can create admin accounts' };
+    }
+    return null;
+  }
+
+  if (userRole === 'supervisor') {
+    if (!user?.facility_id) {
+      return { status: 403, message: 'Supervisor must be assigned to a facility' };
+    }
+    // A supervisor may create operators only (not other supervisors or admins).
+    if (role && role !== 'operator') {
+      return { status: 403, message: 'Can only create operator users' };
+    }
+    return null;
+  }
+
+  // Operators cannot create users; no other role may issue a role.
+  return { status: 403, message: 'Access denied' };
+};
+
+/**
  * Middleware to check if supervisor can create user in their facility
  */
 const canCreateUser = async (req, res, next) => {
@@ -437,56 +486,37 @@ const canCreateUser = async (req, res, next) => {
   const userFacilityId = req.user?.facility_id;
   const isOrgAdmin = req.user?.is_organization_admin;
   const { facility_id, role: newUserRole } = req.body;
-  
+
   console.log('[canCreateUser] User role:', role, 'Facility:', userFacilityId, 'IsOrgAdmin:', isOrgAdmin);
   console.log('[canCreateUser] Request body:', { facility_id, newUserRole });
-  
-  // Admin can create users, but NOT other admins (prevents privilege escalation)
-  // Only organization admins can create other admins within their organization
-  if (role === 'admin') {
-    // Check if trying to create an admin
-    if (newUserRole === 'admin') {
-      // Only organization admins can create other admins
-      if (!isOrgAdmin) {
-        return res.status(403).json({
-          success: false,
-          message: 'Only organization administrators can create admin accounts'
-        });
-      }
-      
-      // Limit number of admins per organization (optional safety measure)
-      const { User } = require('../models');
-      const organizationId = req.user.organization_id;
-      const adminCount = await User.countByOrganization(organizationId, { role: 'admin' });
-      
-      if (adminCount >= 3) {
-        return res.status(403).json({
-          success: false,
-          message: 'Maximum number of admin accounts (3) reached for this organization'
-        });
-      }
-    }
-    
-    return next();
+
+  // Approved role-assignment authority, shared with the invitation resend path.
+  const refusal = roleIssuanceAuthority(req.user, newUserRole);
+  if (refusal) {
+    return res.status(refusal.status).json({
+      success: false,
+      message: refusal.message
+    });
   }
-  
+
+  // Limit number of admins per organization (optional safety measure).
+  // Creation-only CAPACITY, not authority: a resend re-issues an invitation that
+  // already exists and is therefore not subject to this cap.
+  if (role === 'admin' && newUserRole === 'admin') {
+    const { User } = require('../models');
+    const organizationId = req.user.organization_id;
+    const adminCount = await User.countByOrganization(organizationId, { role: 'admin' });
+
+    if (adminCount >= 3) {
+      return res.status(403).json({
+        success: false,
+        message: 'Maximum number of admin accounts (3) reached for this organization'
+      });
+    }
+  }
+
   // Supervisor can only create users in their facility
   if (role === 'supervisor') {
-    if (!userFacilityId) {
-      return res.status(403).json({
-        success: false,
-        message: 'Supervisor must be assigned to a facility'
-      });
-    }
-    
-    // Supervisor can only create operators (not other supervisors or admins)
-    if (newUserRole && newUserRole !== 'operator') {
-      return res.status(403).json({
-        success: false,
-        message: 'Can only create operator users'
-      });
-    }
-    
     // If facility_id is provided, it must match supervisor's facility
     if (facility_id && parseInt(facility_id) !== userFacilityId) {
       return res.status(403).json({
@@ -494,21 +524,15 @@ const canCreateUser = async (req, res, next) => {
         message: 'Can only create users in your facility'
       });
     }
-    
+
     // Auto-assign supervisor's facility if not provided
     if (!facility_id) {
       req.body.facility_id = userFacilityId;
       console.log('[canCreateUser] Auto-assigned facility:', userFacilityId);
     }
-    
-    return next();
   }
-  
-  // Operators cannot create users
-  return res.status(403).json({
-    success: false,
-    message: 'Access denied'
-  });
+
+  return next();
 };
 
 /**
@@ -718,6 +742,7 @@ module.exports = {
   canCreateInFacility,
   canManageSchedule,
   canCreateUser,
+  roleIssuanceAuthority,
   canManageUser,
   filterReportsByFacility,
   filterEquipmentByFacility,

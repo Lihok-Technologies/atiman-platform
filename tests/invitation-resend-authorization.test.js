@@ -150,14 +150,17 @@ async function ensureFixture() {
     await insertUser(conn, 'ADMIN_A_GRANTED', { organizationId: ORG_A, role: 'admin', isOrganizationAdmin: true });
     await insertUser(conn, 'SUP_A', { organizationId: ORG_A, role: 'supervisor', facilityId: FAC_A });
     await insertUser(conn, 'OPER_A', { organizationId: ORG_A, role: 'operator', facilityId: FAC_A });
+    await insertUser(conn, 'OPER_A_GRANTED', { organizationId: ORG_A, role: 'operator', facilityId: FAC_A });
     await insertUser(conn, 'ADMIN_B', { organizationId: ORG_B, role: 'admin', isOrganizationAdmin: true });
 
     // Explicit grants: one UNRELATED capability discards the legacy bundle;
     // an explicit org.user_admin is the documented recovery path.
+    // ATM-001-SEC-00H-R1 adds an OPERATOR holding org.user_admin EXPLICITLY: the
+    // capability gate admits it, but it holds no role-issuance authority at all.
     await conn.query(
       `INSERT INTO user_capabilities (user_id, organization_id, capability, granted_by_user_id)
-       VALUES ($1,$2,'knowledge.author',$1), ($3,$2,'org.user_admin',$3)`,
-      [U.ADMIN_A_OTHER_GRANT, ORG_A, U.ADMIN_A_GRANTED]);
+       VALUES ($1,$2,'knowledge.author',$1), ($3,$2,'org.user_admin',$3), ($4,$2,'org.user_admin',$4)`,
+      [U.ADMIN_A_OTHER_GRANT, ORG_A, U.ADMIN_A_GRANTED, U.OPER_A_GRANTED]);
 
     // Terminal / ineligible invitations and one non-pending-supervisor row.
     await insertInvitation(conn, 'A_CANCELLED', { organizationId: ORG_A, role: 'operator', invitedBy: U.ADMIN_A, status: 'cancelled' });
@@ -348,28 +351,31 @@ describe('ATM-001-SEC-00H POST /api/invitations/:id/resend authorization and lif
       await assertRefusedCleanly(response, inv, 403, 'admin without org.user_admin');
     });
 
-    it('04b. a PLAIN administrator holds org.user_admin in legacy mode and may resend', async () => {
-      // Mission section 5 requires the decision to use the principal's EFFECTIVE
-      // CAPABILITIES, and the approved `admin` compatibility bundle carries
-      // org.user_admin. `is_organization_admin` is not part of the capability
-      // vocabulary, so a plain administrator holds it in LEGACY_COMPATIBILITY
-      // mode. This mirrors the OWNER ruling recorded for SEC-00G (design A) and
-      // is pinned so the difference between "administrator WITHOUT
-      // org.user_admin" (test 04, denied) and "plain administrator" cannot
-      // regress silently.
-      //
-      // REPORTED ASYMMETRY, not decided here: SEC-00E's `canCreateUser` requires
-      // `is_organization_admin` to CREATE an administrator invitation, while
-      // this route grants resend on the capability alone. Adding a per-role
-      // requirement here would be a new authorization rule, so it is escalated
-      // rather than invented (mission sections 5 and 6).
+    it('04b. a PLAIN administrator holds org.user_admin but may NOT reissue an ADMINISTRATOR invitation', async () => {
+      // ATM-001-SEC-00H-R1. The approved `admin` compatibility bundle does carry
+      // org.user_admin, and `is_organization_admin` is not part of the capability
+      // vocabulary, so the CAPABILITY gate admits a plain administrator
+      // (LEGACY_COMPATIBILITY mode). But resend re-issues the STORED role, and the
+      // approved creation-time authority (ATM-001-SEC-00E) permits only an
+      // organization administrator to issue the administrator role. Requiring
+      // org.user_admin alone was finding F-2 of ATM-001-SEC-00H-VUDA-01.
       const inv = await makeInvitation('A_04B', { organizationId: ORG_A, role: 'admin', invitedBy: U.ADMIN_A });
+      delivered = [];
       const response = await resend('PLAIN_ADMIN_A', inv.id);
-      assert.notStrictEqual(response.status, 403,
-        'the legacy admin bundle carries org.user_admin, and the flag is not a capability');
+      await assertRefusedCleanly(response, inv, 403, 'plain administrator on an admin invitation');
+      assert.match(response.text, /Only organization administrators can create admin accounts/,
+        'the refusal must come from the approved role-issuance authority');
+    });
+
+    it('04c. that same plain administrator may still reissue a role they ARE authorized to issue', async () => {
+      // The remediation narrows who may reissue the ADMINISTRATOR role; it does
+      // not revoke the plain administrator's org.user_admin for other roles.
+      const inv = await makeInvitation('A_04C', { organizationId: ORG_A, role: 'operator', invitedBy: U.ADMIN_A });
+      const response = await resend('PLAIN_ADMIN_A', inv.id);
+      assert.notStrictEqual(response.status, 403, 'an administrator may issue the operator role');
       const replacement = (await invitationRows()).find((r) => r.email === inv.email && r.id !== inv.id);
       assert.ok(replacement, 'the replacement must be created');
-      assert.strictEqual(replacement.role, 'admin', 'the stored role is preserved');
+      assert.strictEqual(replacement.role, 'operator', 'the stored role is preserved');
     });
 
     it('05. an authorized tenant administrator may resend a pending invitation', async () => {
@@ -519,13 +525,17 @@ describe('ATM-001-SEC-00H POST /api/invitations/:id/resend authorization and lif
       assert.strictEqual(replacement.role, 'admin');
     });
 
-    it('19. resending is unaffected by the original issuer losing authority', async () => {
+    it('19. a caller whose administrator-role issuance authority has been revoked is refused', async () => {
+      // ATM-001-SEC-00H-R1 required test 9. Authority is read NOW, from the
+      // principal, not from the invitation's provenance: revoking the caller's
+      // is_organization_admin revokes the ability to reissue an admin invitation,
+      // even though the caller still holds org.user_admin.
       const inv = await makeInvitation('A_19', { organizationId: ORG_A, role: 'admin', invitedBy: U.ADMIN_A });
       await withConn((c) => c.query(`UPDATE users SET is_organization_admin = false WHERE id = $1`, [U.ADMIN_A]));
       try {
+        delivered = [];
         const response = await resend('ADMIN_A', inv.id);
-        assert.notStrictEqual(response.status, 403,
-          'eligibility depends on the invitation, and the caller still holds org.user_admin');
+        await assertRefusedCleanly(response, inv, 403, 'revoked administrator-role authority');
       } finally {
         await withConn((c) => c.query(`UPDATE users SET is_organization_admin = true WHERE id = $1`, [U.ADMIN_A]));
       }
@@ -640,6 +650,162 @@ describe('ATM-001-SEC-00H POST /api/invitations/:id/resend authorization and lif
       // suite honest: a refusal delivering nothing is therefore over-determined.
       assert.strictEqual(delivered.length, 0,
         'the pre-existing gap is asserted; it is not treated as a control');
+    });
+  });
+
+  // ============================ J. role-issuance authority (ATM-001-SEC-00H-R1)
+  //
+  // Remediation of independent finding F-2 (ATM-001-SEC-00H-VUDA-01): requiring
+  // `org.user_admin` alone let a principal re-issue a role it may not issue.
+  // Resend now also applies the approved creation-time role-assignment authority
+  // (ATM-001-SEC-00E) to the STORED role.
+  describe('J. role-issuance authority (ATM-001-SEC-00H-R1 remediation of F-2)', () => {
+    it('R1-01. a tenant administrator with administrator-role authority reissues an administrator invitation', async () => {
+      const inv = await makeInvitation('R1_01', { organizationId: ORG_A, role: 'admin', invitedBy: U.ADMIN_A });
+      const response = await resend('ADMIN_A', inv.id);
+      assert.notStrictEqual(response.status, 403,
+        'an organization administrator may issue the administrator role');
+      const replacement = (await invitationRows()).find((r) => r.email === inv.email && r.id !== inv.id);
+      assert.ok(replacement, 'the replacement must be created');
+      assert.strictEqual(replacement.role, 'admin');
+      assert.strictEqual(Number(replacement.organization_id), ORG_A);
+    });
+
+    it('R1-02. an authorized principal reissues an eligible non-administrator invitation', async () => {
+      for (const role of ['operator', 'supervisor']) {
+        const inv = await makeInvitation(`R1_02_${role}`, { organizationId: ORG_A, role, invitedBy: U.ADMIN_A });
+        const response = await resend('ADMIN_A', inv.id);
+        assert.notStrictEqual(response.status, 403, `an administrator may issue the ${role} role`);
+        const replacement = (await invitationRows()).find((r) => r.email === inv.email && r.id !== inv.id);
+        assert.ok(replacement, `the ${role} replacement must be created`);
+        assert.strictEqual(replacement.role, role, 'the stored role is preserved');
+      }
+    });
+
+    it('R1-03. an explicit-grant principal with org.user_admin reissues a role they may issue', async () => {
+      for (const role of ['admin', 'operator']) {
+        const inv = await makeInvitation(`R1_03_${role}`, { organizationId: ORG_A, role, invitedBy: U.ADMIN_A });
+        const response = await resend('ADMIN_A_GRANTED', inv.id);
+        assert.notStrictEqual(response.status, 403,
+          `an explicit org.user_admin plus administrator-role authority may issue ${role}`);
+        const replacement = (await invitationRows()).find((r) => r.email === inv.email && r.id !== inv.id);
+        assert.ok(replacement, 'the replacement must be created');
+        assert.strictEqual(replacement.role, role);
+      }
+    });
+
+    it('R1-04. an OPERATOR holding only an explicit org.user_admin cannot reissue an ADMINISTRATOR invitation', async () => {
+      const inv = await makeInvitation('R1_04', { organizationId: ORG_A, role: 'admin', invitedBy: U.ADMIN_A });
+      delivered = [];
+      const response = await resend('OPER_A_GRANTED', inv.id);
+      await assertRefusedCleanly(response, inv, 403, 'explicit-grant operator on an admin invitation');
+      assert.match(response.text, /Access denied/,
+        'the operator holds no role-issuance authority at all');
+    });
+
+    it('R1-04b. that operator cannot reissue an OPERATOR invitation either', async () => {
+      const inv = await makeInvitation('R1_04B', { organizationId: ORG_A, role: 'operator', invitedBy: U.ADMIN_A });
+      delivered = [];
+      const response = await resend('OPER_A_GRANTED', inv.id);
+      await assertRefusedCleanly(response, inv, 403, 'explicit-grant operator on an operator invitation');
+    });
+
+    it('R1-05. a plain administrator lacking administrator-role authority cannot reissue an ADMINISTRATOR invitation', async () => {
+      const inv = await makeInvitation('R1_05', { organizationId: ORG_A, role: 'admin', invitedBy: U.ADMIN_A });
+      delivered = [];
+      const response = await resend('PLAIN_ADMIN_A', inv.id);
+      await assertRefusedCleanly(response, inv, 403, 'plain administrator on an admin invitation');
+    });
+
+    it('R1-06. a supervisor cannot reissue an ADMINISTRATOR invitation', async () => {
+      const inv = await makeInvitation('R1_06', { organizationId: ORG_A, role: 'admin', invitedBy: U.SUP_A });
+      delivered = [];
+      const response = await resend('SUP_A', inv.id);
+      await assertRefusedCleanly(response, inv, 403, 'supervisor on an admin invitation');
+    });
+
+    it('R1-07. a principal without org.user_admin cannot resend any role', async () => {
+      for (const [as, role] of [['OPER_A', 'operator'], ['ADMIN_A_OTHER_GRANT', 'admin']]) {
+        const inv = await makeInvitation(`R1_07_${as}`, { organizationId: ORG_A, role, invitedBy: U.ADMIN_A });
+        delivered = [];
+        const response = await resend(as, inv.id);
+        await assertRefusedCleanly(response, inv, 403, `${as} without org.user_admin`);
+      }
+    });
+
+    it('R1-08. a cross-tenant principal cannot resend, whatever its role authority', async () => {
+      const inv = await makeInvitation('R1_08', { organizationId: ORG_A, role: 'operator', invitedBy: U.ADMIN_A });
+      delivered = [];
+      const response = await resend('ADMIN_B', inv.id);
+      await assertRefusedCleanly(response, inv, 404, 'cross-tenant');
+    });
+
+    it('R1-09. revoking administrator-role authority refuses the previously-authorized explicit-grant principal', async () => {
+      const inv = await makeInvitation('R1_09', { organizationId: ORG_A, role: 'admin', invitedBy: U.ADMIN_A });
+      await withConn((c) => c.query(`UPDATE users SET is_organization_admin = false WHERE id = $1`, [U.ADMIN_A_GRANTED]));
+      try {
+        delivered = [];
+        const response = await resend('ADMIN_A_GRANTED', inv.id);
+        assert.strictEqual(response.status, 403,
+          'the explicit grant is necessary but not sufficient for the administrator role');
+        assert.match(response.text, /Only organization administrators can create admin accounts/);
+        await assertRefusedCleanly(response, inv, 403, 'explicit grant with revoked administrator-role authority');
+      } finally {
+        await withConn((c) => c.query(`UPDATE users SET is_organization_admin = true WHERE id = $1`, [U.ADMIN_A_GRANTED]));
+      }
+    });
+
+    it('R1-10. a forged body.role cannot downgrade the stored role out of the authority check', async () => {
+      const inv = await makeInvitation('R1_10', { organizationId: ORG_A, role: 'admin', invitedBy: U.ADMIN_A });
+      delivered = [];
+      const response = await resend('PLAIN_ADMIN_A', inv.id, { role: 'operator', is_organization_admin: true });
+      await assertRefusedCleanly(response, inv, 403, 'forged body.role on a stored admin invitation');
+    });
+
+    it('R1-11. a forged query.role cannot downgrade the stored role out of the authority check', async () => {
+      const inv = await makeInvitation('R1_11', { organizationId: ORG_A, role: 'admin', invitedBy: U.ADMIN_A });
+      delivered = [];
+      const response = await call('POST', `/api/invitations/${inv.id}/resend?role=operator`, { as: 'PLAIN_ADMIN_A' });
+      await assertRefusedCleanly(response, inv, 403, 'forged query.role on a stored admin invitation');
+    });
+
+    it('R1-12. forged administrator flags cannot manufacture role-issuance authority', async () => {
+      const inv = await makeInvitation('R1_12', { organizationId: ORG_A, role: 'admin', invitedBy: U.SUP_A });
+      delivered = [];
+      const response = await resend('SUP_A', inv.id, { is_organization_admin: true, role: 'admin' });
+      await assertRefusedCleanly(response, inv, 403, 'forged is_organization_admin');
+    });
+
+    it('R1-13. neither an authorized nor a refused resend alters a stored invitation role', async () => {
+      const authorized = await makeInvitation('R1_13A', { organizationId: ORG_A, role: 'admin', invitedBy: U.ADMIN_A });
+      await resend('ADMIN_A', authorized.id);
+      const original = (await rowById(authorized.id))[0];
+      assert.strictEqual(original.role, 'admin', 'the original stored role is untouched');
+      // D-1 throws after the replacement commits, before Invitation.cancel runs.
+      assert.strictEqual(original.status, 'pending',
+        'the original is retired only after its replacement exists (D-1 residual)');
+
+      const refused = await makeInvitation('R1_13B', { organizationId: ORG_A, role: 'admin', invitedBy: U.ADMIN_A });
+      delivered = [];
+      await resend('PLAIN_ADMIN_A', refused.id);
+      const refusedRow = (await rowById(refused.id))[0];
+      assert.strictEqual(refusedRow.role, 'admin');
+      assert.strictEqual(refusedRow.token, refused.token);
+      assert.strictEqual(refusedRow.status, 'pending');
+    });
+
+    it('R1-14. the role authority is evaluated against the persisted row, never the caller', () => {
+      const source = fs.readFileSync(path.join(REPO_ROOT, 'src', 'controllers', 'invitation.controller.js'), 'utf8');
+      const handler = source.slice(source.indexOf('async resend(req, res, next)'));
+      assert.match(handler, /roleIssuanceAuthority\(req\.user, invitation\.role\)/,
+        'the authority decision must take the stored role');
+      assert.doesNotMatch(handler, /roleIssuanceAuthority\(req\.user, (req|request)\./,
+        'the authority decision must never take a client-supplied role');
+      const rbac = fs.readFileSync(path.join(REPO_ROOT, 'src', 'middleware', 'rbac.js'), 'utf8');
+      assert.match(rbac, /const roleIssuanceAuthority = \(user, role\) =>/,
+        'the approved creation policy must be the single source of the decision');
+      assert.match(rbac, /const refusal = roleIssuanceAuthority\(req\.user, newUserRole\)/,
+        'creation must use the same decision, so the two can never drift');
     });
   });
 });
