@@ -664,6 +664,114 @@ describe('Published Knowledge Resolution (ATM-001-KF-04A)', { skip: DB_TEST_SKIP
       'another tenant must not receive ORG-private provenance');
   });
 
+  it('NEW-1m — KF-05-R2: a GLOBAL version discloses NO principal user id to any tenant', async () => {
+    // KF-05 finding R-2 (probe P6b): reviewer/approver/safety-reviewer user ids
+    // name USERS of the publishing tenant, so projecting them on a globally
+    // readable version discloses one tenant's user identity to every other
+    // tenant. No operational consumer needs the raw principal id; the
+    // attribution itself (state + timestamps) is preserved.
+    const templateId = await createWorkingTemplate(ORG);
+    await addWorkingStep(templateId, 'KF04A principal disclosure step');
+    const versionId = await publishVersion(templateId, {
+      organizationId: null,
+      knowledgeScope: 'shared',
+      templateName: 'KF04A Principal Disclosure'
+    });
+
+    // INTERNAL EVIDENCE PRESERVED: the frozen row still carries the full audit
+    // attribution. The remediation is a projection rule, not a data change.
+    const [raw] = await withConn((conn) => query(conn,
+      `SELECT reviewer_user_id, approver_user_id, safety_reviewed_by_user_id, reviewed_at, approved_at
+         FROM task_template_versions WHERE id = ?`, [versionId]));
+    for (const column of ['reviewer_user_id', 'approver_user_id', 'safety_reviewed_by_user_id']) {
+      assert.ok(raw[column] !== null && raw[column] !== undefined,
+        `internal evidence: the frozen row must still credit ${column}`);
+    }
+    assert.ok(raw.reviewed_at && raw.approved_at, 'internal evidence: attribution instants preserved');
+
+    /**
+     * Every key that names an identity, with its path and value.
+     *
+     * Matches on `user` rather than a `*UserId` suffix so a reintroduction is
+     * caught in any shape (`reviewer_user_id`, `reviewerId`, `reviewedBy`) and at
+     * any depth — including the steps, safety-control, applicability and evidence
+     * collections, which a version-only scan would miss. No legitimate
+     * published-knowledge field contains "user".
+     */
+    const identityFields = (value, prefix = '') => {
+      const found = [];
+      if (value === null || typeof value !== 'object') return found;
+      for (const [key, child] of Object.entries(value)) {
+        const here = prefix ? `${prefix}.${key}` : key;
+        if (/user/i.test(key)) found.push([here, child]);
+        else found.push(...identityFields(child, here));
+      }
+      return found;
+    };
+
+    // A global version has no "owning tenant": the publishing tenant is an
+    // ordinary reader of it, exactly like any other tenant.
+    const labels = [['publishing tenant', OPERATOR], ['foreign tenant', OPERATOR_B], ['org-less caller', OPERATOR_NO_ORG]];
+    for (const [label, userId] of labels) {
+      const res = await resolveVersion(versionId, userId);
+      assert.strictEqual(res.status, 200, `${label} may read the global version: ${JSON.stringify(res.body)}`);
+      const version = res.body.data.version;
+
+      assert.strictEqual(version.principalIdentifiersWithheld, true, `${label}: withholding must be explicit`);
+      assert.strictEqual(version.organizationScope, 'global');
+
+      // Scan the WHOLE served payload, not just the version header.
+      const fields = identityFields(res.body.data);
+      assert.ok(fields.length >= 3, `${label}: expected the principal id fields to exist`);
+      for (const [field, value] of fields) {
+        assert.strictEqual(value, null, `${label}: ${field} must be withheld on a global version`);
+      }
+      const paths = fields.map(([field]) => field);
+      for (const expected of ['version.governance.reviewerUserId',
+        'version.governance.approverUserId', 'version.safetyReview.reviewedByUserId']) {
+        assert.ok(paths.includes(expected), `${label}: the scan must see ${expected}`);
+      }
+
+      // Attribution evidence the operational consumer acts on is NOT withheld.
+      assert.ok(version.governance.reviewedAt, `${label}: reviewedAt preserved`);
+      assert.ok(version.governance.approvedAt, `${label}: approvedAt preserved`);
+      assert.strictEqual(version.safetyReview.state, 'reviewed_controls_defined', `${label}: safety state preserved`);
+      assert.ok(version.safetyReview.reviewedAt, `${label}: safety review instant preserved`);
+    }
+  });
+
+  it('NEW-1n — KF-05-R2 control: a TENANT version still attributes its OWN tenant principals', async () => {
+    // The withholding is scoped to GLOBAL versions. Within a tenant the principal
+    // ids disclose nothing the tenant does not already hold, so attribution is
+    // preserved and cross-tenant reads are still refused.
+    const templateId = await createWorkingTemplate(ORG);
+    await addWorkingStep(templateId, 'KF04A tenant attribution step');
+    const versionId = await publishVersion(templateId, {
+      organizationId: ORG, templateName: 'KF04A Tenant Attribution'
+    });
+
+    const owner = await resolveVersion(versionId, OPERATOR); // ORG
+    assert.strictEqual(owner.status, 200, JSON.stringify(owner.body));
+    assert.strictEqual(owner.body.data.version.principalIdentifiersWithheld, false,
+      'a tenant version attributes to its own tenant');
+    assert.strictEqual(owner.body.data.version.organizationScope, 'tenant');
+
+    // The disclosed ids are exactly the frozen row's own principals — read the row
+    // so the assertion cannot drift from the fixture's attribution.
+    const [raw] = await withConn((conn) => query(conn,
+      `SELECT reviewer_user_id, approver_user_id, safety_reviewed_by_user_id
+         FROM task_template_versions WHERE id = ?`, [versionId]));
+    assert.ok(Number(raw.reviewer_user_id) > 0, 'the fixture must credit real principals');
+    assert.strictEqual(owner.body.data.version.governance.reviewerUserId, Number(raw.reviewer_user_id));
+    assert.strictEqual(owner.body.data.version.governance.approverUserId, Number(raw.approver_user_id));
+    assert.strictEqual(owner.body.data.version.safetyReview.reviewedByUserId,
+      Number(raw.safety_reviewed_by_user_id));
+
+    const foreign = await resolveVersion(versionId, OPERATOR_B); // ORG_B
+    assert.strictEqual(foreign.status, 404, 'and still discloses nothing cross-tenant');
+    assert.strictEqual(foreign.body.code, 'PUBLISHED_VERSION_NOT_FOUND');
+  });
+
   it('NEW-1g — step evidence is routed to the correct step version, not the first or a step_no position', async () => {
     const templateId = await createWorkingTemplate();
     await addWorkingStep(templateId, 'KF04A multi step one');

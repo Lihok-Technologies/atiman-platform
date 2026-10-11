@@ -16,6 +16,11 @@
  *      `published` (superseded/retired are refused, and a draft cannot
  *      reach this table at all)
  *   4. The step set must be sealed and non-empty     -> 409 PUBLISHED_VERSION_INCOMPLETE
+ *   5. Principal identity is withheld on a GLOBAL version (KF-05-R2): the
+ *      reviewer / approver / safety-reviewer USER IDS are projected as null and
+ *      `principalIdentifiersWithheld` is true. Attribution timestamps and the
+ *      review state are preserved, and internal publication/audit evidence is
+ *      untouched: no schema, migration, publication rule or endpoint changes.
  *
  * Deliberate non-behaviour: there is no implicit "current"/"latest" selection.
  * ATM-001 §8.2 fixes the rule that *operational references point to a specific
@@ -145,6 +150,34 @@ const isInScope = (row, organizationId) => {
 
 const isPublished = (row) => row.lifecycle_state_at_publish === PUBLISHED_LIFECYCLE_STATE;
 
+/** A nullable identifier column as a number, or null when absent. */
+const toNullableId = (value) => (value === null ? null : Number(value));
+
+/**
+ * Whether the accountable principals' USER IDENTIFIERS must be withheld from the
+ * operational projection of a frozen version (KF-05-R2 / VUDA observation R-2).
+ *
+ * `reviewer_user_id`, `approver_user_id` and `safety_reviewed_by_user_id` name
+ * USERS of the publishing tenant. A version whose frozen scope is GLOBAL
+ * (`organization_id IS NULL`) is readable by EVERY tenant, so projecting those
+ * ids would disclose one tenant's user identity to all other tenants. No
+ * operational consumer needs the raw principal id — it needs the attribution
+ * itself (that a review/approval happened, its state, and when) — so the ids are
+ * withheld and the governance evidence is kept.
+ *
+ * Withholding is bound to the FROZEN version scope, exactly like every other
+ * scope decision in this module, and it fails closed: principal identity is
+ * disclosed only when the frozen scope is an EXPLICIT, well-formed tenant id. A
+ * global (database NULL), missing or malformed scope all withhold. A
+ * tenant-scoped version still shows its OWN tenant its own principals, because
+ * that discloses nothing the tenant does not already hold.
+ *
+ * Internal publication and audit evidence is deliberately unaffected: the columns
+ * are still read by the model, admission still requires them, and the governed
+ * authoring surfaces still serve them to their authorised callers.
+ */
+const withholdsPrincipalIdentity = (header) => toScopeId(header.organization_id) === null;
+
 /**
  * Refuse anything that is not an immutable, sealed, published version.
  * Exposed for tests and for reuse by operational consumers.
@@ -168,6 +201,11 @@ function assertServableVersion(header) {
 
 /** Public, operational projection of a frozen version header. No hashes. */
 function toVersionDto(header) {
+  // KF-05-R2: a GLOBAL version is readable by every tenant, so the accountable
+  // principals' user ids are withheld here (see withholdsPrincipalIdentity).
+  // Attribution timestamps, the review state and the safety-review attestation
+  // are NOT identity and are preserved for the operational consumer.
+  const withholdsPrincipals = withholdsPrincipalIdentity(header);
   return {
     id: Number(header.id),
     taskTemplateId: Number(header.task_template_id),
@@ -198,6 +236,10 @@ function toVersionDto(header) {
     changeRationale: header.change_rationale,
     knowledgeScope: header.knowledge_scope,
     organizationScope: header.organization_id === null ? 'global' : 'tenant',
+    // Additive and explicit. A withheld principal id must never be misread as
+    // "no reviewer was ever recorded", so the withholding is observable rather
+    // than an ambiguous null.
+    principalIdentifiersWithheld: withholdsPrincipals,
     governedClassification: {
       knowledgeTypeId: header.knowledge_type_id === null ? null : Number(header.knowledge_type_id),
       taskFamilyId: header.task_family_id === null ? null : Number(header.task_family_id),
@@ -224,14 +266,14 @@ function toVersionDto(header) {
     safetyReview: {
       state: header.safety_review_state,
       reviewedAt: header.safety_reviewed_at,
-      reviewedByUserId: header.safety_reviewed_by_user_id === null
+      reviewedByUserId: withholdsPrincipals
         ? null
-        : Number(header.safety_reviewed_by_user_id)
+        : toNullableId(header.safety_reviewed_by_user_id)
     },
     governance: {
-      reviewerUserId: header.reviewer_user_id === null ? null : Number(header.reviewer_user_id),
+      reviewerUserId: withholdsPrincipals ? null : toNullableId(header.reviewer_user_id),
       reviewedAt: header.reviewed_at,
-      approverUserId: header.approver_user_id === null ? null : Number(header.approver_user_id),
+      approverUserId: withholdsPrincipals ? null : toNullableId(header.approver_user_id),
       approvedAt: header.approved_at
     }
   };
@@ -394,6 +436,7 @@ module.exports = {
   listPublishedVersionsForEquipmentType,
   assertServableVersion,
   isInScope,
+  withholdsPrincipalIdentity,
   toPositiveInt,
   MAX_POSTGRES_INTEGER,
   PublishedKnowledgeValidationError,
