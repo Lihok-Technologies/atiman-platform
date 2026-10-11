@@ -92,6 +92,10 @@ const DB_MUTATING_SUITES = [
   // real organizations, facilities, subscriptions, users, capability grants and
   // invitations across three tenants).
   'invitation-list-authorization.test.js',
+  // ATM-001-SEC-00H resend authorization and lifecycle (writes real
+  // organizations, subscriptions, users, capability grants and invitations,
+  // and issues replacement invitations).
+  'invitation-resend-authorization.test.js',
   'step6-access-control.test.js',
   'step6-coverage-e2e.test.js',
   'step6-performance.test.js',
@@ -131,7 +135,8 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'provenance-write-scope.test.js',
   'knowledge-evidence-deletion-integrity.test.js',
   'invitation-role-authority.test.js',
-  'invitation-list-authorization.test.js'
+  'invitation-list-authorization.test.js',
+  'invitation-resend-authorization.test.js'
 ];
 
 const REPO_ROOT = path.resolve(__dirname, '..');

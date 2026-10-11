@@ -90,6 +90,10 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   // ATM-001-KF-06: knowledge evidence deletion integrity — a definition deletion
   // may not destroy working provenance evidence as a cascade side effect, so
   // authorization covers the operation's effect and not merely its route.
+  // ATM-001-SEC-00H: POST /api/invitations/:id/resend — org.user_admin
+  // authorization, terminal-invitation refusal, stored-role integrity, and the
+  // negative control that the baseline reissued dead administrator invitations.
+  'tests/invitation-resend-authorization.test.js',
   'tests/knowledge-evidence-deletion-integrity.test.js'
 ];
 
