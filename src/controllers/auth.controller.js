@@ -112,123 +112,44 @@ const login = async (req, res, next) => {
 };
 
 /**
- * Public signup (self-registration)
- * Allows signup with email OR phone number (or both)
+ * Public signup (self-registration) - ATM-001-SEC-00A.
+ *
+ * This handler previously trusted two values from the request body of an
+ * UNAUTHENTICATED route and used them to create an account inside an existing
+ * tenant:
+ *
+ *   - `organization_id` selected the tenant to join (defaulting to organization
+ *     id 1 when omitted), so any anonymous caller could enroll into any tenant.
+ *   - `role` was read from the body and admitted `'supervisor'` through the
+ *     handler's `allowedRoles` list, so the caller also chose their own
+ *     authority inside that tenant.
+ *
+ * Neither value has any server-side authorization basis on this route, so this
+ * is not the approved enrollment architecture. Joining an existing organization
+ * is an invitation act: `POST /api/invitations/accept` binds the caller to the
+ * tenant and the role recorded server-side by an organization administrator,
+ * with the invitation token as the authorization. Creating a new organization is
+ * `POST /api/auth/organization-signup`, which is server-authoritative - the
+ * registrant administers the NEW tenant only and never joins an existing one.
+ *
+ * This route therefore refuses. The refusal is decided before any database
+ * access, so it is identical for a valid, an invalid and an absent organization
+ * identifier and cannot be used to probe tenant existence.
+ *
+ * Escalation (ATM-001-SEC-00A): whether public self-enrollment into an existing
+ * tenant should exist as a product capability is an unresolved enrollment
+ * decision for the OWNER. No enrollment process is invented here; the two
+ * approved flows above are unchanged and remain functional.
  */
 const signup = async (req, res, next) => {
   try {
-    let { username, email, password, full_name, phone, role, organization_id } = req.body;
-    
-    // Normalize empty strings to null
-    email = email || null;
-    phone = phone || null;
-
-    // Validate required fields
-    if (!username || !password || !full_name) {
-      return res.status(400).json({
-        success: false,
-        message: 'Username, password, and full name are required'
-      });
-    }
-
-    // Validate that at least one contact method is provided
-    if (!email && !phone) {
-      return res.status(400).json({
-        success: false,
-        message: 'Either email or phone number is required'
-      });
-    }
-
-    // Validate password length
-    if (password.length < 6) {
-      return res.status(400).json({
-        success: false,
-        message: 'Password must be at least 6 characters'
-      });
-    }
-
-    // Check if username exists (globally for now)
-    const existingUsername = await User.findByUsername(username);
-    if (existingUsername) {
-      return res.status(409).json({
-        success: false,
-        message: 'Username already exists'
-      });
-    }
-
-    // Check if email exists (if provided)
-    if (email) {
-      const existingEmail = await User.findByEmail(email);
-      if (existingEmail) {
-        return res.status(409).json({
-          success: false,
-          message: 'Email already exists'
-        });
-      }
-    }
-
-    // Check if phone exists (if provided)
-    if (phone) {
-      const existingPhone = await User.findByPhone(phone);
-      if (existingPhone) {
-        return res.status(409).json({
-          success: false,
-          message: 'Phone number already exists'
-        });
-      }
-    }
-
-    // Restrict self-registration to operator and supervisor only
-    // Admin accounts must be created by existing admins
-    const allowedRoles = ['operator', 'supervisor'];
-    const userRole = allowedRoles.includes(role) ? role : 'operator';
-
-    // Hash password
-    const passwordHash = await hashPassword(password);
-
-    // Use selected organization or default to org 1
-    const targetOrgId = organization_id ? parseInt(organization_id) : 1;
-
-    // Check if organization exists
-    const org = await Organization.findById(targetOrgId);
-    if (!org) {
-      return res.status(404).json({
-        success: false,
-        message: 'Selected organization not found'
-      });
-    }
-
-    // Check seat availability for the target organization
-    const canAdd = await subscriptionService.canAddUser(targetOrgId);
-    if (!canAdd) {
-      return res.status(403).json({
-        success: false,
-        message: 'This organization has reached its seat limit. Please contact the organization admin.',
-        code: 'SEAT_LIMIT_REACHED'
-      });
-    }
-
-    // Create user
-    const user = await User.create({
-      username,
-      email,
-      password_hash: passwordHash,
-      full_name,
-      phone,
-      role: userRole,
-      organization_id: targetOrgId,
-      is_active: true,
-      status: 'active',
-      is_billable: true
-    });
-
-    // Update seat usage
-    await subscriptionService.recalculateSeats(targetOrgId);
-
-    res.status(201).json({
-      success: true,
-      message: 'Account created successfully. Please sign in.',
-      data: { user: sanitizeUser(user) }
+    // Deliberately read no tenant and no role from the request: on an
+    // unauthenticated route there is nothing that could authorize either.
+    return res.status(403).json({
+      success: false,
+      code: 'ENROLLMENT_REQUIRES_INVITATION',
+      message: 'Self-registration into an existing organization is not available. '
+        + 'Ask an organization administrator to invite you, or create a new organization.'
     });
   } catch (error) {
     next(error);
