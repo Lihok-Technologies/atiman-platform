@@ -563,6 +563,117 @@ const canManageUser = async (req, res, next) => {
 };
 
 /**
+ * ATM-001-SEC-LEGACY-01-R1: authorization for reading a single user record
+ * (GET /users/:id).
+ *
+ * This complements the approved USERS.VIEW permission contract rather than
+ * replacing it: the route applies requirePermission('USERS', 'VIEW') first, and
+ * this middleware then applies the tenant rule that the permission matrix alone
+ * cannot express. `USERS.VIEW` grants a supervisor or administrator `all`, which
+ * must be read within the caller's own organization - an administrator role is
+ * not a cross-tenant grant. Within that organization the boundary is the one the
+ * user list endpoint applies (administrator: the whole organization, supervisor:
+ * its own facility). The single-record path is deliberately narrower in one edge
+ * case: a supervisor with no facility assigned has no record scope here at all,
+ * whereas the list endpoint's NULL-facility fallback returns the whole
+ * organization - a pre-existing condition in that handler which this remediation
+ * does not change.
+ *
+ *   - role operator (USERS.VIEW = none)              -> 403 at the permission gate
+ *   - same organization, role admin                  -> allowed
+ *   - same organization, role supervisor, own row    -> allowed
+ *   - same organization, role supervisor, own facility -> allowed
+ *   - supervisor with no facility, non-self row      -> 403 (caller state only)
+ *   - any other tenant                               -> 404 (never 403)
+ *   - a facility the supervisor does not own         -> 404 (never 403)
+ *   - an identifier that does not exist              -> 404
+ *
+ * Every out-of-scope outcome collapses into the identical 404 body - and the one
+ * 403 above depends only on the caller's own state, never on the target - so the
+ * endpoint cannot be used as an existence oracle.
+ */
+const canViewUser = async (req, res, next) => {
+  const notFound = () => res.status(404).json({
+    success: false,
+    message: 'User not found'
+  });
+
+  const role = req.user?.role;
+
+  if (!role) {
+    return res.status(401).json({
+      success: false,
+      message: 'Authentication required'
+    });
+  }
+
+  // Only a plain positive integer inside the PostgreSQL INTEGER range is a user
+  // identifier. Rejecting anything else before the lookup keeps malformed input
+  // off the database entirely, makes an out-of-range value a clean 404 instead of
+  // a database error, and leaves every rejected form indistinguishable from a
+  // record that does not exist.
+  const rawUserId = String(req.params.id ?? '');
+  if (!/^\d+$/.test(rawUserId)) {
+    return notFound();
+  }
+  const targetUserId = Number(rawUserId);
+  if (!Number.isSafeInteger(targetUserId) || targetUserId < 1 || targetUserId > 2147483647) {
+    return notFound();
+  }
+
+  // `req.params.id` is always a string while `req.user.id` is whatever the
+  // adapter returned, so compare numerically rather than relying on both being
+  // the same JS type.
+  const isSelf = Number(req.user.id) === targetUserId;
+
+  // A supervisor with no facility has no readable record scope at all. Deciding
+  // this from the caller's own state BEFORE the lookup means the denial is
+  // byte-identical for every non-self identifier, so it cannot be used to tell an
+  // existing same-tenant record apart from an absent one.
+  if (role === 'supervisor' && !isSelf && !req.user.facility_id) {
+    return res.status(403).json({
+      success: false,
+      message: 'Supervisor must be assigned to a facility'
+    });
+  }
+
+  const { User } = require('../models');
+  const targetUser = await User.findById(targetUserId);
+
+  if (!targetUser) {
+    return notFound();
+  }
+
+  const sameOrganization = targetUser.organization_id != null
+    && req.user.organization_id != null
+    && targetUser.organization_id === req.user.organization_id;
+
+  // Fail closed on a foreign tenant, and on either side missing an organization.
+  if (!isSelf && !sameOrganization) {
+    return notFound();
+  }
+
+  if (role === 'admin' || isSelf) {
+    req.targetUser = targetUser;
+    return next();
+  }
+
+  if (role === 'supervisor') {
+    if (targetUser.facility_id !== req.user.facility_id) {
+      return notFound();
+    }
+
+    req.targetUser = targetUser;
+    return next();
+  }
+
+  return res.status(403).json({
+    success: false,
+    message: 'Access denied'
+  });
+};
+
+/**
  * Middleware to filter reports by facility for supervisors and operators
  * Admins can view all facilities
  */
@@ -719,6 +830,7 @@ module.exports = {
   canManageSchedule,
   canCreateUser,
   canManageUser,
+  canViewUser,
   filterReportsByFacility,
   filterEquipmentByFacility,
   filterFacilitiesByAccess,
