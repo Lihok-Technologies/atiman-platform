@@ -7,6 +7,7 @@ const { Invitation, User, Organization, OrganizationSubscription } = require('..
 const { hashPassword } = require('../utils/helpers');
 const subscriptionService = require('../services/subscription.service');
 const emailService = require('../services/email.service');
+const { roleIssuanceAuthority } = require('../middleware/rbac');
 
 class InvitationController {
   /**
@@ -317,6 +318,18 @@ class InvitationController {
   /**
    * Resend invitation
    * POST /api/invitations/:id/resend
+   *
+   * ATM-001-SEC-00H. Resend is a RE-ISSUE, not a revival.
+   *
+   * The route is authorized by `requireCapability('org.user_admin')` (see
+   * src/routes/invitation.routes.js). This handler enforces ELIGIBILITY. Every
+   * check runs BEFORE any mutation, so a refusal persists no invitation, issues
+   * no token, cancels nothing and delivers nothing.
+   *
+   * The replacement's role is the PERSISTED role of the invitation being
+   * replaced. This handler never reads `req.body`, `req.query` or `req.params`
+   * for a role, a tenant or an administrator flag, so none of those can widen
+   * what the resend grants.
    */
   async resend(req, res, next) {
     try {
@@ -330,9 +343,22 @@ class InvitationController {
         });
       }
 
-      // Get invitation
+      // An identifier that cannot be an invitation id is refused before it
+      // reaches the database, so a malformed id cannot disclose driver or
+      // schema detail through an error, and cannot be distinguished from an
+      // invitation that does not exist.
+      if (!/^\d+$/.test(String(invitationId))) {
+        return res.status(404).json({
+          success: false,
+          message: 'Invitation not found'
+        });
+      }
+
+      // Server-side tenant-scoped lookup. "Not found" and "belongs to another
+      // tenant" are deliberately indistinguishable, so no foreign invitation is
+      // disclosed.
       const [invitation] = await Invitation.findAll({ id: invitationId, organization_id: organizationId });
-      
+
       if (!invitation) {
         return res.status(404).json({
           success: false,
@@ -340,7 +366,48 @@ class InvitationController {
         });
       }
 
-      // Create new invitation with new token
+      // Eligibility. Only an invitation that is still capable of being accepted
+      // may be replaced: the same predicate `Invitation.findByToken` applies.
+      // A cancelled, accepted or expired invitation is terminal and must not be
+      // revived into a fresh usable token.
+      if (invitation.status !== 'pending') {
+        return res.status(400).json({
+          success: false,
+          message: 'Only pending invitations can be resent'
+        });
+      }
+
+      if (invitation.expires_at && new Date(invitation.expires_at).getTime() <= Date.now()) {
+        return res.status(400).json({
+          success: false,
+          message: 'An expired invitation cannot be resent'
+        });
+      }
+
+      // ATM-001-SEC-00H-R1. `org.user_admin` answers "may this principal manage
+      // invitations at all"; it does NOT answer "may this principal issue THIS
+      // role". A resend re-issues the STORED role, so the approved creation-time
+      // role-assignment authority (ATM-001-SEC-00E: the same policy
+      // `POST /api/invitations` applies at creation) must also hold here.
+      // Without it, a principal who may not create an administrator invitation
+      // could re-issue one - independent finding F-2 of ATM-001-SEC-00H-VUDA-01.
+      //
+      // The decision is taken from `invitation.role`, the persisted row, and
+      // never from the request body, query or headers. It runs BEFORE any
+      // mutation, so a refusal persists no invitation, issues no token, cancels
+      // nothing and delivers nothing. It is evaluated AFTER the lifecycle checks
+      // so that a terminal invitation keeps the response SEC-00H already gives
+      // it, and the remediation is strictly additive: only requests that would
+      // otherwise have proceeded to mutation can be newly refused.
+      const roleRefusal = roleIssuanceAuthority(req.user, invitation.role);
+      if (roleRefusal) {
+        return res.status(roleRefusal.status).json({
+          success: false,
+          message: roleRefusal.message
+        });
+      }
+
+      // Re-issue with the STORED role and a new token.
       const newInvitation = await Invitation.createInvitation({
         organization_id: organizationId,
         email: invitation.email,
@@ -348,7 +415,7 @@ class InvitationController {
         invited_by: req.user.id
       });
 
-      // Cancel old invitation
+      // Retire the invitation being replaced, once its replacement exists.
       await Invitation.cancel(invitationId);
 
       res.json({
