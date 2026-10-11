@@ -6,8 +6,8 @@ const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
 const { User, Facility } = require('../models');
-const { authenticate, requireAdmin, requireSupervisor } = require('../middleware/auth');
-const { requirePermission, canCreateUser, canManageUser, getUserPermissions } = require('../middleware/rbac');
+const { authenticate, requireSupervisor } = require('../middleware/auth');
+const { requirePermission, canCreateUser, canManageUser, canDeleteUser, getUserPermissions } = require('../middleware/rbac');
 const { validateAvailableSeats, validateReactivation, checkSeatUsage } = require('../middleware/seat-validation');
 const { getMyCapabilities } = require('../controllers/capability.controller');
 
@@ -317,22 +317,41 @@ router.put('/:id', canManageUser, async (req, res, next) => {
 });
 
 /**
- * Delete user (admin only)
- * Only admins can delete users
+ * Delete user (administrators only, within their own organization)
+ *
+ * ATM-001-SEC-00B: this route previously relied on `requireAdmin`, which admits
+ * a supervisor as well as an administrator, and applied no organization or
+ * facility predicate - so a supervisor could delete another tenant's user and no
+ * permission contract was consulted. It now applies the approved USERS.DELETE
+ * contract (`admin: 'all'`, `supervisor: 'none'`, `operator: 'none'`) and then
+ * the tenant boundary enforced by `canDeleteUser`.
+ *
+ * The deletion itself is scoped: `deleteForOrganization` carries the tenant
+ * predicate into the destructive statement, so the effect of the delete cannot
+ * outlive a change to the authorization layer above it. A target that no longer
+ * exists, or that was never in the caller's organization, yields the same 404
+ * the guard produces - never a success and never a distinguishing error.
  */
-router.delete('/:id', requireAdmin, async (req, res, next) => {
+router.delete('/:id', requirePermission('USERS', 'DELETE'), canDeleteUser, async (req, res, next) => {
   try {
-    const id = req.params.id;
+    const id = parseInt(req.params.id);
     
     // Prevent deleting self
-    if (parseInt(id) === req.user.id) {
+    if (id === req.user.id) {
       return res.status(400).json({
         success: false,
         message: 'Cannot delete your own account'
       });
     }
     
-    await User.delete(id);
+    const deleted = await User.deleteForOrganization(id, req.user.organization_id);
+    
+    if (!deleted) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
     
     res.json({
       success: true,

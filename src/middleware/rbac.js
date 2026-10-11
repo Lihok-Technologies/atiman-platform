@@ -563,6 +563,88 @@ const canManageUser = async (req, res, next) => {
 };
 
 /**
+ * ATM-001-SEC-00B: authorization for deleting a single user record
+ * (DELETE /users/:id).
+ *
+ * The route previously relied on `requireAdmin`, which admits a supervisor as
+ * well as an administrator (src/middleware/auth.js), and neither the handler
+ * nor `User.delete` applied any organization or facility predicate. A
+ * supervisor of one tenant could therefore delete another tenant's user, and no
+ * accepted permission contract was consulted at all.
+ *
+ * This guard supplies the boundary the approved contract cannot express. It
+ * runs *after* `requirePermission('USERS', 'DELETE')`, so the resource/action
+ * matrix (`admin: 'all'`, `supervisor: 'none'`, `operator: 'none'`) has already
+ * refused every non-administrator before any database access - which is why an
+ * operator or supervisor targeting any identifier, existing or not, receives the
+ * same 403 and cannot use this route as an oracle.
+ *
+ * For a caller who does reach the lookup (today: an administrator), the tenant
+ * rule of the approved architecture is applied: a role is not a cross-tenant
+ * grant, and joining another tenant fails closed.
+ *
+ *   - role operator / supervisor  -> 403 at the permission gate, no lookup
+ *   - same organization, admin    -> allowed for the handler to delete
+ *   - any other organization      -> 404
+ *   - a record that does not exist -> 404
+ *   - malformed / out-of-range id  -> 404
+ *
+ * Every out-of-scope outcome collapses into the identical 404 body, so the
+ * endpoint cannot be used to test whether a user exists in another tenant.
+ * Deleting one's own account remains the handler's separate 400 refusal.
+ */
+const canDeleteUser = async (req, res, next) => {
+  const notFound = () => res.status(404).json({
+    success: false,
+    message: 'User not found'
+  });
+
+  const role = req.user?.role;
+
+  if (!role) {
+    return res.status(401).json({
+      success: false,
+      message: 'Authentication required'
+    });
+  }
+
+  // Only a plain positive integer inside the PostgreSQL INTEGER range is a user
+  // identifier. Rejecting anything else before the lookup keeps malformed input
+  // off the database, makes an out-of-range value a clean 404 instead of a
+  // database error, and leaves every rejected form indistinguishable from a
+  // record that does not exist.
+  const rawUserId = String(req.params.id ?? '');
+  if (!/^\d+$/.test(rawUserId)) {
+    return notFound();
+  }
+  const targetUserId = Number(rawUserId);
+  if (!Number.isSafeInteger(targetUserId) || targetUserId < 1 || targetUserId > 2147483647) {
+    return notFound();
+  }
+
+  const { User } = require('../models');
+  const targetUser = await User.findById(targetUserId);
+
+  if (!targetUser) {
+    return notFound();
+  }
+
+  const sameOrganization = targetUser.organization_id != null
+    && req.user.organization_id != null
+    && targetUser.organization_id === req.user.organization_id;
+
+  // Fail closed on a foreign tenant, and on either side missing an organization.
+  // The response is identical to an absent record, so the outcome cannot be used
+  // to test whether a record exists in another tenant.
+  if (!sameOrganization) {
+    return notFound();
+  }
+
+  req.targetUser = targetUser;
+  return next();
+};
+
+/**
  * Middleware to filter reports by facility for supervisors and operators
  * Admins can view all facilities
  */
@@ -719,6 +801,7 @@ module.exports = {
   canManageSchedule,
   canCreateUser,
   canManageUser,
+  canDeleteUser,
   filterReportsByFacility,
   filterEquipmentByFacility,
   filterFacilitiesByAccess,
