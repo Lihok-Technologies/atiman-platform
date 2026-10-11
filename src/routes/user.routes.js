@@ -7,9 +7,25 @@ const router = express.Router();
 const bcrypt = require('bcryptjs');
 const { User, Facility } = require('../models');
 const { authenticate, requireAdmin, requireSupervisor } = require('../middleware/auth');
-const { requirePermission, canCreateUser, canManageUser, getUserPermissions } = require('../middleware/rbac');
+const { requirePermission, canCreateUser, canManageUser, canViewUser, getUserPermissions } = require('../middleware/rbac');
 const { validateAvailableSeats, validateReactivation, checkSeatUsage } = require('../middleware/seat-validation');
 const { getMyCapabilities } = require('../controllers/capability.controller');
+const { sanitizeUser, redactSensitiveFields } = require('../utils/helpers');
+
+/**
+ * ATM-001-SEC-LEGACY-01-R1 defence in depth.
+ *
+ * Every JSON response this router produces passes through `redactSensitiveFields`
+ * before serialisation, so credential material cannot leave through a handler
+ * that forgets to sanitise explicitly - including the JSON error paths. The
+ * explicit `sanitizeUser(...)` calls below remain the primary, reviewable
+ * protection; this guard is the backstop.
+ */
+router.use((req, res, next) => {
+  const sendJson = res.json.bind(res);
+  res.json = (body) => sendJson(redactSensitiveFields(body));
+  next();
+});
 
 router.use(authenticate);
 
@@ -58,7 +74,7 @@ router.get('/', requirePermission('USERS', 'VIEW'), async (req, res, next) => {
     
     res.json({
       success: true,
-      data: { users }
+      data: { users: redactSensitiveFields(users) }
     });
   } catch (error) {
     next(error);
@@ -91,7 +107,7 @@ router.get('/facility/operators', requireSupervisor, async (req, res, next) => {
     
     res.json({
       success: true,
-      data: { users: operators }
+      data: { users: redactSensitiveFields(operators) }
     });
   } catch (error) {
     next(error);
@@ -99,24 +115,28 @@ router.get('/facility/operators', requireSupervisor, async (req, res, next) => {
 });
 
 /**
- * Get user by ID - users can view their own, admins/supervisors can view users in their facility
+ * Get user by ID.
+ *
+ * ATM-001-SEC-LEGACY-01-R1: the endpoint previously relied on `canManageUser`
+ * alone, which let an operator through with no ownership check (any record, in
+ * any tenant) and let an administrator read records outside the caller's
+ * organization. It now applies the approved USERS.VIEW permission contract and
+ * then the tenant/facility boundary enforced by `canViewUser`.
  */
-router.get('/:id', canManageUser, async (req, res, next) => {
+router.get('/:id', requirePermission('USERS', 'VIEW'), canViewUser, async (req, res, next) => {
   try {
-    const userId = parseInt(req.params.id);
-    
-    const user = await User.findById(userId);
-    
+    const user = req.targetUser;
+
     if (!user) {
       return res.status(404).json({
         success: false,
         message: 'User not found'
       });
     }
-    
+
     res.json({
       success: true,
-      data: { user }
+      data: { user: sanitizeUser(user) }
     });
   } catch (error) {
     next(error);
@@ -179,7 +199,7 @@ router.post('/', requirePermission('USERS', 'CREATE'), canCreateUser, validateAv
     res.status(201).json({
       success: true,
       message: 'User created successfully',
-      data: { user }
+      data: { user: sanitizeUser(user) }
     });
   } catch (error) {
     next(error);
@@ -190,6 +210,15 @@ router.post('/', requirePermission('USERS', 'CREATE'), canCreateUser, validateAv
  * Update user (admin and supervisor)
  * Admin can update any user
  * Supervisor can only update users in their facility
+ *
+ * ATM-001-SEC-LEGACY-01-R1 FINDING (open, escalated - intentionally NOT changed
+ * here): this route shares the legacy `canManageUser` guard, which admits an
+ * operator with no ownership check and an administrator with no organization
+ * check. Closing it is a separate authorization/business-rule decision - which
+ * fields may an operator change on their own record, and whether any
+ * cross-organization write is ever legitimate - so it is out of this
+ * remediation's bounded scope and is recorded as an open finding rather than
+ * silently altered. Only the response sanitisation below is applied here.
  */
 router.put('/:id', canManageUser, async (req, res, next) => {
   try {
@@ -309,7 +338,7 @@ router.put('/:id', canManageUser, async (req, res, next) => {
     res.json({
       success: true,
       message: 'User updated successfully',
-      data: { user }
+      data: { user: sanitizeUser(user) }
     });
   } catch (error) {
     next(error);
@@ -319,6 +348,16 @@ router.put('/:id', canManageUser, async (req, res, next) => {
 /**
  * Delete user (admin only)
  * Only admins can delete users
+ *
+ * ATM-001-SEC-LEGACY-01-R1 FINDING (open, escalated - intentionally NOT changed
+ * here): the guard below is `requireAdmin`, which admits a supervisor as well as
+ * an administrator (src/middleware/auth.js), and neither this handler nor
+ * `User.delete` applies any organization or facility check. A supervisor or
+ * administrator holding one tenant's credentials can therefore delete another
+ * tenant's user. Aligning this destructive route with the approved contract
+ * (USERS.DELETE: admin only) and adding tenant scoping is a separate
+ * authorization decision, so it is recorded as an open finding rather than
+ * changed inside this bounded remediation.
  */
 router.delete('/:id', requireAdmin, async (req, res, next) => {
   try {
