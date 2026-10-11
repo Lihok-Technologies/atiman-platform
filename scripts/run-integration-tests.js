@@ -81,7 +81,11 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   // ATM-001-KF-06: knowledge evidence deletion integrity — a definition deletion
   // may not destroy working provenance evidence as a cascade side effect, so
   // authorization covers the operation's effect and not merely its route.
-  'tests/knowledge-evidence-deletion-integrity.test.js'
+  'tests/knowledge-evidence-deletion-integrity.test.js',
+  // ATM-001-SEC-00D: POST /api/auth/register — the approved role-assignment
+  // authority (canCreateUser) must cover the registration route, so a supervisor
+  // or a plain administrator cannot create an administrator.
+  'tests/auth-register-authorization.test.js'
 ];
 
 /**
