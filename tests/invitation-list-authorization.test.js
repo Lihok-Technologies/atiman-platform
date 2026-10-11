@@ -651,6 +651,29 @@ describe('ATM-001-SEC-00G GET /api/invitations authorization and token protectio
           'a refused resend must not alter the original invitation status');
         assert.strictEqual(after[0].role, before[0].role,
           'a refused resend must not alter the stored invitation role');
+
+        // CRITICAL SECURITY INVARIANT (SEC-00H-R1 finding F-2).
+        //
+        // A PLAIN administrator (role = 'admin', is_organization_admin = false)
+        // holds org.user_admin through the approved admin compatibility bundle, so
+        // it passes the route's capability gate — but it must NOT be able to
+        // re-issue an ADMINISTRATOR invitation, because it has no authority to
+        // issue the administrator role. This is the exact escalation class the
+        // standalone form of this test tolerated, and the case a capability-only
+        // guard does not close. Asserting it here makes this test a real detector
+        // of an F-2 regression rather than a restatement of the route wiring.
+        const adminEmail = INV.A_SECOND_ADMIN.email;
+        const adminBefore = await withConn((conn) => conn.query(
+          `SELECT id, status, role FROM invitations WHERE email = $1 ORDER BY id`, [adminEmail]));
+        const plainResend = await call('POST', `/api/invitations/${INV.A_SECOND_ADMIN.id}/resend`, { as: 'PLAIN_ADMIN_A' });
+        const adminAfter = await withConn((conn) => conn.query(
+          `SELECT id, status, role FROM invitations WHERE email = $1 ORDER BY id`, [adminEmail]));
+        assert.strictEqual(plainResend.status, 403,
+          'a plain administrator must NOT be able to re-issue an administrator invitation');
+        assert.strictEqual(adminAfter.length, adminBefore.length,
+          'the refused administrator-role resend must not create a replacement invitation row');
+        assert.strictEqual(adminAfter[0].role, adminBefore[0].role,
+          'the refused administrator-role resend must not alter the stored invitation role');
       } else {
         assert.notStrictEqual(resend.status, 403,
           'resend is out of scope and unchanged; its missing authority check is reported as SEC-00F-1');
