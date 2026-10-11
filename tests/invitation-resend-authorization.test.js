@@ -348,6 +348,30 @@ describe('ATM-001-SEC-00H POST /api/invitations/:id/resend authorization and lif
       await assertRefusedCleanly(response, inv, 403, 'admin without org.user_admin');
     });
 
+    it('04b. a PLAIN administrator holds org.user_admin in legacy mode and may resend', async () => {
+      // Mission section 5 requires the decision to use the principal's EFFECTIVE
+      // CAPABILITIES, and the approved `admin` compatibility bundle carries
+      // org.user_admin. `is_organization_admin` is not part of the capability
+      // vocabulary, so a plain administrator holds it in LEGACY_COMPATIBILITY
+      // mode. This mirrors the OWNER ruling recorded for SEC-00G (design A) and
+      // is pinned so the difference between "administrator WITHOUT
+      // org.user_admin" (test 04, denied) and "plain administrator" cannot
+      // regress silently.
+      //
+      // REPORTED ASYMMETRY, not decided here: SEC-00E's `canCreateUser` requires
+      // `is_organization_admin` to CREATE an administrator invitation, while
+      // this route grants resend on the capability alone. Adding a per-role
+      // requirement here would be a new authorization rule, so it is escalated
+      // rather than invented (mission sections 5 and 6).
+      const inv = await makeInvitation('A_04B', { organizationId: ORG_A, role: 'admin', invitedBy: U.ADMIN_A });
+      const response = await resend('PLAIN_ADMIN_A', inv.id);
+      assert.notStrictEqual(response.status, 403,
+        'the legacy admin bundle carries org.user_admin, and the flag is not a capability');
+      const replacement = (await invitationRows()).find((r) => r.email === inv.email && r.id !== inv.id);
+      assert.ok(replacement, 'the replacement must be created');
+      assert.strictEqual(replacement.role, 'admin', 'the stored role is preserved');
+    });
+
     it('05. an authorized tenant administrator may resend a pending invitation', async () => {
       const inv = await makeInvitation('A_05', { organizationId: ORG_A, role: 'admin', invitedBy: U.ADMIN_A });
       const before = (await invitationRows()).length;
