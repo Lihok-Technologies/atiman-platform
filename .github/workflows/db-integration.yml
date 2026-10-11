@@ -72,6 +72,19 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # CI-01: the non-database suites must run in CI as well. This step runs with
+      # NO database-test opt-in: src/config/database.js opens the destructive
+      # TEST_DB_* branch only when NODE_ENV==='test' AND RUN_DB_TESTS==='true', so
+      # every database-mutating suite self-skips here and
+      # tests/database-test-guard.test.js proves that (it re-runs each such suite
+      # in a subprocess with the whole database environment cleared). RUN_DB_TESTS
+      # is pinned to "false" as defence in depth against a future job-level gate;
+      # NODE_ENV is deliberately NOT set.
+      - name: Run non-database test suites (no database-test opt-in)
+        env:
+          RUN_DB_TESTS: "false"
+        run: npm test
+
       - name: Apply PostgreSQL schema (canonical migration runner)
         shell: bash
         env:
