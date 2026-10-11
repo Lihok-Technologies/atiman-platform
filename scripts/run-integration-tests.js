@@ -78,6 +78,10 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   // ATM-001-K3-R1: provenance write scope — a tenant may read and cite global
   // shared reference provenance but may not author into it (MAJOR-1).
   'tests/provenance-write-scope.test.js',
+  // ATM-001-SEC-00G: GET /api/invitations — org.user_admin authorization,
+  // token-free listing responses, tenant isolation, and the negative control
+  // that the baseline disclosed raw enrollment tokens to operators.
+  'tests/invitation-list-authorization.test.js',
   // ATM-001-KF-06: knowledge evidence deletion integrity — a definition deletion
   // may not destroy working provenance evidence as a cascade side effect, so
   // authorization covers the operation's effect and not merely its route.

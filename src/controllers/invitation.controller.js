@@ -8,6 +8,27 @@ const { hashPassword } = require('../utils/helpers');
 const subscriptionService = require('../services/subscription.service');
 const emailService = require('../services/email.service');
 
+/**
+ * Project an invitation row for the administration LISTING.
+ *
+ * ATM-001-SEC-00G. The listing previously spread the raw database row into the
+ * response, so every record carried its `token`. An invitation token is a usable
+ * enrollment credential: `POST /api/invitations/accept` is public and creates
+ * the account with the invitation's role, so disclosure of the token is
+ * disclosure of the ability to enroll. Listing is an administration view, not a
+ * delivery channel, and must not be a credential channel.
+ *
+ * The `token` is therefore dropped here. Every other field is preserved, because
+ * the administration view needs them. Creating an invitation still returns the
+ * new token and link (that is the delivery moment) - only the LISTING is
+ * sanitized, and that route is separately restricted to `org.user_admin`.
+ */
+const toInvitationListingView = (invitation) => {
+  // eslint-disable-next-line no-unused-vars
+  const { token, ...listing } = invitation;
+  return listing;
+};
+
 class InvitationController {
   /**
    * Get all invitations for current organization
@@ -24,7 +45,7 @@ class InvitationController {
         });
       }
 
-      const invitations = await Invitation.getByOrganization(organizationId);
+      const invitationRows = await Invitation.getByOrganization(organizationId);
       const rawStats = await Invitation.getStats(organizationId);
       
       // Get seat availability
@@ -33,12 +54,15 @@ class InvitationController {
       
       // Format stats for UI
       const stats = {
-        total: invitations.length,
+        total: invitationRows.length,
         pending: rawStats.pending_count || 0,
         accepted: rawStats.accepted_count || 0,
         expired: rawStats.expired_count || 0,
         availableSeats: seatUsage?.availableSeats || 0
       };
+
+      // ATM-001-SEC-00G: never disclose a usable enrollment credential in a listing.
+      const invitations = invitationRows.map(toInvitationListingView);
 
       res.json({
         success: true,
