@@ -80,8 +80,27 @@ const GATE_RE = /\bisIntegrationTest\s*\(/;
 /** The ONE supported conditional-skip idiom: a `skip:` suite option. */
 const SUPPORTED_SKIP_RE = /\bskip\s*:/;
 
-/** Proof that a suite defines at least one test. */
-const TEST_DEFINITION_RE = /\b(?:test|it|describe|suite|context|specify)\s*\(/;
+/**
+ * Container declaration: groups tests but does not itself register one.
+ * `describe` is node:test; `suite` and `context` are the Mocha aliases.
+ */
+const CONTAINER_DEFINITION_RE = /\b(?:describe|suite|context)\s*\(/;
+
+/**
+ * Proof that a suite defines at least one test.
+ *
+ * ATM-001-SEC-CLOSURE-WP3-07 (M-1). This deliberately requires a LEAF test
+ * definition — `test(...)`, `it(...)` or `specify(...)`. A container on its own
+ * is not evidence that anything runs: `describe('x', () => {})` registers no
+ * test, yet was accepted here because containers were listed too. WP3-06
+ * demonstrated that such a suite then passed this check, the runtime execution
+ * evidence (the reporter emits the container as a bare <testcase>) and `npm test`.
+ *
+ * Requiring a leaf is consistent with the repository's supported syntax and keeps
+ * the fail-closed direction: a suite with no leaf definition is rejected rather
+ * than assumed to run.
+ */
+const TEST_DEFINITION_RE = /\b(?:test|it|specify)\s*\(/;
 
 /**
  * Conditional-execution and test-selection constructs that are NOT supported.
@@ -344,7 +363,11 @@ function classifySuite(raw) {
     };
   }
 
-  if (!TEST_DEFINITION_RE.test(code)) return { klass: 'NO_TESTS', code };
+  if (!TEST_DEFINITION_RE.test(code)) {
+    // WP3-07 (M-1): distinguish "declares containers but no test" from "declares
+    // nothing at all", so the failure names the actual defect.
+    return { klass: 'NO_TESTS', containerOnly: CONTAINER_DEFINITION_RE.test(code), code };
+  }
   if (hasSkipOption) return { klass: 'GATED', code };
   return { klass: 'UNCONDITIONAL', code };
 }
@@ -473,10 +496,20 @@ function analyse(options = {}) {
 
   // ---- C11: a suite must define at least one test --------------------------
   for (const name of noTests) {
-    fail('C11',
-      `tests/${name} contains no test definition (no test/it/describe call) in executable code, `
-      + `so importing a test framework is the only evidence that anything runs. A suite that `
-      + `defines nothing executes nothing; add a test or remove the file.`);
+    const cls = classes.get(name);
+    if (cls && cls.containerOnly) {
+      // WP3-07 (M-1): containers alone register nothing.
+      fail('C11',
+        `tests/${name} declares only test containers (describe/suite/context) and no leaf test `
+        + `definition (test/it/specify) in executable code. A container on its own registers no `
+        + `test: an empty describe() executes nothing, so this suite cannot satisfy the coverage `
+        + `contract. Add a real test with test() or it(), or remove the file.`);
+    } else {
+      fail('C11',
+        `tests/${name} contains no test definition (no test/it/specify call) in executable code, `
+        + `so importing a test framework is the only evidence that anything runs. A suite that `
+        + `defines nothing executes nothing; add a test or remove the file.`);
+    }
   }
 
   // ---- C2: no stale registration ------------------------------------------

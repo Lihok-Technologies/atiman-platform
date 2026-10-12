@@ -79,6 +79,14 @@ Anything else **fails**. In particular:
   execution cannot be demonstrated.
 * **A suite that defines no test is rejected** — importing a test framework is not evidence that
   anything runs.
+* **A container alone is not a test** — `describe`, `suite` and `context` group tests; they do not
+  register one. C11 requires at least one **leaf** definition (`test`, `it` or `specify`), so a suite
+  whose only content is an empty `describe('x', () => {})` is rejected.
+
+> **WP3-07 (M-1).** Containers were previously accepted as test definitions, so a suite containing
+> only an empty `describe()` satisfied C11 while executing nothing — and it then also passed the
+> runtime evidence pass (the reporter emits the container as a bare `<testcase>`) and `npm test`.
+> Requiring a leaf definition closes that path in the fail-closed direction.
 
 The analysis is **lexical, not interpretive**. Comments and string/template literals are blanked
 before matching, so:

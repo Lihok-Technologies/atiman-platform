@@ -605,3 +605,102 @@ describe('ATM-001-SEC-CLOSURE-WP3-05 runtime execution evidence', () => {
     assert.ok(gated.length >= 20, 'the recognised gate idiom must still be accepted');
   });
 });
+
+// ===========================================================================
+// WP3-07 — M-1: a container alone is not a test definition
+//
+// WP3-06 (M-1) demonstrated that `describe('container', () => {})` satisfied C11
+// while registering no test, so the suite then passed the static check, the
+// runtime execution evidence (the reporter emits the container as a bare
+// <testcase>) and `npm test`. C11 now requires a LEAF definition
+// (test/it/specify); containers (describe/suite/context) no longer count.
+// ===========================================================================
+
+describe('ATM-001-SEC-CLOSURE-WP3-07 M-1 container-only suites', () => {
+  // A registered, valid suite is always present so that C1 (non-empty runner
+  // contract) and C4/C5 never fire for reasons unrelated to the control tested.
+  const withRegistered = (extraName, extraBody) => ({
+    ledger: ['a.test.js'],
+    contract: ["'tests/a.test.js'"],
+    suites: { 'a.test.js': plainSuiteBody('a'), [extraName]: extraBody }
+  });
+
+  it('M1-1. a suite containing only an empty describe() is rejected with C11', () => {
+    const body = "const { describe } = require('node:test');\ndescribe('container', () => {});";
+    const root = makeFixture(withRegistered('zz-empty-describe.test.js', body));
+    assert.deepStrictEqual(idsOf(root), ['C11'],
+      'an empty describe() registers no test and must fail C11');
+    assert.match(failureFor(root, 'C11').message, /declares only test containers/,
+      'the failure must name the container-only cause');
+    assert.strictEqual(classifySuite(body).containerOnly, true,
+      'the classification must record that only containers were declared');
+  });
+
+  it('M1-2. a suite containing only nested empty describe() declarations is rejected with C11', () => {
+    const root = makeFixture(withRegistered('zz-nested-describe.test.js',
+      "const { describe } = require('node:test');\ndescribe('a', () => { describe('b', () => {}); });"));
+    assert.deepStrictEqual(idsOf(root), ['C11'], 'nested containers alone register no test');
+  });
+
+  it('M1-3. a valid suite containing a recognised leaf test definition remains accepted', () => {
+    const root = makeFixture({
+      ledger: ['a.test.js'],
+      contract: ["'tests/a.test.js'"],
+      suites: { 'a.test.js': plainSuiteBody('valid') }
+    });
+    assert.deepStrictEqual(idsOf(root), [], 'a suite with a leaf test must remain accepted');
+  });
+
+  for (const [label, body] of [
+    ['node:test test()', "const { test } = require('node:test');\ntest('t', () => {});"],
+    ['node:test it()', "const { it } = require('node:test');\nit('t', () => {});"],
+    ['node:test specify()', "const { specify } = require('node:test');\nspecify('t', () => {});"],
+    ['describe() wrapping a leaf it()',
+      "const { describe, it } = require('node:test');\ndescribe('s', () => { it('t', () => {}); });"],
+    ['suite() wrapping a leaf test()',
+      "const { suite, test } = require('node:test');\nsuite('s', () => { test('t', () => {}); });"]
+  ]) {
+    it(`M1-4. recognised leaf syntax remains accepted: ${label}`, () => {
+      const root = makeFixture({
+        ledger: ['a.test.js'],
+        contract: ["'tests/a.test.js'"],
+        suites: { 'a.test.js': body }
+      });
+      assert.deepStrictEqual(idsOf(root), [], `${label} must remain a recognised test definition`);
+    });
+  }
+
+  it('M1-5. the supported gate idiom is still recognised and classified GATED', () => {
+    const body = gatedSuiteBody('zzg');
+    const root = makeFixture({
+      ledger: ['a.test.js', 'zz-gated.test.js'],
+      contract: ["'tests/a.test.js'", "'tests/zz-gated.test.js'"],
+      suites: { 'a.test.js': plainSuiteBody('a'), 'zz-gated.test.js': body }
+    });
+    assert.deepStrictEqual(idsOf(root), [],
+      'a gated suite with a leaf test inside a container must remain valid');
+    assert.strictEqual(classifySuite(body).klass, 'GATED',
+      'the supported gate idiom must still classify as GATED');
+  });
+
+  it('M1-6. the F-1 and F-2 protections are preserved by the C11 change', () => {
+    const f1 = makeFixture(withRegistered('zz-f1.test.js', [
+      "const { describe, it } = require('node:test');",
+      "const { isIntegration" + "Test } = require('../src/config/database');",
+      'const adhoc = isIntegration' + 'Test();',
+      "describe('s', { skip: true }, () => { it('t', () => {}); });"
+    ].join('\n')));
+    assert.deepStrictEqual(idsOf(f1), ['C10'], 'F-1 must still be rejected');
+
+    const f2 = makeFixture(withRegistered('zz-f2.test.js', [
+      "const { describe, it } = require('node:test');",
+      "describe['skip']('dead', () => { it('never', () => {}); });"
+    ].join('\n')));
+    assert.deepStrictEqual(idsOf(f2), ['C10'], 'F-2 must still be rejected');
+  });
+
+  it('M1-7. the repository itself remains fully accounted for', () => {
+    assert.deepStrictEqual(analyse({ repoRoot: REPO_ROOT }).failures, [],
+      'the real repository must still pass, with no suite newly rejected by the C11 change');
+  });
+});
