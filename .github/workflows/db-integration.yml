@@ -117,8 +117,14 @@ jobs:
       #
       # It runs under the same disposable-database gate as the sanctioned runner,
       # so the database-safety controls are unchanged.
-      # Executed with bounded concurrency (4) because the gated suites take
-      # ~15 minutes serially; this matches the parallel execution model the
-      # sanctioned runner above already uses.
+      #
+      # WP3-11 — SERIAL, not concurrency 4. This pass spawns ONE `node --test` per
+      # suite in alphabetical order. At concurrency 4 the shared-database
+      # migration-DDL suites and the row-locking suites co-schedule and can
+      # reproduce the same 40P01 lock inversion that the sanctioned runner is
+      # isolated against (ATM-001 F-3). Because this pass does not share the
+      # sanctioned runner's partition, the only way to remove the overlap here is
+      # to not run suites concurrently. The job timeout is 30 minutes and the
+      # gated suites take roughly 15 minutes serially, which leaves headroom.
       - name: Verify runtime execution evidence (database-gated suites)
-        run: node scripts/test-execution-evidence.js --mode integration --concurrency 4
+        run: node scripts/test-execution-evidence.js --mode integration --concurrency 1

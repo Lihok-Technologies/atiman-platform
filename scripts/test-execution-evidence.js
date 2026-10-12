@@ -88,7 +88,9 @@ const QUIET = flag('--quiet');
 const CONCURRENCY = Math.max(1, Number.parseInt(opt('--concurrency', '1'), 10) || 1);
 const SUITES = argv.reduce((acc, a, i) => (a === '--suite' ? acc.concat(argv[i + 1]) : acc), []);
 
-if (!MODE && SUITES.length === 0) {
+// Usage errors belong to the CLI. Guarding on require.main keeps the CLI contract
+// identical while allowing the pure functions below to be imported by tests.
+if (require.main === module && !MODE && SUITES.length === 0) {
   console.error('usage: node scripts/test-execution-evidence.js --mode <unit|integration> [--suite <path>]');
   process.exit(2);
 }
@@ -184,13 +186,33 @@ function parseJunit(xml, suitePath) {
   // enumerated count is reconciled against the runner's own evidence. The
   // surplus cases are artefacts and are always counted as passed, so the
   // pass/fail split is rebalanced from `executed` downwards.
+  //
+  // WP3-11 (fail-closed): absence of either counter is NOT "no ceiling". The
+  // runner's counters are the only independent evidence that a case really ran,
+  // so a report that omits them cannot be reconciled at all and must fail
+  // closed. Without this, a container <testcase> alone is counted as EXECUTED
+  // and the suite passes while executing nothing — the exact M-2 failure this
+  // reconciliation exists to catch.
   const reported = runnerExecutedCount(xml);
-  if (reported !== null && executed > reported) {
+  const countersMissing = reported === null;
+  if (!countersMissing && executed > reported) {
     executed = reported;
     if (passed > executed - failed) passed = Math.max(0, executed - failed);
   }
 
-  return { executed, passed, failed, skipped, cancelled };
+  return { executed, passed, failed, skipped, cancelled, countersMissing };
+}
+
+/**
+ * The single decision that makes this contract fail closed.
+ *
+ * A suite is in violation when it executed nothing, OR when the runner's counters
+ * are absent so execution cannot be reconciled at all. Exported so the decision
+ * itself can be tested directly — a test that re-implements this predicate would
+ * assert its own copy rather than the behaviour that actually gates CI.
+ */
+function isExecutionViolation(row) {
+  return (row.executed === 0 || row.countersMissing === true) && !row.exempt;
 }
 
 /**
@@ -269,7 +291,7 @@ const rows = [];
     r.discovered = discovered.includes(path.basename(r.suite));
     r.registered = contracted.includes(path.basename(r.suite));
     r.exempt = exempt.includes(path.basename(r.suite));
-    r.violation = r.executed === 0 && !r.exempt;
+    r.violation = isExecutionViolation(r);
     rows.push(r);
   }
 }
@@ -290,7 +312,8 @@ lines.push('  SUITE                                        DISC REG  EXEC  PASS 
 lines.push('  -------------------------------------------- ---- --- ----- ----- ----- ----- ----- --------------------');
 for (const r of rows) {
   const verdict = r.exempt ? 'EXEMPT (legacy)'
-    : r.violation ? '*** ZERO EXECUTED ***' : 'executed';
+    : r.countersMissing ? '*** NO RUNNER COUNTERS ***'
+      : r.violation ? '*** ZERO EXECUTED ***' : 'executed';
   lines.push(`  ${path.basename(r.suite).padEnd(44)} ${r.discovered ? ' Y ' : ' - '} ${r.registered ? ' Y ' : ' - '} `
     + `${String(r.executed).padStart(5)} ${String(r.passed).padStart(5)} ${String(r.failed).padStart(5)} `
     + `${String(r.skipped).padStart(5)} ${String(r.cancelled).padStart(5)}  ${verdict}`);
@@ -338,7 +361,14 @@ else if (violations.length) console.log(lines.slice(-3 - violations.length).join
 process.exit(violations.length === 0 ? 0 : 1);
 }
 
-main().catch((e) => {
-  console.error('test-execution-evidence failed:', e && e.stack ? e.stack : e);
-  process.exit(2);
-});
+// Run only when invoked as a script. This keeps the CLI behaviour identical while
+// exposing the two pure functions so the absent-counter case can be tested with a
+// counter-less JUnit document — something the real reporter cannot produce.
+if (require.main === module) {
+  main().catch((e) => {
+    console.error('test-execution-evidence failed:', e && e.stack ? e.stack : e);
+    process.exit(2);
+  });
+}
+
+module.exports = { runnerExecutedCount, parseJunit, isExecutionViolation };
