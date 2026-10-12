@@ -28,12 +28,22 @@ const RUNNER_PATH = path.join(REPO_ROOT, 'scripts', 'run-integration-tests.js');
 const source = fs.readFileSync(RUNNER_PATH, 'utf8');
 
 /**
- * Every `tests/*.test.js` literal in the runner, deduplicated — the same technique
- * `tests/database-test-guard.test.js` uses to reconcile the runner against the
- * sanctioned ledger. Robust against apostrophes in prose comments.
+ * The declared contract list, extracted from the region BEFORE the isolation
+ * declaration. Scoping to that region matters: scanning the whole file would also
+ * pick up the isolation list's own literals, which makes the "every isolated suite
+ * is contracted" assertion vacuously true for a suite added only to the isolation
+ * list (independent reviewer round-2 finding F1).
+ *
+ * Deduplicated `tests/*.test.js` literals — the same technique
+ * `tests/database-test-guard.test.js` uses. Robust against apostrophes in prose
+ * comments, which defeat a naive bracket parse.
  */
-const runnerSuiteLiterals = [
-  ...new Set([...source.matchAll(/'(tests\/[^']+\.test\.js)'/g)].map((m) => m[1]))
+const isolationDeclaration = source.indexOf('const SHARED_DATABASE_DDL_SUITES');
+assert.ok(isolationDeclaration > 0, 'the isolation list must be declared after the contract list');
+const contractLiterals = [
+  ...new Set(
+    [...source.slice(0, isolationDeclaration).matchAll(/'(tests\/[^']+\.test\.js)'/g)].map((m) => m[1])
+  )
 ];
 
 /** Parse `const NAME = Object.freeze([ ... ]);` */
@@ -48,11 +58,11 @@ const isolated = parseFrozenArray(source, 'SHARED_DATABASE_DDL_SUITES');
 test('C1 — the runner declares a non-empty shared-database DDL isolation list', () => {
   assert.ok(Array.isArray(isolated), 'SHARED_DATABASE_DDL_SUITES must be declared via Object.freeze([...])');
   assert.ok(isolated.length > 0, 'the isolation list must not be empty');
-  assert.ok(runnerSuiteLiterals.length > 1, `expected the sanctioned ledger, got ${runnerSuiteLiterals.length}`);
+  assert.ok(contractLiterals.length > 1, `expected the sanctioned ledger, got ${contractLiterals.length}`);
 });
 
 test('C2 — every isolated suite is a member of the declared contract list (no repartitioning)', () => {
-  const unlisted = isolated.filter((suite) => !runnerSuiteLiterals.includes(suite));
+  const unlisted = isolated.filter((suite) => !contractLiterals.includes(suite));
   assert.deepStrictEqual(
     unlisted,
     [],
@@ -63,7 +73,13 @@ test('C2 — every isolated suite is a member of the declared contract list (no 
 test('C3 — COMPLETENESS: every suite that applies migration DDL on the shared database is isolated', () => {
   // This is the assertion that catches an unidentified second inversion: a contracted
   // suite matching the DDL idiom but left in the parallel group fails here.
-  const undeclared = runnerSuiteLiterals.filter((suite) => {
+  //
+  // STATED LIMIT: completeness is only as strong as the detector idiom
+  // (`executesSharedDatabaseMigrationDdl`). A suite that applies shared-database
+  // migration DDL through a shape that idiom does not recognise would not be flagged
+  // here, by the runner's own guard, or by anything else. No current contracted suite
+  // does so; any new contracted suite must be reviewed for this by hand.
+  const undeclared = contractLiterals.filter((suite) => {
     if (isolated.includes(suite)) return false;
     const file = path.join(REPO_ROOT, suite);
     if (!fs.existsSync(file)) return false;
@@ -78,15 +94,15 @@ test('C3 — COMPLETENESS: every suite that applies migration DDL on the shared 
 });
 
 test('C4 — the partition accounts for every suite exactly once and the groups are disjoint', () => {
-  const { ddlSuites, parallelSuites } = partitionSuites(runnerSuiteLiterals, isolated);
+  const { ddlSuites, parallelSuites } = partitionSuites(contractLiterals, isolated);
   assert.deepStrictEqual(
-    ddlSuites.filter((s) => !runnerSuiteLiterals.includes(s)),
+    ddlSuites.filter((s) => !contractLiterals.includes(s)),
     [],
     'the DDL group must contain only contracted suites'
   );
   assert.strictEqual(
     ddlSuites.length + parallelSuites.length,
-    runnerSuiteLiterals.length,
+    contractLiterals.length,
     'the groups must account for every contracted suite exactly once'
   );
   assert.strictEqual(ddlSuites.length, isolated.length, 'every isolated suite must land in the DDL group');
@@ -97,15 +113,15 @@ test('C4 — the partition accounts for every suite exactly once and the groups 
   );
   assert.strictEqual(
     new Set([...ddlSuites, ...parallelSuites]).size,
-    runnerSuiteLiterals.length,
+    contractLiterals.length,
     'no suite may appear in both groups'
   );
 });
 
 test('C5 — a contracted suite cannot be silently dropped by the partition', () => {
-  const { ddlSuites, parallelSuites } = partitionSuites(runnerSuiteLiterals, isolated);
+  const { ddlSuites, parallelSuites } = partitionSuites(contractLiterals, isolated);
   const union = [...ddlSuites, ...parallelSuites].sort();
-  assert.deepStrictEqual(union, [...runnerSuiteLiterals].sort(), 'the union must equal the contracted list');
+  assert.deepStrictEqual(union, [...contractLiterals].sort(), 'the union must equal the contracted list');
 });
 
 test('C6 — the runner actually USES the partition (isolation cannot be declared and ignored)', () => {
