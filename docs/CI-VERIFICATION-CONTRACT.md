@@ -87,6 +87,12 @@ Anything else **fails**. In particular:
 > only an empty `describe()` satisfied C11 while executing nothing — and it then also passed the
 > runtime evidence pass (the reporter emits the container as a bare `<testcase>`) and `npm test`.
 > Requiring a leaf definition closes that path in the fail-closed direction.
+>
+> **WP3-09 (M-2).** C11 alone was not sufficient. A `describe()` whose only leaf was *present in
+> source but unreachable at runtime* still satisfied C11, and the runtime pass still counted the bare
+> container `<testcase>` — so a suite executing zero leaf tests passed all three layers. The runtime
+> evidence now reconciles the enumerated cases against the runner's own counters, so such a container
+> is observed as `EXECUTED 0`. See §4.2.
 
 The analysis is **lexical, not interpretive**. Comments and string/template literals are blanked
 before matching, so:
@@ -112,6 +118,25 @@ A test case counts as `EXECUTED` only when it really ran. `SKIPPED`, `CANCELLED`
 > does not prove that anything ran. The JUnit report distinguishes the file-level artefact from a real
 > `<testcase>`, and marks skipped and cancelled cases explicitly.
 
+**A `<testcase>` element is not by itself proof that a test ran.** Measured on Node 22.23.2/22.23.3,
+a suite whose only content is an empty `describe()` — or a `describe()` whose only children are
+conditionally unreachable — emits the container as a bare `<testcase>` that is **indistinguishable by
+shape** from a genuine top-level `test()`, while the same document reports
+`<!-- tests 0 --> <!-- pass 0 --> <!-- fail 0 --> <!-- suites 1 -->`. That element is a reporter
+artefact of a container that registered no test.
+
+The runner's own counters are therefore authoritative, and the enumerated case count is reconciled
+against them: `pass + fail` is the number of cases that actually ran to a conclusion, so it is a
+**ceiling** on `EXECUTED`. A count above that ceiling is artefact, and is not counted.
+
+> **Why a ceiling and not an equality?** A test that groups subtests is counted by the runner but
+> omitted from the report (measured: `tests=3`, `pass=3`, and only the two leaf `<testcase>` elements
+> are emitted), so the JUnit `tests` counter alone is not a safe bound in the other direction.
+
+This also reconciles the two totals: the runner's `# tests` for the contracted integration suites
+(915) exceeds the evidence pass total because the difference is the parent/suite entries the reporter
+does not emit, not unexecuted tests.
+
 The two passes:
 
 | Mode | Suites | Command | Job |
@@ -135,9 +160,10 @@ legacy suites, which are **not** reported as executed or passed).
   against blanked text. It is now matched on the raw source and accepted only when the receiver
   survived blanking — i.e. it is real code, not text inside a string or comment.
 * **F-3 (unreachable definitions).** Deliberately **not** addressed statically: recognising every
-  unreachable-code pattern would require a parser. The runtime pass observes `EXECUTED 0` and fails.
-  **Stated limit:** this catches unreachable definitions at runtime, but a suite that is unreachable
-  only under some conditions may still execute in others.
+  unreachable-code pattern would require a parser. The runtime pass observes `EXECUTED 0` and fails —
+  including when the unreachable leaf sits inside a container, which the WP3-09 (M-2) reconciliation
+  in §4.2 is what makes reliable. **Stated limit:** this catches unreachable definitions at runtime,
+  but a suite that is unreachable only under some conditions may still execute in others.
 
 ## 5. Checks to require on `main`
 

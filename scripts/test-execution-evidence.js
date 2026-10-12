@@ -20,24 +20,34 @@
  * test runner's JUnit output. A suite counts as EXECUTED only when at least one
  * real test case actually ran.
  *
- * WHY JUNIT, AND WHY NOT `# pass`
+ * WHY JUNIT, AND WHY THE RUNNER'S OWN COUNTERS ARE ALSO READ
  *
  * Measured on Node 22.23.2, an isolated suite that defines NO tests reports:
  *
  *     # tests 1   # pass 1        <-- the FILE is counted as one passing test
  *
  * so `# pass > 0` does NOT prove that a test body ran. The JUnit reporter is
- * unambiguous instead:
+ * more precise for the cases it marks explicitly:
  *
- *   no tests / unreachable   -> a single <testcase name="tests/x.test.js">
- *                               and no <testsuite> wrapper
+ *   a real test              -> <testcase name="a test name" .../>
+ *   no definitions at all    -> a single <testcase name="tests/x.test.js">
  *   skipped                  -> <testcase ...><skipped/></testcase>
  *   cancelled                -> <testcase ... failure type="cancelledByParent">
- *   a real test              -> <testcase name="a test name" .../>
+ *   todo                     -> <testcase ...><skipped type="todo"/></testcase>
  *
- * A test case therefore counts as EXECUTED when its name is not the suite file
- * path and it carries neither a <skipped> child nor a cancellation. That is
- * observable runtime evidence, not inference.
+ * BUT A <testcase> ELEMENT IS NOT BY ITSELF PROOF THAT A TEST RAN. WP3-09 (M-2):
+ * measured on the same runner, a suite whose only content is an empty
+ * `describe()` — or a `describe()` whose only children are conditionally
+ * unreachable — emits the container as a bare <testcase> while the same
+ * document reports:
+ *
+ *     <!-- tests 0 --> <!-- pass 0 --> <!-- fail 0 --> <!-- suites 1 -->
+ *
+ * That element is a reporter artefact of a container that registered no test,
+ * and it is indistinguishable by shape from a genuine top-level test(). The
+ * runner's counters are therefore authoritative: `pass + fail` is the number of
+ * cases that actually ran to a conclusion, and the enumerated case count is
+ * reconciled against it.
  *
  * SKIPPED, CANCELLED AND TODO ARE NEVER COUNTED AS EXECUTED.
  *
@@ -113,6 +123,35 @@ function envFor(mode) {
 }
 
 /**
+ * WP3-09 (M-2) — the runner's own counts, read from the JUnit document.
+ *
+ * A <testcase> element is NOT by itself proof that a test ran. Measured on Node
+ * 22.23.2/22.23.3, a suite whose only content is an empty `describe()`, or a
+ * `describe()` whose only children are conditionally unreachable, emits the
+ * container as a bare <testcase> while the same document reports:
+ *
+ *     <!-- tests 0 --> <!-- pass 0 --> <!-- fail 0 --> <!-- suites 1 -->
+ *
+ * `pass + fail` is the runner's count of cases that actually ran to a
+ * conclusion, so it is an authoritative CEILING on the enumerated case count.
+ * It is a ceiling and not an equality because a test that groups subtests is
+ * counted by the runner but omitted from the report (measured: tests=3,
+ * pass=3, and only the two leaf <testcase> elements are emitted).
+ *
+ * Returns null when either counter is absent, in which case the enumerated
+ * count is left as it is.
+ */
+function runnerExecutedCount(xml) {
+  const counter = (name) => {
+    const m = xml.match(new RegExp(`<!-- ${name} (\\d+) -->`));
+    return m ? Number(m[1]) : null;
+  };
+  const pass = counter('pass');
+  const fail = counter('fail');
+  return pass === null || fail === null ? null : pass + fail;
+}
+
+/**
  * Parse the JUnit report for one suite and classify each test case.
  * Deliberately a small, dependency-free scan of the reporter's own output.
  */
@@ -138,6 +177,19 @@ function parseJunit(xml, suitePath) {
     executed += 1;
     if (/<failure\b/.test(body) || /<error\b/.test(body)) failed += 1; else passed += 1;
   }
+
+  // WP3-09 (M-2): never report more executed cases than the runner counted. A
+  // container that registered no leaf test is emitted as a bare <testcase> that
+  // is indistinguishable by shape from a real top-level test(), so the
+  // enumerated count is reconciled against the runner's own evidence. The
+  // surplus cases are artefacts and are always counted as passed, so the
+  // pass/fail split is rebalanced from `executed` downwards.
+  const reported = runnerExecutedCount(xml);
+  if (reported !== null && executed > reported) {
+    executed = reported;
+    if (passed > executed - failed) passed = Math.max(0, executed - failed);
+  }
+
   return { executed, passed, failed, skipped, cancelled };
 }
 

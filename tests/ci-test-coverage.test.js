@@ -704,3 +704,158 @@ describe('ATM-001-SEC-CLOSURE-WP3-07 M-1 container-only suites', () => {
       'the real repository must still pass, with no suite newly rejected by the C11 change');
   });
 });
+
+// ===========================================================================
+// WP3-09 — M-2: a reporter-emitted container is not an executed leaf test
+//
+// WP3-08 (M-2) demonstrated that a suite whose only content is a container — an
+// empty describe(), or one whose only children are conditionally unreachable —
+// executed no leaf test at all yet passed the static classifier, the runtime
+// execution evidence and `npm test`.
+//
+// The JUnit reporter emits such a container as a bare <testcase> that is
+// indistinguishable by shape from a genuine top-level test():
+//
+//     <testcase name="Conditional Suite" time="..." classname="test"/>
+//     <!-- tests 0 --> <!-- pass 0 --> <!-- fail 0 --> <!-- suites 1 -->
+//
+// The runtime evidence therefore reconciles the enumerated cases against the
+// runner's own counters; `pass + fail` is zero for exactly these suites.
+// ===========================================================================
+
+describe('ATM-001-SEC-CLOSURE-WP3-09 M-2 reporter container artefacts', () => {
+  // A registered, valid suite is always present so that C1/C4/C5 never fire for
+  // reasons unrelated to the control under test.
+  const withRegistered = (extraName, extraBody) => ({
+    ledger: ['a.test.js'],
+    contract: ["'tests/a.test.js'"],
+    suites: { 'a.test.js': plainSuiteBody('a'), [extraName]: extraBody }
+  });
+
+  it('M2-1. an empty describe() container executes zero tests and fails runtime verification', () => {
+    const root = makeRuntimeFixture(withRegistered('m2-1.test.js',
+      "const { describe } = require('node:test');\ndescribe('empty container', () => {});"));
+    // C11 rejects it statically (M-1)...
+    assert.deepStrictEqual(idsOf(root), ['C11'], 'an empty container must still be rejected by C11');
+    // ...and the runtime pass must independently observe zero execution.
+    const { exit, record } = runEvidence(root, ['--suite', 'tests/m2-1.test.js']);
+    const r = rowFor(record, 'm2-1.test.js');
+    assert.strictEqual(r.executed, 0, 'a container that registered no test must not count as executed');
+    assert.strictEqual(r.passed, 0, 'the container artefact must not be reported as passed');
+    assert.strictEqual(exit, 1, 'zero executed tests must fail the evidence pass');
+  });
+
+  it('M2-2. a describe() whose only child is conditionally unreachable fails verification (the M-2 defect)', () => {
+    const body = [
+      "const { describe, it } = require('node:test');",
+      "describe('Conditional Suite', () => {",
+      "  if (process.env.RUN_THE_TEST === '1') { it('the only real test', () => {}); }",
+      '});'
+    ].join('\n');
+    const root = makeRuntimeFixture(withRegistered('m2-2.test.js', body));
+    // The static layer accepts it: a leaf call is present in executable code.
+    assert.deepStrictEqual(analyse({ repoRoot: root }).failures, [],
+      'the static classifier accepts the unreachable leaf (the documented F-3 limit)');
+    // The runtime layer is what must catch it.
+    const { exit, record } = runEvidence(root, ['--suite', 'tests/m2-2.test.js'],
+      { RUN_THE_TEST: '' });
+    const r = rowFor(record, 'm2-2.test.js');
+    assert.strictEqual(r.executed, 0, 'no leaf test ran, so EXECUTED must be 0');
+    assert.strictEqual(exit, 1, 'a suite that executes nothing must fail, even though C11 accepted it');
+  });
+
+  it('M2-3. nested empty containers execute zero tests and fail verification', () => {
+    const root = makeRuntimeFixture(withRegistered('m2-3.test.js',
+      "const { describe } = require('node:test');\ndescribe('a', () => { describe('b', () => {}); });"));
+    const { exit, record } = runEvidence(root, ['--suite', 'tests/m2-3.test.js']);
+    const r = rowFor(record, 'm2-3.test.js');
+    assert.strictEqual(r.executed, 0, 'nested containers alone register no test');
+    assert.strictEqual(exit, 1, 'nested containers must fail the evidence pass');
+  });
+
+  it('M2-4. a valid describe() containing an executed it() still passes', () => {
+    const root = makeRuntimeFixture(withRegistered('m2-4.test.js',
+      "const { describe, it } = require('node:test');\ndescribe('s', () => { it('leaf', () => {}); });"));
+    const { exit, record } = runEvidence(root, ['--suite', 'tests/m2-4.test.js']);
+    const r = rowFor(record, 'm2-4.test.js');
+    assert.strictEqual(r.executed, 1, 'the leaf test must still be counted');
+    assert.strictEqual(r.passed, 1);
+    assert.strictEqual(exit, 0, 'a genuine executed leaf must still satisfy the evidence pass');
+  });
+
+  it('M2-5. a valid standalone test() still passes', () => {
+    const root = makeRuntimeFixture(withRegistered('m2-5.test.js',
+      "const { test } = require('node:test');\ntest('standalone', () => {});"));
+    const { exit, record } = runEvidence(root, ['--suite', 'tests/m2-5.test.js']);
+    assert.strictEqual(rowFor(record, 'm2-5.test.js').executed, 1);
+    assert.strictEqual(exit, 0);
+  });
+
+  it('M2-6. a skipped-only suite is never counted as executed and still fails', () => {
+    const root = makeRuntimeFixture({
+      ledger: ['a.test.js', 'm2-6.test.js'],
+      contract: ["'tests/a.test.js'", "'tests/m2-6.test.js'"],
+      suites: { 'a.test.js': plainSuiteBody('a'), 'm2-6.test.js': gatedSuiteBody('m2_6') }
+    });
+    assert.deepStrictEqual(analyse({ repoRoot: root }).failures, [],
+      'the recognised gate idiom plus registration must stay valid');
+    // Run without the database gate: the suite skips itself.
+    const { exit, record } = runEvidence(root, ['--suite', 'tests/m2-6.test.js']);
+    const r = rowFor(record, 'm2-6.test.js');
+    assert.strictEqual(r.executed, 0, 'a skipped suite must not be counted as executed');
+    assert.strictEqual(r.skipped, 1, 'it must be reported explicitly as skipped');
+    assert.strictEqual(exit, 1, 'a skipped-only suite must fail');
+  });
+
+  it('M2-7. a cancelled-only suite is never counted as executed and still fails', () => {
+    // The parent fails immediately after registering a child that is still
+    // running; the runner cancels the child. Verified to cancel on both Node 22
+    // (the pinned CI runtime) and Node 26, so this control is not version-bound.
+    const body = [
+      "const { test } = require('node:test');",
+      "test('parent', (t) => {",
+      "  t.test('child still running when the parent fails', async () => {",
+      '    await new Promise((resolve) => setTimeout(resolve, 300));',
+      '  });',
+      "  throw new Error('parent fails before the child finishes');",
+      '});'
+    ].join('\n');
+    const root = makeRuntimeFixture(withRegistered('m2-7.test.js', body));
+    const { exit, record } = runEvidence(root, ['--suite', 'tests/m2-7.test.js']);
+    const r = rowFor(record, 'm2-7.test.js');
+    assert.strictEqual(r.cancelled, 1, 'the child must be observed as cancelled');
+    assert.strictEqual(r.executed, 0, 'a cancelled case must not be counted as executed');
+    assert.strictEqual(exit, 1, 'a cancelled-only suite must fail');
+  });
+
+  it('M2-8. the F-1, F-2, F-3 and M-1 protections all remain in force', () => {
+    // F-1 — a gate call elsewhere in the file does not make a constant skip conditional.
+    const f1 = makeFixture(withRegistered('zz-f1.test.js', [
+      "const { describe, it } = require('node:test');",
+      "const { isIntegration" + "Test } = require('../src/config/database');",
+      'const adhoc = isIntegration' + 'Test();',
+      "describe('s', { skip: true }, () => { it('t', () => {}); });"
+    ].join('\n')));
+    assert.deepStrictEqual(idsOf(f1), ['C10'], 'F-1 must still be rejected statically');
+
+    // F-2 — computed-property member access.
+    const f2 = makeFixture(withRegistered('zz-f2.test.js', [
+      "const { describe, it } = require('node:test');",
+      "describe['skip']('dead', () => { it('never', () => {}); });"
+    ].join('\n')));
+    assert.deepStrictEqual(idsOf(f2), ['C10'], 'F-2 must still be rejected statically');
+
+    // M-1 — a container with no leaf definition is still rejected by C11.
+    assert.strictEqual(
+      classifySuite("const { describe } = require('node:test');\ndescribe('c', () => {});").klass,
+      'NO_TESTS', 'M-1 must still be rejected statically');
+
+    // F-3 — unreachable definitions: accepted statically, rejected at runtime.
+    const f3 = makeRuntimeFixture(withRegistered('zz-f3.test.js',
+      "const { describe, it } = require('node:test');\n"
+      + "if (false) { describe('dead', () => { it('never', () => {}); }); }"));
+    const { exit, record } = runEvidence(f3, ['--suite', 'tests/zz-f3.test.js']);
+    assert.strictEqual(rowFor(record, 'zz-f3.test.js').executed, 0, 'F-3 must execute nothing');
+    assert.strictEqual(exit, 1, 'F-3 must still fail the evidence pass');
+  });
+});
