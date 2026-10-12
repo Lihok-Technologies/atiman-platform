@@ -137,16 +137,33 @@ test('C8 — the CLI contract is preserved: requiring the module does not run it
 // pin the route, the exit code and the "ok" flag to the decision.
 // ---------------------------------------------------------------------------
 
-test('C9 — WIRING: the row verdict is routed THROUGH isExecutionViolation', () => {
+test('C9 — WIRING: the row verdict is routed THROUGH isExecutionViolation, unmodified', () => {
+  // Anchored to the END of the statement on purpose. An unanchored match is not
+  // sufficient: `r.violation = isExecutionViolation(r) && r.countersMissing !== true;`
+  // still contains the bare call while re-enabling the countersMissing fail-open
+  // (delta-review counterexample — all other assertions stayed green).
   assert.match(
     EVIDENCE_SRC,
-    /r\.violation\s*=\s*isExecutionViolation\(r\)/,
-    'the row violation must be computed by isExecutionViolation, not inline',
+    /^\s*r\.violation\s*=\s*isExecutionViolation\(r\);\s*$/m,
+    'the row violation must be the unmodified result of isExecutionViolation',
   );
   assert.doesNotMatch(
     EVIDENCE_SRC,
     /r\.violation\s*=\s*r\.executed\s*===\s*0\s*&&\s*!r\.exempt/,
     'the pre-fix inline decision must not reappear (this is the d2 fail-open)',
+  );
+  // Exactly one assignment to r.violation, and no override/trailing expression.
+  const assignments = [...EVIDENCE_SRC.matchAll(/r\.violation\s*[+\-*/%&|^]?=[^;]*/g)]
+    .map((m) => m[0].replace(/\s+/g, ' ').trim());
+  assert.strictEqual(
+    assignments.length,
+    1,
+    `expected exactly one r.violation assignment, found ${assignments.length}: ${assignments.join(' | ')}`,
+  );
+  assert.strictEqual(
+    assignments[0],
+    'r.violation = isExecutionViolation(r)',
+    'the assignment must not be compounded or overridden by a trailing expression',
   );
 });
 

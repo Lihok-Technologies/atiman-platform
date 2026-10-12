@@ -132,9 +132,9 @@ jobs:
       # the same partition here (DDL class serial, remainder concurrent) and
       # restore throughput.
       #
-      # TIMEOUT: the job limit is 30 minutes and the serial evidence pass is
+      # TIMEOUT: the job limit is 45 minutes and the serial evidence pass is
       # ESTIMATED at ~15 minutes (never measured). If that estimate is wrong the
       # job will time out — a visible, fail-closed failure — and the remedy is to
-      # raise timeout-minutes or adopt the partition above.
+      # raise timeout-minutes further or adopt the partition above.
       - name: Verify runtime execution evidence (database-gated suites)
         run: node scripts/test-execution-evidence.js --mode integration --concurrency 1
