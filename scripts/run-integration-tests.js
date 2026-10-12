@@ -1,5 +1,8 @@
 /** Run destructive MySQL integration tests only against an explicitly named test database. */
 const { spawnSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+const { partitionSuites, executesSharedDatabaseMigrationDdl } = require('./integration-suite-partition');
 
 const required = ['TEST_DB_HOST', 'TEST_DB_PORT', 'TEST_DB_NAME', 'TEST_DB_USER', 'TEST_DB_PASSWORD'];
 const missing = required.filter((name) => !process.env[name]);
@@ -118,58 +121,63 @@ function disposableChildEnv() {
 }
 
 /**
- * ATM-001 F-3 — shared-database DDL isolation.
+ * ATM-001 F-3 — shared-database migration-DDL isolation.
  *
- * `tests/knowledge-pack-publication-admission.test.js` re-applies migration 015
- * inside one transaction against the SHARED disposable database. In file order,
- * 015 first takes ACCESS EXCLUSIVE on `knowledge_pack_versions`, and later — at
- * `DROP TRIGGER ... ON knowledge_pack_version_task_template_versions` — ACCESS
- * EXCLUSIVE on `knowledge_pack_version_task_template_versions`.
+ * Some contracted suites re-apply a migration artifact on the SHARED disposable
+ * database, taking ACCESS EXCLUSIVE locks. Other suites take row locks on the
+ * same relations. Executed concurrently against one database, PostgreSQL can
+ * detect a lock cycle and abort one side with SQLSTATE 40P01. Two inversions of
+ * this class have been identified (migrations 015 and 019).
  *
- * `tests/knowledge-pack-membership.test.js` takes the inverse order: its INSERT
- * takes ROW EXCLUSIVE on `knowledge_pack_version_task_template_versions`, and the
- * BEFORE INSERT membership guard then requests ROW SHARE on
- * `knowledge_pack_versions` (015:203-206). When `node --test` schedules both
- * files in parallel against that one database, PostgreSQL detects the lock cycle
- * and aborts one transaction with SQLSTATE 40P01.
+ * The whole CLASS is therefore run in its own sequential invocation rather than
+ * a single instance: `spawnSync` is synchronous, so the groups cannot overlap.
  *
- * Running the DDL-taking suite in its own sequential invocation removes the
- * concurrency that produces the inversion. `spawnSync` is synchronous, so two
- * invocations cannot overlap.
- *
- * This list is deliberately a SUBSET of SANCTIONED_POSTGRES_INTEGRATION_SUITES.
- * The declared contract list is NOT repartitioned: `scripts/assert-test-coverage.js`
- * parses that single declared array, and `tests/database-test-guard.test.js`
- * requires every `tests/*.test.js` literal in this file to resolve to the same
- * sanctioned set. Only the execution topology changes.
+ * The declared contract list is NOT repartitioned. `scripts/assert-test-coverage.js`
+ * parses SANCTIONED_POSTGRES_INTEGRATION_SUITES, and
+ * `tests/database-test-guard.test.js` requires every `tests/*.test.js` literal in
+ * this file to resolve to the same sanctioned set. Only execution topology changes.
  */
 const SHARED_DATABASE_DDL_SUITES = Object.freeze([
-  'tests/knowledge-pack-publication-admission.test.js'
+  'tests/knowledge-versioning.test.js',
+  'tests/knowledge-pack-publication-admission.test.js',
+  'tests/taxonomy-identity-lifecycle.test.js',
+  'tests/capability-grants.test.js'
 ]);
 
-// Fail closed if the isolation list ever drifts outside the sanctioned contract.
-const unlistedIsolationSuites = SHARED_DATABASE_DDL_SUITES.filter(
-  (suite) => !SANCTIONED_POSTGRES_INTEGRATION_SUITES.includes(suite)
-);
-if (unlistedIsolationSuites.length) {
-  console.error(
-    'Refusing to run: shared-database DDL suite(s) are not part of the sanctioned contract: '
-      + unlistedIsolationSuites.join(', ')
+// Fail closed if a contracted suite starts applying migration DDL on the shared
+// database without being listed for isolation above.
+const undeclaredDdlSuites = SANCTIONED_POSTGRES_INTEGRATION_SUITES.filter((suite) => {
+  if (SHARED_DATABASE_DDL_SUITES.includes(suite)) return false;
+  let source;
+  try {
+    source = fs.readFileSync(path.join(__dirname, '..', suite), 'utf8');
+  } catch {
+    return false;
+  }
+  return executesSharedDatabaseMigrationDdl(source);
+});
+
+let status = 0;
+let executionGroups;
+try {
+  if (undeclaredDdlSuites.length) {
+    throw new Error(
+      'contracted suite(s) apply migration DDL on the shared database without isolation: '
+        + undeclaredDdlSuites.join(', ')
+    );
+  }
+  const { ddlSuites, parallelSuites } = partitionSuites(
+    SANCTIONED_POSTGRES_INTEGRATION_SUITES,
+    SHARED_DATABASE_DDL_SUITES
   );
+  // Sequential groups: the DDL class alone, then the remainder in parallel.
+  executionGroups = [ddlSuites, parallelSuites];
+} catch (error) {
+  console.error(`Refusing to run: ${error.message}`);
   process.exit(1);
 }
 
-// Sequential groups. The DDL-taking suite runs alone, so its ACCESS EXCLUSIVE
-// locks can never be concurrent with another suite's row locks.
-const EXECUTION_GROUPS = [
-  SHARED_DATABASE_DDL_SUITES.slice(),
-  SANCTIONED_POSTGRES_INTEGRATION_SUITES.filter(
-    (suite) => !SHARED_DATABASE_DDL_SUITES.includes(suite)
-  )
-];
-
-let status = 0;
-for (const group of EXECUTION_GROUPS) {
+for (const group of executionGroups) {
   if (group.length === 0) continue;
   const result = spawnSync(process.execPath, ['--test', ...group], {
     stdio: 'inherit',

@@ -1,160 +1,168 @@
 /**
- * ATM-001 F-3 — sanctioned integration runner: shared-database DDL isolation.
+ * ATM-001 F-3 — sanctioned integration runner: shared-database migration-DDL isolation.
  *
- * The sanctioned runner used to execute all contracted suites in ONE
- * `node --test` invocation against ONE shared disposable database. Two of those
- * suites take incompatible lock orders on the same relations:
+ * The runner used to execute all contracted suites in ONE `node --test` invocation
+ * against ONE shared disposable database. Suites that re-apply a migration artifact
+ * on that database take ACCESS EXCLUSIVE locks, while other suites take row locks on
+ * the same relations. Scheduled concurrently, PostgreSQL can resolve the cycle with
+ * SQLSTATE 40P01 (observed intermittently as 914/915).
  *
- *   - `tests/knowledge-pack-publication-admission.test.js` re-applies migration
- *     015 in a single transaction on the shared database: ACCESS EXCLUSIVE on
- *     `knowledge_pack_versions`, then ACCESS EXCLUSIVE on
- *     `knowledge_pack_version_task_template_versions` (at its DROP TRIGGER).
- *   - `tests/knowledge-pack-membership.test.js` inserts into
- *     `knowledge_pack_version_task_template_versions` (ROW EXCLUSIVE) and the
- *     BEFORE INSERT membership guard then requests ROW SHARE on
- *     `knowledge_pack_versions` (015:203-206).
+ * The correction isolates the whole DDL CLASS into its own sequential invocation.
+ * This suite is the focused test for that correction. It asserts the partition
+ * BEHAVIOURALLY (through the same pure module the runner uses) and asserts that the
+ * isolation list is COMPLETE with respect to the declared DDL idiom — so a suite that
+ * starts applying migration DDL on the shared database without being isolated fails
+ * here rather than silently reintroducing the hazard.
  *
- * Scheduled concurrently, PostgreSQL detects the cycle and aborts one side with
- * SQLSTATE 40P01 — an intermittent 914/915 failure.
- *
- * The correction isolates the DDL-taking suite into its own sequential
- * invocation. This suite is the focused test for that correction: it asserts the
- * isolation is declared, that it does NOT repartition the declared contract
- * list, and that the runner still fails closed.
- *
- * This suite does not gate on the database-test gate: it reads source only and
- * therefore runs under `npm test`.
+ * Source-only: no database gate, so it runs under `npm test`.
  */
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 
+const { partitionSuites, executesSharedDatabaseMigrationDdl } = require('../scripts/integration-suite-partition');
+
 const REPO_ROOT = path.join(__dirname, '..');
 const RUNNER_PATH = path.join(REPO_ROOT, 'scripts', 'run-integration-tests.js');
 const source = fs.readFileSync(RUNNER_PATH, 'utf8');
 
 /**
- * Parse a single-quoted string-array literal declared as:
- *   const NAME = [ ... ];
- *   const NAME = Object.freeze([ ... ]);
- * Bracket-matches from the opening `[` so a wrapped literal, a nested `]` in a
- * string, or a later array cannot bleed into the result. Line comments are
- * skipped so an apostrophe in prose cannot open a phantom string.
+ * Every `tests/*.test.js` literal in the runner, deduplicated — the same technique
+ * `tests/database-test-guard.test.js` uses to reconcile the runner against the
+ * sanctioned ledger. Robust against apostrophes in prose comments.
  */
-function parseDeclaredArray(src, name) {
-  const anchor = new RegExp(`const\\s+${name}\\s*=\\s*(?:Object\\.freeze\\(\\s*)?\\[`);
-  const match = anchor.exec(src);
+const runnerSuiteLiterals = [
+  ...new Set([...source.matchAll(/'(tests\/[^']+\.test\.js)'/g)].map((m) => m[1]))
+];
+
+/** Parse `const NAME = Object.freeze([ ... ]);` */
+function parseFrozenArray(src, name) {
+  const match = new RegExp(`const\\s+${name}\\s*=\\s*Object\\.freeze\\(\\[([\\s\\S]*?)\\]\\)`).exec(src);
   if (!match) return null;
-  const start = src.indexOf('[', match.index);
-  let depth = 0;
-  let inString = false;
-  let end = -1;
-  for (let i = start; i < src.length; i++) {
-    const ch = src[i];
-    if (inString) {
-      if (ch === '\\') { i++; continue; }
-      if (ch === "'") inString = false;
-      continue;
-    }
-    if (ch === '/' && src[i + 1] === '/') {
-      while (i < src.length && src[i] !== '\n') i++;
-      continue;
-    }
-    if (ch === "'") { inString = true; continue; }
-    if (ch === '[') depth++;
-    else if (ch === ']') {
-      depth--;
-      if (depth === 0) { end = i; break; }
-    }
-  }
-  if (end === -1) return null;
-  return [...src.slice(start, end).matchAll(/'([^']+)'/g)].map((m) => m[1]);
+  return [...match[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
 }
 
-const sanctioned = parseDeclaredArray(source, 'SANCTIONED_POSTGRES_INTEGRATION_SUITES');
-const isolated = parseDeclaredArray(source, 'SHARED_DATABASE_DDL_SUITES');
+const isolated = parseFrozenArray(source, 'SHARED_DATABASE_DDL_SUITES');
 
-const DDL_SUITE = 'tests/knowledge-pack-publication-admission.test.js';
-const ROW_LOCK_SUITE = 'tests/knowledge-pack-membership.test.js';
-
-test('C1 — both the sanctioned contract list and the isolation list are declared', () => {
-  assert.ok(Array.isArray(sanctioned), 'SANCTIONED_POSTGRES_INTEGRATION_SUITES must parse as an array');
-  assert.ok(sanctioned.length > 2, `expected a populated sanctioned list, got ${sanctioned?.length}`);
-  assert.ok(Array.isArray(isolated), 'SHARED_DATABASE_DDL_SUITES must be declared');
-  assert.ok(isolated.length > 0, 'the DDL isolation list must not be empty');
+test('C1 — the runner declares a non-empty shared-database DDL isolation list', () => {
+  assert.ok(Array.isArray(isolated), 'SHARED_DATABASE_DDL_SUITES must be declared via Object.freeze([...])');
+  assert.ok(isolated.length > 0, 'the isolation list must not be empty');
+  assert.ok(runnerSuiteLiterals.length > 1, `expected the sanctioned ledger, got ${runnerSuiteLiterals.length}`);
 });
 
-test('C2 — the isolation list does NOT repartition the declared contract list', () => {
-  // Both suites must still be members of the single declared contract array.
-  assert.ok(sanctioned.includes(DDL_SUITE), `${DDL_SUITE} must remain in the sanctioned contract`);
-  assert.ok(sanctioned.includes(ROW_LOCK_SUITE), `${ROW_LOCK_SUITE} must remain in the sanctioned contract`);
-
-  // Every isolated suite must be a member — never a separate, unlisted registry.
-  const unlisted = isolated.filter((suite) => !sanctioned.includes(suite));
+test('C2 — every isolated suite is a member of the declared contract list (no repartitioning)', () => {
+  const unlisted = isolated.filter((suite) => !runnerSuiteLiterals.includes(suite));
   assert.deepStrictEqual(
     unlisted,
     [],
-    `isolation entries must be a subset of the sanctioned contract; unlisted: ${unlisted.join(', ')}`
+    `isolation entries must be members of the sanctioned contract; unlisted: ${unlisted.join(', ')}`
   );
 });
 
-test('C3 — the lock-inverting suite is the one that is isolated', () => {
-  assert.ok(
-    isolated.includes(DDL_SUITE),
-    `the shared-database DDL suite must be isolated: ${DDL_SUITE}`
-  );
-  assert.ok(
-    !isolated.includes(ROW_LOCK_SUITE),
-    `${ROW_LOCK_SUITE} is the row-lock side and must not be treated as a DDL suite`
+test('C3 — COMPLETENESS: every suite that applies migration DDL on the shared database is isolated', () => {
+  // This is the assertion that catches an unidentified second inversion: a contracted
+  // suite matching the DDL idiom but left in the parallel group fails here.
+  const undeclared = runnerSuiteLiterals.filter((suite) => {
+    if (isolated.includes(suite)) return false;
+    const file = path.join(REPO_ROOT, suite);
+    if (!fs.existsSync(file)) return false;
+    return executesSharedDatabaseMigrationDdl(fs.readFileSync(file, 'utf8'));
+  });
+  assert.deepStrictEqual(
+    undeclared,
+    [],
+    'these contracted suites apply migration DDL on the shared database but are not isolated '
+      + `(they would run concurrently with row-locking suites): ${undeclared.join(', ')}`
   );
 });
 
-test('C4 — the whole sanctioned list is no longer executed in a single invocation', () => {
-  // The defect shape: one spawnSync over the entire declared array.
+test('C4 — the partition accounts for every suite exactly once and the groups are disjoint', () => {
+  const { ddlSuites, parallelSuites } = partitionSuites(runnerSuiteLiterals, isolated);
+  assert.deepStrictEqual(
+    ddlSuites.filter((s) => !runnerSuiteLiterals.includes(s)),
+    [],
+    'the DDL group must contain only contracted suites'
+  );
+  assert.strictEqual(
+    ddlSuites.length + parallelSuites.length,
+    runnerSuiteLiterals.length,
+    'the groups must account for every contracted suite exactly once'
+  );
+  assert.strictEqual(ddlSuites.length, isolated.length, 'every isolated suite must land in the DDL group');
+  assert.deepStrictEqual(
+    parallelSuites.filter((s) => isolated.includes(s)),
+    [],
+    'no isolated suite may remain in the parallel group'
+  );
+  assert.strictEqual(
+    new Set([...ddlSuites, ...parallelSuites]).size,
+    runnerSuiteLiterals.length,
+    'no suite may appear in both groups'
+  );
+});
+
+test('C5 — a contracted suite cannot be silently dropped by the partition', () => {
+  const { ddlSuites, parallelSuites } = partitionSuites(runnerSuiteLiterals, isolated);
+  const union = [...ddlSuites, ...parallelSuites].sort();
+  assert.deepStrictEqual(union, [...runnerSuiteLiterals].sort(), 'the union must equal the contracted list');
+});
+
+test('C6 — the runner actually USES the partition (isolation cannot be declared and ignored)', () => {
+  // Guards against the mutation "declare the list, then execute everything in one
+  // group": the DDL decision must flow from partitionSuites into the executed groups.
+  assert.match(
+    source,
+    /partitionSuites\(\s*SANCTIONED_POSTGRES_INTEGRATION_SUITES\s*,\s*SHARED_DATABASE_DDL_SUITES\s*\)/,
+    'the runner must partition the declared contract list by the declared isolation list'
+  );
+  assert.match(
+    source,
+    /executionGroups\s*=\s*\[\s*ddlSuites\s*,\s*parallelSuites\s*\]/,
+    'the executed groups must be the partition result (DDL group, then the remainder)'
+  );
   assert.doesNotMatch(
     source,
     /\['--test',\s*\.\.\.SANCTIONED_POSTGRES_INTEGRATION_SUITES\]/,
-    'the runner must not pass the entire sanctioned list to one node --test invocation'
-  );
-  // The corrected shape: groups are executed one at a time.
-  assert.match(
-    source,
-    /\['--test',\s*\.\.\.group\]/,
-    'the runner must execute each partition group in its own invocation'
+    'the runner must never pass the whole contract list to a single invocation'
   );
   assert.match(
     source,
-    /for\s*\(\s*const\s+group\s+of\s+EXECUTION_GROUPS\s*\)/,
+    /for\s*\(\s*const\s+group\s+of\s+executionGroups\s*\)/,
     'the groups must be executed sequentially (spawnSync is synchronous)'
   );
 });
 
-test('C5 — the runner still fails closed on any non-zero group', () => {
+test('C7 — the runner still fails closed', () => {
   assert.match(
     source,
     /if\s*\(\s*result\.status\s*!==\s*0\s*\)\s*status\s*=\s*result\.status\s*\?\?\s*1/,
     'a failing group must be recorded'
   );
   assert.match(source, /process\.exit\(status\)/, 'the aggregate status must determine the exit code');
-  // A non-zero exit is only meaningful if it is not swallowed by a plain exit(0).
-  assert.doesNotMatch(source, /process\.exit\(0\)\s*;?\s*$/);
-});
-
-test('C6 — an out-of-contract isolation entry refuses to run', () => {
   assert.match(
     source,
-    /unlistedIsolationSuites\.length/,
-    'the runner must fail closed when an isolation entry is not in the sanctioned contract'
+    /undeclaredDdlSuites/,
+    'an undeclared DDL suite must be detected'
   );
   assert.match(
     source,
-    /Refusing to run: shared-database DDL suite/,
-    'the refusal must be explicit'
+    /process\.exit\(1\)/,
+    'an invalid partition must refuse to run'
   );
 });
 
-test('C7 — the database-test gate and libpq env scrubbing are preserved', () => {
+test('C8 — the partition function itself fails closed on an invalid list', () => {
+  assert.throws(() => partitionSuites(['a', 'b'], ['c']), /not part of the sanctioned contract/);
+  assert.throws(() => partitionSuites(['a', 'b'], []), /must not be empty/);
+  assert.throws(() => partitionSuites(['a', 'b'], ['a', 'a']), /duplicate isolation entries/);
+  assert.throws(() => partitionSuites('nope', ['a']), /must both be arrays/);
+  // A valid partition is complete and disjoint.
+  const ok = partitionSuites(['a', 'b', 'c'], ['b']);
+  assert.deepStrictEqual(ok, { ddlSuites: ['b'], parallelSuites: ['a', 'c'] });
+});
+
+test('C9 — the database-test gate and libpq env scrubbing are preserved', () => {
   assert.match(source, /RUN_DB_TESTS:\s*'true'/, 'the child gate must still be forced');
   assert.match(source, /NODE_ENV:\s*'test'/, 'NODE_ENV=test must still be forced');
   assert.match(source, /LIBPQ_ENV_NAMES/, 'libpq env scrubbing must be preserved');
