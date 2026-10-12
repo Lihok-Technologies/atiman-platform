@@ -216,6 +216,26 @@ function isExecutionViolation(row) {
 }
 
 /**
+ * The exported aggregation: rows -> { violations, exitCode, ok }.
+ *
+ * The violation decision lives HERE, not at a call site, so there is no single
+ * assignment that can be reverted or neutered while leaving the tests green.
+ * Text pins on a call site are an unbounded obligation — an independent reviewer
+ * defeated them with five one-line edits (`r.exempt = r.exempt || r.countersMissing`,
+ * `violations.length = 0`, `r['violation'] = false`, and others). Testing this
+ * function behaviourally is the closure.
+ */
+function summarise(rows) {
+  for (const row of rows) row.violation = isExecutionViolation(row);
+  const violations = rows.filter((row) => row.violation);
+  return {
+    violations,
+    exitCode: violations.length === 0 ? 0 : 1,
+    ok: violations.length === 0
+  };
+}
+
+/**
  * Execute one suite in its own process and read its JUnit report.
  *
  * Spawned asynchronously so the caller can bound how many run at once: the
@@ -291,7 +311,6 @@ const rows = [];
     r.discovered = discovered.includes(path.basename(r.suite));
     r.registered = contracted.includes(path.basename(r.suite));
     r.exempt = exempt.includes(path.basename(r.suite));
-    r.violation = isExecutionViolation(r);
     rows.push(r);
   }
 }
@@ -319,7 +338,7 @@ for (const r of rows) {
     + `${String(r.skipped).padStart(5)} ${String(r.cancelled).padStart(5)}  ${verdict}`);
 }
 
-const violations = rows.filter((r) => r.violation);
+const { violations, exitCode, ok } = summarise(rows);
 const totals = rows.reduce((a, r) => ({
   executed: a.executed + r.executed, passed: a.passed + r.passed, failed: a.failed + r.failed,
   skipped: a.skipped + r.skipped, cancelled: a.cancelled + r.cancelled
@@ -351,14 +370,14 @@ const record = {
   node: process.version,
   rows, totals, violations: violations.map((v) => v.suite),
   exemptSuites: exempt,
-  ok: violations.length === 0
+  ok
 };
 if (JSON_OUT) fs.writeFileSync(JSON_OUT, JSON.stringify(record, null, 2));
 
 if (!QUIET) console.log(lines.join('\n'));
 else if (violations.length) console.log(lines.slice(-3 - violations.length).join('\n'));
 
-process.exit(violations.length === 0 ? 0 : 1);
+process.exit(exitCode);
 }
 
 // Run only when invoked as a script. This keeps the CLI behaviour identical while
@@ -371,4 +390,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { runnerExecutedCount, parseJunit, isExecutionViolation };
+module.exports = { runnerExecutedCount, parseJunit, isExecutionViolation, summarise };

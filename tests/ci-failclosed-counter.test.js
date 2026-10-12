@@ -15,9 +15,13 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 
-const { runnerExecutedCount, parseJunit, isExecutionViolation } = require('../scripts/test-execution-evidence.js');
+const { runnerExecutedCount, parseJunit, isExecutionViolation, summarise } = require('../scripts/test-execution-evidence.js');
+
+const REPO_ROOT = path.join(__dirname, '..');
 
 const EVIDENCE_SRC = fs.readFileSync(
   path.join(__dirname, '..', 'scripts', 'test-execution-evidence.js'),
@@ -127,59 +131,58 @@ test('C8 — the CLI contract is preserved: requiring the module does not run it
 });
 
 // ---------------------------------------------------------------------------
-// WIRING PINS (VUDA-2 conditions 1 and 4).
+// BEHAVIOURAL CLOSURE (VUDA-B 4th delta, required condition).
 //
-// C1-C8 pin the PARSER and the DECISION. An independent reviewer showed that
-// reverting only the CALL SITE — leaving `isExecutionViolation` correct but
-// bypassing it — keeps every one of those assertions green while restoring the
-// fail-open (mutation d2: counter-less report -> exit 0 / ok:true). The gate
-// could therefore be fully reverted with the suite still passing. These tests
-// pin the route, the exit code and the "ok" flag to the decision.
+// The earlier C9-C11 pinned the call site by SOURCE TEXT. An independent reviewer
+// defeated that with five one-line edits that kept all 11 tests green while
+// re-enabling the fail-open end to end:
+//   r.exempt = r.exempt || r.countersMissing;
+//   violations.length = 0;                    (after the filter, and before exit)
+//   r['violation'] = false;
+//   if (rows.some((r) => r.countersMissing)) process.exit(0);
+// Text pins on a call site are an unbounded obligation. The decision now lives
+// inside the exported summarise(), so there is no call site to revert, and the
+// CLI is exercised through its real entry point.
 // ---------------------------------------------------------------------------
 
-test('C9 — WIRING: the row verdict is routed THROUGH isExecutionViolation, unmodified', () => {
-  // Anchored to the END of the statement on purpose. An unanchored match is not
-  // sufficient: `r.violation = isExecutionViolation(r) && r.countersMissing !== true;`
-  // still contains the bare call while re-enabling the countersMissing fail-open
-  // (delta-review counterexample — all other assertions stayed green).
-  assert.match(
-    EVIDENCE_SRC,
-    /^\s*r\.violation\s*=\s*isExecutionViolation\(r\);\s*$/m,
-    'the row violation must be the unmodified result of isExecutionViolation',
-  );
-  assert.doesNotMatch(
-    EVIDENCE_SRC,
-    /r\.violation\s*=\s*r\.executed\s*===\s*0\s*&&\s*!r\.exempt/,
-    'the pre-fix inline decision must not reappear (this is the d2 fail-open)',
-  );
-  // Exactly one assignment to r.violation, and no override/trailing expression.
-  const assignments = [...EVIDENCE_SRC.matchAll(/r\.violation\s*[+\-*/%&|^]?=[^;]*/g)]
-    .map((m) => m[0].replace(/\s+/g, ' ').trim());
-  assert.strictEqual(
-    assignments.length,
-    1,
-    `expected exactly one r.violation assignment, found ${assignments.length}: ${assignments.join(' | ')}`,
-  );
-  assert.strictEqual(
-    assignments[0],
-    'r.violation = isExecutionViolation(r)',
-    'the assignment must not be compounded or overridden by a trailing expression',
-  );
+test('C9 — AGGREGATION: a counter-less report is a violation (catches the d2 class)', () => {
+  const row = { suite: SUITE, ...parseJunit(CONTAINER_NO_COUNTERS, SUITE), exempt: false };
+  const { violations, exitCode, ok } = summarise([row]);
+  assert.strictEqual(row.violation, true, 'the artefact row must be marked in violation');
+  assert.strictEqual(violations.length, 1);
+  assert.strictEqual(exitCode, 1, 'a counter-less report must yield a non-zero exit code');
+  assert.strictEqual(ok, false, 'the record must not report ok');
 });
 
-test('C10 — WIRING: the exit code and record.ok both derive from the violations set', () => {
-  assert.match(EVIDENCE_SRC, /const violations = rows\.filter\(\(r\) => r\.violation\)/,
-    'violations must be derived from the computed row verdicts');
-  assert.match(EVIDENCE_SRC, /process\.exit\(violations\.length === 0 \? 0 : 1\)/,
-    'the process must exit non-zero when any row is in violation');
-  assert.match(EVIDENCE_SRC, /ok:\s*violations\.length === 0/,
-    'the JSON record must report failure when any row is in violation');
+test('C10 — AGGREGATION: a genuinely executed suite is not a violation (no weakening)', () => {
+  const row = { suite: SUITE, ...parseJunit(LEAF_WITH_COUNTERS, SUITE), exempt: false };
+  const { violations, exitCode, ok } = summarise([row]);
+  assert.strictEqual(row.violation, false);
+  assert.strictEqual(violations.length, 0);
+  assert.strictEqual(exitCode, 0);
+  assert.strictEqual(ok, true);
 });
 
-test('C11 — WIRING: the human verdict column distinguishes absent counters', () => {
-  assert.match(
-    EVIDENCE_SRC,
-    /countersMissing\s*\?\s*'\*\*\* NO RUNNER COUNTERS \*\*\*'/,
-    'a counter-less suite must be visibly distinct from a clean pass',
+test('C11 — AGGREGATION: the documented legacy exemption is still exempt', () => {
+  const row = { suite: SUITE, ...parseJunit(CONTAINER_NO_COUNTERS, SUITE), exempt: true };
+  assert.strictEqual(summarise([row]).exitCode, 0);
+});
+
+test('C12 — BEHAVIOURAL (real CLI): exits non-zero when a suite writes no JUnit report', () => {
+  // A suite whose JUnit is never written (missing path, spawn failure, the 900 s
+  // SIGKILL, unwritable tmp) is a REAL reachable input: executed 0, countersMissing
+  // true. Driving the actual entry point catches neutering of the exit path that no
+  // source-text assertion can.
+  const runner = path.join(REPO_ROOT, 'scripts', 'test-execution-evidence.js');
+  const jsonOut = path.join(os.tmpdir(), `ev-${process.pid}-${Date.now()}.json`);
+  const res = spawnSync(
+    process.execPath,
+    [runner, '--suite', 'tests/__vuda_no_such_suite__.test.js', '--quiet', '--json', jsonOut],
+    { cwd: REPO_ROOT, encoding: 'utf8', timeout: 180000 },
   );
+  assert.notStrictEqual(res.status, 0, `the CLI must exit non-zero; got ${res.status}. stderr: ${res.stderr}`);
+  const record = JSON.parse(fs.readFileSync(jsonOut, 'utf8'));
+  assert.strictEqual(record.ok, false, 'the JSON record must report ok:false');
+  assert.ok(record.violations.length >= 1, 'the suite must be listed as a violation');
+  fs.rmSync(jsonOut, { force: true });
 });
