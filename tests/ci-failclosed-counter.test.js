@@ -14,8 +14,15 @@
  */
 const test = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const { runnerExecutedCount, parseJunit, isExecutionViolation } = require('../scripts/test-execution-evidence.js');
+
+const EVIDENCE_SRC = fs.readFileSync(
+  path.join(__dirname, '..', 'scripts', 'test-execution-evidence.js'),
+  'utf8',
+);
 
 const SUITE = 'tests/conditional-suite.test.js';
 
@@ -117,4 +124,45 @@ test('C8 — the CLI contract is preserved: requiring the module does not run it
   // what makes these functions testable. Guard: the exports exist and are functions.
   assert.strictEqual(typeof runnerExecutedCount, 'function');
   assert.strictEqual(typeof parseJunit, 'function');
+});
+
+// ---------------------------------------------------------------------------
+// WIRING PINS (VUDA-2 conditions 1 and 4).
+//
+// C1-C8 pin the PARSER and the DECISION. An independent reviewer showed that
+// reverting only the CALL SITE — leaving `isExecutionViolation` correct but
+// bypassing it — keeps every one of those assertions green while restoring the
+// fail-open (mutation d2: counter-less report -> exit 0 / ok:true). The gate
+// could therefore be fully reverted with the suite still passing. These tests
+// pin the route, the exit code and the "ok" flag to the decision.
+// ---------------------------------------------------------------------------
+
+test('C9 — WIRING: the row verdict is routed THROUGH isExecutionViolation', () => {
+  assert.match(
+    EVIDENCE_SRC,
+    /r\.violation\s*=\s*isExecutionViolation\(r\)/,
+    'the row violation must be computed by isExecutionViolation, not inline',
+  );
+  assert.doesNotMatch(
+    EVIDENCE_SRC,
+    /r\.violation\s*=\s*r\.executed\s*===\s*0\s*&&\s*!r\.exempt/,
+    'the pre-fix inline decision must not reappear (this is the d2 fail-open)',
+  );
+});
+
+test('C10 — WIRING: the exit code and record.ok both derive from the violations set', () => {
+  assert.match(EVIDENCE_SRC, /const violations = rows\.filter\(\(r\) => r\.violation\)/,
+    'violations must be derived from the computed row verdicts');
+  assert.match(EVIDENCE_SRC, /process\.exit\(violations\.length === 0 \? 0 : 1\)/,
+    'the process must exit non-zero when any row is in violation');
+  assert.match(EVIDENCE_SRC, /ok:\s*violations\.length === 0/,
+    'the JSON record must report failure when any row is in violation');
+});
+
+test('C11 — WIRING: the human verdict column distinguishes absent counters', () => {
+  assert.match(
+    EVIDENCE_SRC,
+    /countersMissing\s*\?\s*'\*\*\* NO RUNNER COUNTERS \*\*\*'/,
+    'a counter-less suite must be visibly distinct from a clean pass',
+  );
 });
