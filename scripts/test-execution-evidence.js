@@ -329,6 +329,8 @@ lines.push('  only definitions are unreachable, reports EXECUTED 0.');
 lines.push('');
 lines.push('  SUITE                                        DISC REG  EXEC  PASS  FAIL  SKIP  CANC  VERDICT');
 lines.push('  -------------------------------------------- ---- --- ----- ----- ----- ----- ----- --------------------');
+const { violations, exitCode, ok } = summarise(rows);
+
 for (const r of rows) {
   const verdict = r.exempt ? 'EXEMPT (legacy)'
     : r.countersMissing ? '*** NO RUNNER COUNTERS ***'
@@ -338,7 +340,6 @@ for (const r of rows) {
     + `${String(r.skipped).padStart(5)} ${String(r.cancelled).padStart(5)}  ${verdict}`);
 }
 
-const { violations, exitCode, ok } = summarise(rows);
 const totals = rows.reduce((a, r) => ({
   executed: a.executed + r.executed, passed: a.passed + r.passed, failed: a.failed + r.failed,
   skipped: a.skipped + r.skipped, cancelled: a.cancelled + r.cancelled

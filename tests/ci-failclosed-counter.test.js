@@ -23,11 +23,6 @@ const { runnerExecutedCount, parseJunit, isExecutionViolation, summarise } = req
 
 const REPO_ROOT = path.join(__dirname, '..');
 
-const EVIDENCE_SRC = fs.readFileSync(
-  path.join(__dirname, '..', 'scripts', 'test-execution-evidence.js'),
-  'utf8',
-);
-
 const SUITE = 'tests/conditional-suite.test.js';
 
 /** A report whose only <testcase> is a container artefact, with the counters. */
@@ -184,5 +179,30 @@ test('C12 — BEHAVIOURAL (real CLI): exits non-zero when a suite writes no JUni
   const record = JSON.parse(fs.readFileSync(jsonOut, 'utf8'));
   assert.strictEqual(record.ok, false, 'the JSON record must report ok:false');
   assert.ok(record.violations.length >= 1, 'the suite must be listed as a violation');
+  fs.rmSync(jsonOut, { force: true });
+});
+
+test('C13 — BEHAVIOURAL (multi-row): a counter-less suite is not ignored for not being first', () => {
+  // A one-line escape reduced the aggregation SCOPE (`summarise(rows.slice(0, 1))`)
+  // and kept every single-row assertion green, while the real multi-suite CI modes
+  // silently ignored any counter-less suite after the first. Driving TWO suites with
+  // the counter-less one SECOND is the shape that catches a scope reduction.
+  const runner = path.join(REPO_ROOT, 'scripts', 'test-execution-evidence.js');
+  const jsonOut = path.join(os.tmpdir(), `ev-multi-${process.pid}-${Date.now()}.json`);
+  const res = spawnSync(
+    process.execPath,
+    [runner,
+      '--suite', 'tests/environment.test.js',
+      '--suite', 'tests/__vuda_no_such_suite__.test.js',
+      '--quiet', '--json', jsonOut],
+    { cwd: REPO_ROOT, encoding: 'utf8', timeout: 240000 },
+  );
+  assert.notStrictEqual(res.status, 0, `the CLI must exit non-zero; got ${res.status}. stderr: ${res.stderr}`);
+  const record = JSON.parse(fs.readFileSync(jsonOut, 'utf8'));
+  assert.strictEqual(record.ok, false, 'the record must report ok:false');
+  assert.ok(
+    record.violations.includes('tests/__vuda_no_such_suite__.test.js'),
+    `the counter-less suite must be listed; got ${JSON.stringify(record.violations)}`,
+  );
   fs.rmSync(jsonOut, { force: true });
 });
