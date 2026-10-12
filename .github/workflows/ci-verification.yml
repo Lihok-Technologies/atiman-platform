@@ -55,6 +55,13 @@ jobs:
       # test-inventory job exists: a skipped suite must still be accounted for.
       - name: Run unit tests (npm test)
         run: npm test
+      # Runtime execution evidence for the suites that `npm test` is expected to
+      # execute. Static classification cannot prove that a test body ran; this
+      # runs each suite and reads the runner's own JUnit report. A suite that
+      # defines nothing, or whose only definitions are unreachable, is observed
+      # to execute ZERO tests and fails here.
+      - name: Verify runtime execution evidence (unit suites)
+        run: node scripts/test-execution-evidence.js --mode unit
 
   test-inventory:
     name: Test inventory coverage

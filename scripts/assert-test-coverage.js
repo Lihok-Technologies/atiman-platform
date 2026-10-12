@@ -242,6 +242,66 @@ function firstMatch(source, re) {
 }
 
 /**
+ * WP3-05 (F-2) — computed-property member access, e.g. `describe['skip'](...)`.
+ *
+ * The property key is STRING content, so it cannot be matched against the
+ * blanked text. Match the raw source instead, and accept a match only when the
+ * receiver identifier survived blanking at the same index — which happens only
+ * if the receiver is executable code rather than text inside a string, template
+ * or comment. Index-preserving blanking is what makes this safe.
+ */
+const COMPUTED_MEMBER_RE = /\b(describe|it|test|suite|context|specify)\s*\[\s*['"`](skip|todo|only)['"`]\s*\]/g;
+
+function computedMemberInCode(raw, code) {
+  for (const m of raw.matchAll(COMPUTED_MEMBER_RE)) {
+    const idx = m.index;
+    const receiver = m[1];
+    if (code.slice(idx, idx + receiver.length) !== receiver) continue;   // inside a string/comment
+    return {
+      line: lineAt(raw, idx),
+      text: m[0].trim(),
+      label: `computed-property member access (${receiver}[${JSON.stringify(m[2])}])`
+    };
+  }
+  return null;
+}
+
+/**
+ * WP3-05 (F-1) — bounded gate-derivation analysis.
+ *
+ * Collect identifiers assigned from a call to the database-test gate, e.g.
+ *   const REASON = isIntegrationTest() ? false : 'needs gate';
+ * and the value expression of every `skip:` suite option. A skip value counts as
+ * gate-derived when it calls the gate inline, or references one of those
+ * identifiers. This is single-file identifier reasoning — deliberately NOT a
+ * parser and NOT a general data-flow analysis.
+ */
+const GATE_ASSIGN_RE = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=[^;\n]*?isIntegrationTest\s*\(/g;
+const SKIP_VALUE_RE = /\bskip\s*:\s*([^,}\n]+)/g;
+
+function gateDerivedNames(code) {
+  const names = new Set();
+  for (const m of code.matchAll(GATE_ASSIGN_RE)) names.add(m[1]);
+  return names;
+}
+
+function skipValues(code) {
+  return [...code.matchAll(SKIP_VALUE_RE)].map((m) => m[1].trim());
+}
+
+function skipValuesAreGateDerived(code) {
+  const names = gateDerivedNames(code);
+  const values = skipValues(code);
+  if (values.length === 0) return false;
+  return values.every((value) => {
+    if (/isIntegrationTest\s*\(/.test(value)) return true;          // inline gate call
+    if (/^(?:true|false|null|undefined)$/.test(value)) return false; // constant skip
+    const identifiers = [...value.matchAll(/[A-Za-z_$][\w$]*/g)].map((m) => m[0]);
+    return identifiers.some((id) => names.has(id));
+  });
+}
+
+/**
  * Classify one suite from its source. Exactly one class is returned, so a single
  * defect yields a single actionable failure.
  */
@@ -254,16 +314,38 @@ function classifySuite(raw) {
       return hit ? { id: c.id, label: c.label, line: hit.line, text: hit.text } : null;
     })
     .filter(Boolean);
+
+  // WP3-05 (F-2): detected on the raw source, validated against the blanked text.
+  const computed = computedMemberInCode(raw, code);
+  if (computed) {
+    unsupported.push({ id: 'computed-member', label: computed.label, line: computed.line, text: computed.text });
+  }
+
   if (unsupported.length > 0) return { klass: 'UNSUPPORTED', unsupported, code };
 
   const hasSkipOption = SUPPORTED_SKIP_RE.test(code);
   const hasGate = GATE_RE.test(code);
 
   if (hasSkipOption && !hasGate) {
-    return { klass: 'AMBIGUOUS', skipLine: firstMatch(code, SUPPORTED_SKIP_RE).line, code };
+    return { klass: 'AMBIGUOUS', reason: 'no-gate', skipLine: firstMatch(code, SUPPORTED_SKIP_RE).line, code };
   }
+
+  // WP3-05 (F-1): a gate call ELSEWHERE in the file does not prove that the skip
+  // condition derives from it. Mere co-occurrence is not derivation, so the skip
+  // value must itself trace back to the gate.
+  if (hasSkipOption && hasGate && !skipValuesAreGateDerived(code)) {
+    return {
+      klass: 'AMBIGUOUS',
+      reason: 'gate-not-derived',
+      skipLine: firstMatch(code, SUPPORTED_SKIP_RE).line,
+      skipValues: skipValues(code),
+      gateNames: [...gateDerivedNames(code)],
+      code
+    };
+  }
+
   if (!TEST_DEFINITION_RE.test(code)) return { klass: 'NO_TESTS', code };
-  if (hasGate && hasSkipOption) return { klass: 'GATED', code };
+  if (hasSkipOption) return { klass: 'GATED', code };
   return { klass: 'UNCONDITIONAL', code };
 }
 
@@ -371,11 +453,22 @@ function analyse(options = {}) {
       + `and register the suite in ${RUNNER_REL}, or remove the construct.`);
   }
   for (const name of ambiguous) {
-    fail('C10',
-      `tests/${name} passes a \`skip:\` option (line ${classes.get(name).skipLine}) but never `
-      + `consults the database-test gate, so it may skip unconditionally and its execution cannot `
-      + `be demonstrated. Gate it with isIntegrationTest() and register it in ${RUNNER_REL}, or `
-      + `remove the skip option.`);
+    const cls = classes.get(name);
+    if (cls.reason === 'gate-not-derived') {
+      fail('C10',
+        `tests/${name} passes a \`skip:\` option (line ${cls.skipLine}) whose value `
+        + `(${JSON.stringify(cls.skipValues.join(', '))}) is not derived from the database-test gate. `
+        + `A gate call elsewhere in the file does not make the skip conditional: on this evidence the `
+        + `suite may skip unconditionally. Derive the skip from isIntegrationTest() — for example `
+        + `\`const SKIP = isIntegrationTest() ? false : 'reason';\` and then \`{ skip: SKIP }\` — or `
+        + `remove the skip option.`);
+    } else {
+      fail('C10',
+        `tests/${name} passes a \`skip:\` option (line ${cls.skipLine}) but never `
+        + `consults the database-test gate, so it may skip unconditionally and its execution cannot `
+        + `be demonstrated. Gate it with isIntegrationTest() and register it in ${RUNNER_REL}, or `
+        + `remove the skip option.`);
+    }
   }
 
   // ---- C11: a suite must define at least one test --------------------------

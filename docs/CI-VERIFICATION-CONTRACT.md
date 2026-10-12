@@ -89,6 +89,48 @@ before matching, so:
 > suite using `const gated = isIntegrationTest() ? describe : describe.skip;` executed zero tests but
 > was silently treated as covered. That bypass is now a `C10` failure.
 
+### 4.2 Runtime execution evidence
+
+**Static classification is inventory evidence, not execution evidence.** `assert-test-coverage.js`
+reads source; it cannot see whether a test body ran. `scripts/test-execution-evidence.js` supplies the
+missing half: it **executes** each suite, one process per suite, and reads the Node test runner's
+**JUnit** report.
+
+A test case counts as `EXECUTED` only when it really ran. `SKIPPED`, `CANCELLED` and `TODO` are
+**never** counted as executed.
+
+> **Why not `# pass`?** Measured on Node 22.23.2, an isolated suite that defines **no tests at all**
+> reports `# tests 1 / # pass 1` — the *file* is counted as one passing test. `# pass > 0` therefore
+> does not prove that anything ran. The JUnit report distinguishes the file-level artefact from a real
+> `<testcase>`, and marks skipped and cancelled cases explicitly.
+
+The two passes:
+
+| Mode | Suites | Command | Job |
+|---|---|---|---|
+| `unit` | the unconditional suites | `node scripts/test-execution-evidence.js --mode unit` | `Unit tests (npm test)` |
+| `integration` | the contracted database-gated suites | `node scripts/test-execution-evidence.js --mode integration` | `Disposable PostgreSQL integration` |
+
+Both run under the same gates as the suites they verify — no production credentials, and the
+disposable-database test gate is unchanged.
+
+**Reported classes:** `DISCOVERED` (exists on disk) · `REGISTERED` (in the integration contract) ·
+`EXECUTED` (a test case ran) · `PASSED` · `SKIPPED` · `CANCELLED` · `EXEMPT` (the five documented
+legacy suites, which are **not** reported as executed or passed).
+
+**Consequences for the two defects this closes:**
+
+* **F-1 (gate-to-skip derivation).** Statically, a `skip:` value that does not trace back to the gate
+  is now rejected (`C10`). At runtime, a suite that skips anyway is observed to execute **zero** tests.
+  A gate call elsewhere in the file no longer makes a skip conditional.
+* **F-2 (computed-property skip).** `describe['skip'](...)` is string content, so it cannot be matched
+  against blanked text. It is now matched on the raw source and accepted only when the receiver
+  survived blanking — i.e. it is real code, not text inside a string or comment.
+* **F-3 (unreachable definitions).** Deliberately **not** addressed statically: recognising every
+  unreachable-code pattern would require a parser. The runtime pass observes `EXECUTED 0` and fails.
+  **Stated limit:** this catches unreachable definitions at runtime, but a suite that is unreachable
+  only under some conditions may still execute in others.
+
 ## 5. Checks to require on `main`
 
 Recommended required status checks, by exact job name:
