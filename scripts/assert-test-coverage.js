@@ -2,33 +2,62 @@
 'use strict';
 
 /**
- * ATM-001-SEC-CLOSURE-WP3-01 — test-inventory coverage enforcement.
+ * ATM-001-SEC-CLOSURE-WP3-01 / WP3-03 — test-inventory coverage enforcement.
  *
  * WHY THIS EXISTS
  *
- * `npm test` runs `node --test tests/*.test.js`, but a database-mutating suite
- * SKIPS ITSELF when the database-test gate is not satisfied. Such a suite
- * therefore executes NOTHING under `npm test`, and unless it is also registered
- * in `scripts/run-integration-tests.js` it executes nowhere at all — while CI
- * still reports green. That is the silent-omission hole this check closes.
+ * `npm test` runs `node --test tests/*.test.js`, but a suite that conditionally
+ * skips itself when the database-test gate is not satisfied executes NOTHING
+ * under `npm test`. Unless it is also registered in
+ * `scripts/run-integration-tests.js` it then executes nowhere at all — while CI
+ * still reports green. This check closes that silent-omission hole.
  *
- * WHAT IT PROVES (no hardcoded counts; every relation is derived)
+ * WP3-03 CORRECTION — FAIL-CLOSED CLASSIFICATION
  *
- *   C1  the sanctioned contract in the runner is parseable and non-empty
- *   C2  every suite in the contract exists on disk (no stale registration)
- *   C3  every self-skipping suite is EITHER in the contract OR a documented
- *       superseded-legacy exemption  <-- the anti-omission invariant
+ * WP3-02 demonstrated a bypass: the earlier version asked "does this suite LOOK
+ * self-skipping?" and, when the answer was no, silently treated the suite as
+ * covered by `npm test`. A suite gating itself with
+ *     const gated = isIntegrationTest() ? describe : describe.skip;
+ * executed zero tests, was classified as covered, and the checker printed
+ * PASS (exit 0).
+ *
+ * The direction is now inverted: every suite must be POSITIVELY classified into
+ * one of a small, explicitly supported execution mechanisms. Anything that
+ * cannot be so classified FAILS. Unknown or ambiguous conditional-execution
+ * patterns never default to "covered".
+ *
+ * Supported mechanisms
+ *   UNCONDITIONAL  no conditional-execution construct; executed by `npm test`
+ *   GATED          uses the recognised gate idiom AND is registered in the
+ *                  contract, so the gate genuinely runs it
+ *   LEGACY_EXEMPT  one of the documented superseded suites
+ *
+ * Rejected (fail closed)
+ *   UNSUPPORTED    a conditional/selection construct outside the supported set
+ *                  (describe.skip, it.skip, test.skip, suite.skip, skipIf,
+ *                  .todo, .only, runOnly, ...)
+ *   AMBIGUOUS      a `skip:` option with no recognised gate — it may skip
+ *                  unconditionally, so execution cannot be demonstrated
+ *   NO_TESTS       no test-definition call in executable code — importing a test
+ *                  framework is not proof that any test runs
+ *
+ * ANALYSIS IS LEXICAL, NOT INTERPRETIVE. Comments and string/template literals
+ * are blanked before any pattern is matched, so this check cannot be satisfied —
+ * or tripped — by text inside a comment or a string. It is a bounded lexical
+ * normaliser, deliberately NOT a JavaScript parser.
+ *
+ * Checks (no hardcoded suite counts anywhere):
+ *   C1  the declared contract and ledger parse and are non-empty (fail closed)
+ *   C2  every registration exists on disk (no stale registration)
+ *   C3  every gated suite is contracted or documented-exempt
  *   C4  the contract is a subset of the guard's database-mutating ledger
- *   C5  every database-mutating suite is either self-skipping, sanctioned, or
- *       a documented superseded-legacy exemption
+ *   C5  every declared database-mutating suite is classified
  *   C6  the contract contains no duplicates
  *   C7  the repository `test` script still runs the whole discovery glob
  *   C8  no test file exists outside the glob the required commands execute
  *   C9  every required security-critical suite exists and is executed
- *
- * A new self-skipping suite that is not registered fails C3 automatically, so
- * the check stays effective as the inventory grows. Nothing here asserts a
- * fixed suite count.
+ *   C10 no unsupported or ambiguous conditional-execution construct
+ *   C11 every suite contains at least one test definition
  *
  * Usage:
  *   node scripts/assert-test-coverage.js            # exits 1 on any failure
@@ -45,29 +74,49 @@ const PACKAGE_REL = 'package.json';
 /** The glob the required `npm test` command executes. */
 const REQUIRED_TEST_GLOB = 'tests/*.test.js';
 
-/**
- * A suite is treated as SELF-SKIPPING when it both consults the database-test
- * gate and passes a `skip:` option — i.e. it will execute nothing unless the
- * gate is satisfied. Requiring BOTH constructs keeps the detector precise: a
- * suite that merely mentions the gate in an assertion is not flagged, so this
- * check cannot be satisfied (or tripped) by a comment.
- */
-const GATE_CALL = 'isIntegrationTest(';
-const SKIP_OPTION = /\bskip\s*:/;
+/** The recognised gate. A suite that consults it may legitimately skip. */
+const GATE_RE = /\bisIntegrationTest\s*\(/;
+
+/** The ONE supported conditional-skip idiom: a `skip:` suite option. */
+const SUPPORTED_SKIP_RE = /\bskip\s*:/;
+
+/** Proof that a suite defines at least one test. */
+const TEST_DEFINITION_RE = /\b(?:test|it|describe|suite|context|specify)\s*\(/;
 
 /**
- * Documented, deliberate exemption.
- *
- * These five are superseded legacy ODM-CMMS suites (organization-owned taxonomy
- * via `org_id`, and tables removed by the PostgreSQL cutover). They are retained
- * as legacy evidence pending purpose-built Atiman replacement coverage, and are
- * NOT valid PostgreSQL acceptance suites for current Atiman — see the comment
- * block in `scripts/run-integration-tests.js` and ATM-013D.5D.
- *
- * They self-skip and are deliberately NOT in the integration contract. Naming
- * them here makes the exemption explicit and reviewable; any OTHER unaccounted
- * self-skipping suite is a failure.
+ * Conditional-execution and test-selection constructs that are NOT supported.
+ * Each can stop tests from running, and none can be verified by this checker —
+ * so each is rejected rather than assumed safe.
  */
+const UNSUPPORTED_CONSTRUCTS = Object.freeze([
+  {
+    id: 'member-skip',
+    re: /\b(?:describe|it|test|suite|context|specify)\s*\.\s*skip\b/,
+    label: 'member skip (describe.skip / it.skip / test.skip / suite.skip)'
+  },
+  {
+    id: 'skip-if',
+    re: /\bskipIf\b/,
+    label: 'conditional skip (skipIf)'
+  },
+  {
+    id: 'todo',
+    re: /\b(?:describe|it|test|suite)\s*\.\s*todo\b/,
+    label: 'pending test (.todo)'
+  },
+  {
+    id: 'only',
+    re: /\b(?:describe|it|test|suite|context)\s*\.\s*only\b/,
+    label: 'test selection (.only hides sibling tests)'
+  },
+  {
+    id: 'run-only',
+    re: /\brunOnly\b/,
+    label: 'test selection (runOnly hides sibling tests)'
+  }
+]);
+
+/** Documented, deliberate exemption — superseded legacy ODM-CMMS suites. */
 const SUPERSEDED_LEGACY_SUITES = Object.freeze([
   'step6-access-control.test.js',
   'step6-coverage-e2e.test.js',
@@ -76,21 +125,14 @@ const SUPERSEDED_LEGACY_SUITES = Object.freeze([
   'step6-seed-migration.test.js'
 ]);
 
-/**
- * Security-critical suites that MUST exist in the repository and MUST be
- * executed by the required commands (i.e. they must not self-skip).
- */
+/** Security-critical suites that must exist and be executed. */
 const SECURITY_CRITICAL_REQUIRED = Object.freeze([
   'database-test-guard.test.js',
   'runtime-security.test.js',
   'phase3-cutover-guard.test.js'
 ]);
 
-/**
- * Security-critical suites that are conditionally present (they arrive with a
- * separate integration candidate). When present they must be accounted for by
- * C3 — a self-skipping invitation suite that is not registered fails.
- */
+/** Security-critical suites that arrive with a separate integration candidate. */
 const SECURITY_CRITICAL_CONDITIONAL = Object.freeze([
   'invitation-role-authority.test.js',
   'invitation-list-authorization.test.js',
@@ -99,10 +141,135 @@ const SECURITY_CRITICAL_CONDITIONAL = Object.freeze([
 
 const read = (root, rel) => fs.readFileSync(path.join(root, rel), 'utf8');
 
+/**
+ * Blank out comments and string/template literals, preserving length and line
+ * breaks so a match can be reported with an accurate line number.
+ *
+ * Deliberately a bounded lexical state machine, not a parser. Template literals
+ * are treated as opaque: `${...}` interpolation is blanked along with the rest
+ * of the literal. That is conservative for this checker's purpose — the
+ * constructs it looks for are identifiers and option keys, never template text.
+ */
+/**
+ * A `/` begins a regular-expression literal only where a value may start.
+ * These are the preceding characters and keywords for which that is true. This
+ * is the standard bounded disambiguation and is what keeps a regex such as
+ * `/require\(['"]mysql2['"]\)/` from being mistaken for a string delimiter.
+ */
+const REGEX_ALLOWED_AFTER = new Set([
+  '(', ',', '=', ':', '[', '!', '&', '|', '?', '{', '}', ';', '+', '-', '*', '%', '<', '>', '~', '^'
+]);
+const REGEX_ALLOWED_KEYWORDS = new Set([
+  'return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void',
+  'case', 'do', 'else', 'yield', 'await'
+]);
+
+function stripCommentsAndStrings(source) {
+  const out = source.split('');
+  const n = source.length;
+  const blank = (i) => { if (i < n && out[i] !== '\n') out[i] = ' '; };
+
+  let state = 'CODE';
+  let i = 0;
+  let lastChar = '';
+  let lastWord = '';
+  let inClass = false;
+
+  while (i < n) {
+    const c = source[i];
+    const d = i + 1 < n ? source[i + 1] : '';
+
+    if (state === 'CODE') {
+      if (c === '/' && d === '/') { blank(i); blank(i + 1); state = 'LINE'; i += 2; continue; }
+      if (c === '/' && d === '*') { blank(i); blank(i + 1); state = 'BLOCK'; i += 2; continue; }
+      if (c === '/'
+          && (lastChar === '' || REGEX_ALLOWED_AFTER.has(lastChar) || REGEX_ALLOWED_KEYWORDS.has(lastWord))) {
+        blank(i); state = 'REGEX'; inClass = false; i += 1; continue;
+      }
+      if (c === "'") { blank(i); state = 'SQ'; lastChar = c; lastWord = ''; i += 1; continue; }
+      if (c === '"') { blank(i); state = 'DQ'; lastChar = c; lastWord = ''; i += 1; continue; }
+      if (c === '`') { blank(i); state = 'TMPL'; lastChar = c; lastWord = ''; i += 1; continue; }
+      if (!/\s/.test(c)) {
+        lastChar = c;
+        lastWord = /[A-Za-z_$]/.test(c) ? lastWord + c : '';
+      }
+      i += 1; continue;
+    }
+
+    if (state === 'LINE') {
+      if (c === '\n') { state = 'CODE'; i += 1; continue; }
+      blank(i); i += 1; continue;
+    }
+
+    if (state === 'BLOCK') {
+      if (c === '*' && d === '/') { blank(i); blank(i + 1); state = 'CODE'; i += 2; continue; }
+      blank(i); i += 1; continue;
+    }
+
+    if (state === 'REGEX') {
+      if (c === '\\') { blank(i); blank(i + 1); i += 2; continue; }
+      if (c === '\n') { state = 'CODE'; i += 1; continue; }   // unterminated: recover
+      if (c === '[') inClass = true;
+      else if (c === ']') inClass = false;
+      else if (c === '/' && !inClass) { blank(i); state = 'FLAGS'; i += 1; continue; }
+      blank(i); i += 1; continue;
+    }
+
+    if (state === 'FLAGS') {
+      if (/[a-z]/i.test(c)) { blank(i); i += 1; continue; }
+      state = 'CODE';
+      lastChar = ''; lastWord = '';
+      continue;                                              // reprocess this char as CODE
+    }
+
+    // string or template literal
+    if (c === '\\') { blank(i); blank(i + 1); i += 2; continue; }
+    if (state === 'SQ' && c === "'") { blank(i); state = 'CODE'; i += 1; continue; }
+    if (state === 'DQ' && c === '"') { blank(i); state = 'CODE'; i += 1; continue; }
+    if (state === 'TMPL' && c === '`') { blank(i); state = 'CODE'; i += 1; continue; }
+    blank(i); i += 1;
+  }
+  return out.join('');
+}
+
+const lineAt = (source, index) => source.slice(0, index).split('\n').length;
+
+/** Locate the first match of a regex, returning its line and matched text. */
+function firstMatch(source, re) {
+  const m = re.exec(source);
+  if (!m) return null;
+  return { line: lineAt(source, m.index), text: m[0].trim() };
+}
+
+/**
+ * Classify one suite from its source. Exactly one class is returned, so a single
+ * defect yields a single actionable failure.
+ */
+function classifySuite(raw) {
+  const code = stripCommentsAndStrings(raw);
+
+  const unsupported = UNSUPPORTED_CONSTRUCTS
+    .map((c) => {
+      const hit = firstMatch(code, c.re);
+      return hit ? { id: c.id, label: c.label, line: hit.line, text: hit.text } : null;
+    })
+    .filter(Boolean);
+  if (unsupported.length > 0) return { klass: 'UNSUPPORTED', unsupported, code };
+
+  const hasSkipOption = SUPPORTED_SKIP_RE.test(code);
+  const hasGate = GATE_RE.test(code);
+
+  if (hasSkipOption && !hasGate) {
+    return { klass: 'AMBIGUOUS', skipLine: firstMatch(code, SUPPORTED_SKIP_RE).line, code };
+  }
+  if (!TEST_DEFINITION_RE.test(code)) return { klass: 'NO_TESTS', code };
+  if (hasGate && hasSkipOption) return { klass: 'GATED', code };
+  return { klass: 'UNCONDITIONAL', code };
+}
+
 /** All suites the required `npm test` glob discovers, as basenames. */
 function discoverSuites(root) {
-  const dir = path.join(root, 'tests');
-  return fs.readdirSync(dir)
+  return fs.readdirSync(path.join(root, 'tests'))
     .filter((name) => name.endsWith('.test.js'))
     .sort();
 }
@@ -122,39 +289,29 @@ function discoverSuitesDeep(root) {
   return out.sort();
 }
 
-/**
- * Strip line comments so a commented-out entry can never satisfy (or trip) this
- * check. Line-comment stripping is safe here because the arrays under inspection
- * contain only quoted suite filenames.
- */
 const stripLineComments = (text) => text
   .split('\n')
   .map((line) => line.replace(/\/\/.*$/, ''))
   .join('\n');
 
-/**
- * Extract suite basenames from a source fragment. Both `'tests/x.test.js'` (the
- * runner contract) and bare `'x.test.js'` (the guard ledger) are accepted and
- * normalised to the basename, because set membership is what matters here.
- */
 function extractSuiteBasenames(text) {
   return [...text.matchAll(/'([^'\n]*?([A-Za-z0-9_.-]+\.test\.js))'/g)].map((m) => m[2]);
 }
 
 /**
- * Strict, anchored extraction of a declared suite array from a source file.
- * Fails closed: a missing anchor or an empty result is an error, never a pass.
+ * Strict, anchored extraction of a declared suite array. Fails closed: a missing
+ * anchor or an empty result is an error, never a pass.
  */
 function parseDeclaredArray(source, constName) {
   const anchor = new RegExp(`const\\s+${constName}\\s*=\\s*\\[`);
   const start = source.search(anchor);
   if (start === -1) {
-    return { ok: false, reason: `could not locate \`const ${constName} = [\``, entries: [] };
+    return { ok: false, reason: `could not locate \`const ${constName} = [\``, entries: [], rawEntries: [] };
   }
   const rest = source.slice(start);
   const end = rest.indexOf('\n];');
   if (end === -1) {
-    return { ok: false, reason: `could not locate the end of the \`${constName}\` array`, entries: [] };
+    return { ok: false, reason: `could not locate the end of the \`${constName}\` array`, entries: [], rawEntries: [] };
   }
   const body = stripLineComments(rest.slice(0, end));
   const rawEntries = extractSuiteBasenames(body);
@@ -188,11 +345,46 @@ function analyse(options = {}) {
   const declaredMutating = ledger.entries;
   const exempt = [...SUPERSEDED_LEGACY_SUITES];
 
-  // ---- derived: which suites will skip themselves --------------------------
-  const selfSkipping = discovered.filter((name) => {
-    const src = fs.readFileSync(path.join(root, 'tests', name), 'utf8');
-    return src.includes(GATE_CALL) && SKIP_OPTION.test(src);
-  });
+  // ---- classify every suite (fail-closed) ---------------------------------
+  const classes = new Map();
+  for (const name of discovered) {
+    classes.set(name, classifySuite(fs.readFileSync(path.join(root, 'tests', name), 'utf8')));
+  }
+  const withClass = (klass) => discovered.filter((n) => classes.get(n).klass === klass);
+
+  const unsupported = withClass('UNSUPPORTED');
+  const ambiguous = withClass('AMBIGUOUS');
+  const noTests = withClass('NO_TESTS');
+  const gated = withClass('GATED');
+  const unconditional = withClass('UNCONDITIONAL');
+  const selfSkipping = gated;   // retained name: suites that skip themselves under npm test
+
+  // ---- C10: unsupported / ambiguous conditional execution ------------------
+  for (const name of unsupported) {
+    const detail = classes.get(name).unsupported
+      .map((u) => `line ${u.line}: ${u.label} \`${u.text}\``)
+      .join('; ');
+    fail('C10',
+      `tests/${name} uses an unsupported conditional-execution construct (${detail}). `
+      + `Such a construct can stop tests from running without the coverage contract noticing. `
+      + `Use the recognised gate idiom (\`{ skip: <reason> }\` derived from isIntegrationTest()) `
+      + `and register the suite in ${RUNNER_REL}, or remove the construct.`);
+  }
+  for (const name of ambiguous) {
+    fail('C10',
+      `tests/${name} passes a \`skip:\` option (line ${classes.get(name).skipLine}) but never `
+      + `consults the database-test gate, so it may skip unconditionally and its execution cannot `
+      + `be demonstrated. Gate it with isIntegrationTest() and register it in ${RUNNER_REL}, or `
+      + `remove the skip option.`);
+  }
+
+  // ---- C11: a suite must define at least one test --------------------------
+  for (const name of noTests) {
+    fail('C11',
+      `tests/${name} contains no test definition (no test/it/describe call) in executable code, `
+      + `so importing a test framework is the only evidence that anything runs. A suite that `
+      + `defines nothing executes nothing; add a test or remove the file.`);
+  }
 
   // ---- C2: no stale registration ------------------------------------------
   for (const name of sanctioned) {
@@ -202,12 +394,12 @@ function analyse(options = {}) {
   }
 
   // ---- C3: the anti-omission invariant ------------------------------------
-  for (const name of selfSkipping) {
+  for (const name of gated) {
     if (!sanctioned.includes(name) && !exempt.includes(name)) {
       fail('C3',
-        `tests/${name} skips itself without the database-test gate and is NOT in the ` +
-        `integration contract, so it executes nowhere. Register it in ${RUNNER_REL} ` +
-        `or add it to the documented superseded-legacy exemption.`);
+        `tests/${name} skips itself without the database-test gate and is NOT in the `
+        + `integration contract, so it executes nowhere. Register it in ${RUNNER_REL} `
+        + `or add it to the documented superseded-legacy exemption.`);
     }
   }
 
@@ -220,10 +412,10 @@ function analyse(options = {}) {
 
   // ---- C5: every declared mutator is classified ---------------------------
   for (const name of declaredMutating) {
-    if (!selfSkipping.includes(name) && !sanctioned.includes(name) && !exempt.includes(name)) {
+    if (!gated.includes(name) && !sanctioned.includes(name) && !exempt.includes(name)) {
       fail('C5',
-        `'${name}' is declared database-mutating but neither self-skips under the gate, ` +
-        `nor is contracted, nor is a documented superseded-legacy suite.`);
+        `'${name}' is declared database-mutating but is not gated, not contracted, `
+        + `and not a documented superseded-legacy suite.`);
     }
   }
 
@@ -236,8 +428,8 @@ function analyse(options = {}) {
   const testScript = (pkg.scripts || {}).test || '';
   if (!testScript.includes(REQUIRED_TEST_GLOB)) {
     fail('C7',
-      `package.json "test" is \`${testScript}\` and no longer runs \`${REQUIRED_TEST_GLOB}\`; ` +
-      `suites could be silently dropped from every required command.`);
+      `package.json "test" is \`${testScript}\` and no longer runs \`${REQUIRED_TEST_GLOB}\`; `
+      + `suites could be silently dropped from every required command.`);
   }
 
   // ---- C8: no suite outside the executed glob -----------------------------
@@ -255,24 +447,20 @@ function analyse(options = {}) {
       fail('C9', `required security-critical suite tests/${name} is missing`);
       continue;
     }
-    if (selfSkipping.includes(name) && !sanctioned.includes(name)) {
+    if (gated.includes(name) && !sanctioned.includes(name)) {
       fail('C9', `required security-critical suite tests/${name} self-skips and is not contracted`);
     }
   }
 
   const conditionalPresent = SECURITY_CRITICAL_CONDITIONAL.filter((n) => discovered.includes(n));
   for (const name of conditionalPresent) {
-    if (selfSkipping.includes(name) && !sanctioned.includes(name)) {
+    if (gated.includes(name) && !sanctioned.includes(name)) {
       fail('C9', `invitation suite tests/${name} self-skips and is not contracted`);
     }
   }
 
-  // ---- report --------------------------------------------------------------
-  const runsUnderNpmTest = discovered.filter(
-    (n) => !selfSkipping.includes(n) && !exempt.includes(n) && !sanctioned.includes(n));
-  const unaccounted = discovered.filter(
-    (n) => !selfSkipping.includes(n) && !sanctioned.includes(n) && !exempt.includes(n)
-        && !runsUnderNpmTest.includes(n));
+  const known = new Set(['GATED', 'UNCONDITIONAL', 'UNSUPPORTED', 'AMBIGUOUS', 'NO_TESTS']);
+  const unaccounted = discovered.filter((n) => !known.has(classes.get(n).klass));
 
   return {
     repoRoot: root,
@@ -281,12 +469,17 @@ function analyse(options = {}) {
     sanctioned,
     declaredMutating,
     selfSkipping,
+    gated,
     exempt,
-    runsUnderNpmTest,
+    unsupported,
+    ambiguous,
+    noTests,
+    runsUnderNpmTest: unconditional,
     securityCriticalRequired: SECURITY_CRITICAL_REQUIRED,
     securityCriticalConditionalPresent: conditionalPresent,
     unaccounted,
     testScript,
+    classes,
     failures
   };
 }
@@ -297,12 +490,18 @@ function report(result) {
   lines.push(`  repository           : ${result.repoRoot}`);
   lines.push(`  discovered suites    : ${result.discovered.length}  (glob ${REQUIRED_TEST_GLOB})`);
   lines.push(`  integration contract : ${result.sanctioned.length}`);
-  lines.push(`  self-skipping        : ${result.selfSkipping.length}`);
+  lines.push(`  gated (self-skipping): ${result.selfSkipping.length}`);
+  lines.push(`  unconditional        : ${result.runsUnderNpmTest.length}`);
   lines.push(`  superseded legacy    : ${result.exempt.length}  (documented exemption)`);
-  lines.push(`  run under npm test   : ${result.runsUnderNpmTest.length}`);
   lines.push(`  database-mutating    : ${result.declaredMutating.length}  (guard ledger)`);
+  lines.push(`  unsupported patterns : ${result.unsupported.length}`);
+  lines.push(`  ambiguous skip       : ${result.ambiguous.length}`);
+  lines.push(`  no test definitions  : ${result.noTests.length}`);
   lines.push(`  unaccounted          : ${result.unaccounted.length}`);
   lines.push(`  test script          : ${result.testScript}`);
+  lines.push('');
+  lines.push('  classification is fail-closed: a suite must be UNCONDITIONAL, or GATED and');
+  lines.push('  contracted, or a documented legacy exemption. Anything else fails.');
   lines.push('');
   lines.push('  security-critical required    : '
     + result.securityCriticalRequired.map((n) => (result.discovered.includes(n) ? `${n} OK` : `${n} MISSING`)).join(', '));
@@ -328,4 +527,13 @@ if (require.main === module) {
   process.exit(ok ? 0 : 1);
 }
 
-module.exports = { analyse, report, SUPERSEDED_LEGACY_SUITES, SECURITY_CRITICAL_REQUIRED, REQUIRED_TEST_GLOB };
+module.exports = {
+  analyse,
+  report,
+  classifySuite,
+  stripCommentsAndStrings,
+  UNSUPPORTED_CONSTRUCTS,
+  SUPERSEDED_LEGACY_SUITES,
+  SECURITY_CRITICAL_REQUIRED,
+  REQUIRED_TEST_GLOB
+};

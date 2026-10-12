@@ -59,6 +59,36 @@ The only exemption is `SUPERSEDED_LEGACY_SUITES` in
 evidence and deliberately excluded from the PostgreSQL acceptance contract. Any other unaccounted
 self-skipping suite is a failure.
 
+### 4.1 Classification is fail-closed
+
+Every suite must be **positively** classified into one supported execution mechanism:
+
+| Class | Meaning |
+|---|---|
+| `UNCONDITIONAL` | no conditional-execution construct; executed by `npm test` |
+| `GATED` | uses the recognised gate idiom (`{ skip: <reason> }` derived from `isIntegrationTest()`) **and** is registered, so the gate genuinely runs it |
+| legacy exemption | one of the five documented `step6-*` suites |
+
+Anything else **fails**. In particular:
+
+* **Unsupported conditional-execution constructs are rejected** — `describe.skip`, `it.skip`,
+  `test.skip`, `suite.skip`, `skipIf`, `.todo`, `.only` and `runOnly`. Each can stop tests from
+  running without the contract noticing, so none is assumed safe. Use the recognised gate idiom
+  instead, or remove the construct.
+* **A `skip:` option with no recognised gate is rejected** — it may skip unconditionally, so
+  execution cannot be demonstrated.
+* **A suite that defines no test is rejected** — importing a test framework is not evidence that
+  anything runs.
+
+The analysis is **lexical, not interpretive**. Comments and string/template literals are blanked
+before matching, so:
+* a construct named only in a **comment** or a **string** is not treated as executable; and
+* a **commented-out registration** does not satisfy the contract.
+
+> **WP3-03.** This fail-closed direction replaced an earlier positive-detection design in which a
+> suite using `const gated = isIntegrationTest() ? describe : describe.skip;` executed zero tests but
+> was silently treated as covered. That bypass is now a `C10` failure.
+
 ## 5. Checks to require on `main`
 
 Recommended required status checks, by exact job name:
