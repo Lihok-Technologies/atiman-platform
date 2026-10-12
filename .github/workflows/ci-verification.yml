@@ -1,0 +1,103 @@
+name: CI Verification Contract
+
+# ATM-001-SEC-CLOSURE-WP3-01 — required CI verification contract.
+#
+# WHY THIS WORKFLOW EXISTS
+#
+# The integration workflow (`db-integration.yml`) executes only the sanctioned
+# PostgreSQL integration suites. It does NOT execute `npm test`, so the
+# non-destructive unit suites were never run in CI; and it performed no
+# dependency-security check at all. A suite that skips itself without the
+# database-test gate therefore executed NOWHERE while CI still reported green.
+#
+# This workflow closes that hole with three independent, separately-named jobs,
+# so a failure is attributable and can be required individually:
+#
+#   unit-tests        — `npm test`: the whole tests/*.test.js inventory.
+#   test-inventory    — the coverage contract: no suite may be unaccounted for.
+#   dependency-audit  — production-dependency advisories at high/critical.
+#
+# No repository secrets and no production credentials are referenced.
+#
+# NOTE: `dependency-audit` is EXPECTED TO FAIL until the known production
+# advisories are remediated (ATM-001-SEC-CLOSURE-WP5). It is deliberately not
+# suppressed: the failure is the signal. See docs/CI-VERIFICATION-CONTRACT.md.
+
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    name: Unit tests (npm test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # Pinned to a full commit SHA. actions/checkout v4.4.0
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      # Pinned to a full commit SHA. actions/setup-node v4.4.0
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      # Runs the complete tests/*.test.js inventory. The database-mutating suites
+      # skip themselves here (no TEST_DB_* gate), which is exactly why the
+      # test-inventory job exists: a skipped suite must still be accounted for.
+      - name: Run unit tests (npm test)
+        run: npm test
+      # Runtime execution evidence for the suites that `npm test` is expected to
+      # execute. Static classification cannot prove that a test body ran; this
+      # runs each suite and reads the runner's own JUnit report. A suite that
+      # defines nothing, or whose only definitions are unreachable, is observed
+      # to execute ZERO tests and fails here.
+      - name: Verify runtime execution evidence (unit suites)
+        run: node scripts/test-execution-evidence.js --mode unit
+
+  test-inventory:
+    name: Test inventory coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Pinned to a full commit SHA. actions/checkout v4.4.0
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      # Pinned to a full commit SHA. actions/setup-node v4.4.0
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      # Fails when any suite is unaccounted for, when a registration is stale,
+      # when the executed glob is narrowed, or when the contract cannot be parsed.
+      - name: Assert test coverage
+        run: node scripts/assert-test-coverage.js
+
+  dependency-audit:
+    name: Dependency security audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Pinned to a full commit SHA. actions/checkout v4.4.0
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      # Pinned to a full commit SHA. actions/setup-node v4.4.0
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      # Production dependencies only. High and critical advisories are blocking.
+      # No suppressions and no severity downgrade: a known advisory must fail.
+      - name: Audit production dependencies (high and critical are blocking)
+        run: npm audit --omit=dev --audit-level=high

@@ -30,7 +30,10 @@ jobs:
   integration:
     name: Disposable PostgreSQL integration
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Raised from 15 to 30 minutes to accommodate the runtime execution-evidence
+    # pass below, which executes the database-gated suites a second time so that
+    # actual execution is OBSERVED rather than inferred from registration.
+    timeout-minutes: 30
 
     services:
       postgres:
@@ -61,10 +64,13 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        # Pinned to a full commit SHA (actions/checkout v4.4.0) so a moved tag
+        # cannot change what executes in this job.
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        # Pinned to a full commit SHA (actions/setup-node v4.4.0).
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22'
           cache: npm
@@ -99,3 +105,20 @@ jobs:
 
       - name: Run sanctioned database integration tests
         run: npm run test:integration
+
+      # Runtime execution evidence for the registered database-gated suites.
+      #
+      # The sanctioned runner above proves the CONTRACT passes; it does not prove
+      # that any individual suite executed a test body. This step executes each
+      # contracted gated suite separately and reads the Node test runner's JUnit
+      # report, so a suite that is registered but executes zero tests — because
+      # its skip is not derived from the gate, or its only definitions are
+      # unreachable — is observed and fails closed.
+      #
+      # It runs under the same disposable-database gate as the sanctioned runner,
+      # so the database-safety controls are unchanged.
+      # Executed with bounded concurrency (4) because the gated suites take
+      # ~15 minutes serially; this matches the parallel execution model the
+      # sanctioned runner above already uses.
+      - name: Verify runtime execution evidence (database-gated suites)
+        run: node scripts/test-execution-evidence.js --mode integration --concurrency 4
