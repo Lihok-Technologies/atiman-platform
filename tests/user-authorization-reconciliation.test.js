@@ -435,10 +435,65 @@ describe('ATM-001-SEC-LEGACY-01-R3 reconciled /api/users/:id authorization',
         assert.strictEqual(after.password_hash, before.password_hash);
       });
 
-      it('7. an operator has no USERS.VIEW at all, and an administrator DELETE cannot cross tenants', async () => {
+      it('7. an operator may read its own record but has no USERS.VIEW, and an administrator DELETE cannot cross tenants', async () => {
+        // MISSION #107 / R-1 - THE HISTORICAL CONTRADICTION, PRESERVED.
+        //
+        // As accepted by #102/R3, this case asserted the OPPOSITE of
+        // `tests/user-credential-disclosure.test.js` test 7 for the very same
+        // call. Its original assertion was, verbatim:
+        //
+        //     const operatorGetOwn = await call('GET', `/api/users/${F.operator.id}`,
+        //       { userId: F.operator.id });
+        //     assert.strictEqual(operatorGetOwn.status, 403,
+        //       'USERS.VIEW is none for an operator, so the permission gate refuses
+        //        every identifier alike');
+        //
+        // That sentence was true of the capability gate alone, and it is STILL
+        // true for every identifier except one. The OWNER-approved R-1 policy
+        // narrows the case rather than deleting it: an authenticated operator may
+        // read its OWN sanitized record (HTTP 200), and viewing that record
+        // confers no USERS.VIEW, no `org.user_admin`, no `org.config_admin` and
+        // no other elevated capability. The contradiction is therefore resolved
+        // in favour of the assertion that was failing (B3-B test 7), and this
+        // comment records the superseded assertion instead of erasing it.
+        //
+        // The "USERS.VIEW is none for an operator" claim is re-asserted
+        // POSITIVELY below - against a same-tenant colleague, against a
+        // foreign-tenant record, and against the list route - so the own-record
+        // exemption cannot have become a capability without this case failing.
+        const operatorOwnBefore = await rowOf(F.operator.id);
+
         const operatorGetOwn = await call('GET', `/api/users/${F.operator.id}`, { userId: F.operator.id });
-        assert.strictEqual(operatorGetOwn.status, 403,
-          'USERS.VIEW is none for an operator, so the permission gate refuses every identifier alike');
+        assert.strictEqual(operatorGetOwn.status, 200,
+          'R-1: an operator may read its own sanitized record');
+        assert.strictEqual(Number(operatorGetOwn.json.data.user.id), F.operator.id,
+          'the record returned must be the principal itself');
+        assert.ok(!('password_hash' in operatorGetOwn.json.data.user),
+          'the own record must be sanitized');
+        assert.notStrictEqual(operatorGetOwn.json.data.user.username, undefined,
+          'a legitimate field must survive on a successful own-record read');
+
+        // Non-effect: a read must not alter the row it read.
+        const operatorOwnAfter = await rowOf(F.operator.id);
+        assert.deepStrictEqual(operatorOwnAfter, operatorOwnBefore,
+          'an own-record GET must not change the row');
+
+        // USERS.VIEW is still 'none' for an operator. A same-tenant colleague and
+        // a foreign-tenant record are refused identically by the unchanged gate.
+        const operatorGetColleague = await call('GET', `/api/users/${F.colleague.id}`, { userId: F.operator.id });
+        const operatorGetForeign = await call('GET', `/api/users/${F.victim.id}`, { userId: F.operator.id });
+        assert.strictEqual(operatorGetColleague.status, 403,
+          'USERS.VIEW is none for an operator: a colleague is still refused');
+        assert.strictEqual(operatorGetForeign.status, 403,
+          'USERS.VIEW is none for an operator: a foreign record is still refused');
+        assert.deepStrictEqual(operatorGetColleague.json, operatorGetForeign.json,
+          'the denial must not vary with the target - no existence oracle');
+
+        // The list route still requires USERS.VIEW, so the exemption did not
+        // widen into "view users".
+        const operatorList = await call('GET', '/api/users', { userId: F.operator.id });
+        assert.strictEqual(operatorList.status, 403,
+          'the user list still requires USERS.VIEW for an operator');
 
         const before = await rowOf(F.victim.id);
         const crossTenantDelete = await call('DELETE', `/api/users/${F.victim.id}`, { userId: F.admin.id });

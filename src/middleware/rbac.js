@@ -773,6 +773,53 @@ const canViewUser = async (req, res, next) => {
 };
 
 /**
+ * GET /api/users/:id - the R-1 own-record read carve-out.
+ *
+ * OWNER-APPROVED R-1 POLICY: "an authenticated operator may read its OWN
+ * sanitized user profile (HTTP 200) ... Viewing the own record must NOT confer
+ * `USERS.VIEW`, `org.user_admin`, `org.config_admin` or any other elevated
+ * capability. Other users and foreign-tenant records remain governed by existing
+ * #102 authorization and tenant non-disclosure rules."
+ *
+ * The capability matrix is NOT changed. `USERS.VIEW` remains
+ * `{ admin: 'all', supervisor: 'all', operator: 'none' }`, so `GET /api/users`
+ * (the list) and every other route keep requiring the capability exactly as
+ * before. What this guard adds is a route-local *identity* exemption for the one
+ * record that is the caller itself:
+ *
+ *   - the identity comes from the AUTHENTICATED PRINCIPAL (`req.user.id`, set by
+ *     `authenticate` from the session) and is compared numerically to the route
+ *     parameter. A body, query or header value is never consulted, so a caller
+ *     cannot name itself as somebody else;
+ *   - when - and only when - the parameter equals the principal, the USERS.VIEW
+ *     requirement is waived and `canViewUser` runs next. `canViewUser` ALWAYS
+ *     runs and re-resolves the record from the database through the shared
+ *     `authorizeUserScope` core, so the record that is finally returned is the
+ *     principal's own persisted row, not a row the parameter merely claims. The
+ *     tenant boundary is therefore not bypassed: it is satisfied by identity
+ *     equality, and it still applies to every non-self target;
+ *   - for every other identifier - a same-tenant colleague, a foreign-tenant
+ *     record, an absent record, or a malformed one - the approved
+ *     `requirePermission` gate runs exactly as before and refuses an operator
+ *     with the identical 403 for all of them. The exemption therefore does not
+ *     become an existence oracle and does not widen USERS.VIEW.
+ *
+ * It is deliberately attached only to `GET /api/users/:id`. The create, update,
+ * delete, list and facility-listing routes are untouched.
+ */
+const requireUsersViewUnlessOwnRecord = (req, res, next) => {
+  const targetUserId = parseUserIdParam(req.params.id);
+
+  if (targetUserId !== null
+      && req.user
+      && Number(req.user.id) === targetUserId) {
+    return next();
+  }
+
+  return requirePermission('USERS', 'VIEW')(req, res, next);
+};
+
+/**
  * PUT /api/users/:id - the USERS.UPDATE tenant/facility/ownership boundary.
  * Thin wrapper: the rule lives in `authorizeUserScope`. The approved
  * USERS.ASSIGN_FACILITY policy on the same route is enforced separately by
@@ -1079,6 +1126,7 @@ module.exports = {
   roleIssuanceAuthority,
   canManageUser,
   canViewUser,
+  requireUsersViewUnlessOwnRecord,
   canUpdateUser,
   canDeleteUser,
   authorizeFacilityAssignment,

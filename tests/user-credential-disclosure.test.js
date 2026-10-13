@@ -219,6 +219,42 @@ function assertNoSensitiveKey(value, context, at) {
   }
 }
 
+/**
+ * MISSION #107 / R-1 - a refusal is NOT sanitizer evidence.
+ *
+ * This suite previously asserted only `status !== 500` plus "no credential" on
+ * the foreign-tenant and malformed-identifier cases. Under the approved R-1
+ * policy those calls are refused by the authorization layer BEFORE the handler's
+ * projection runs, so a green assertion there proved nothing about the
+ * sanitizer: a route that returned a raw `SELECT *` row behind a refusal would
+ * have passed identically.
+ *
+ * Cases that stay deny-only are asserted with this helper instead. It pins the
+ * exact refusal status and requires that no `data.user` projection was produced
+ * at all, so "blocked before projection" can never be counted as "the sanitizing
+ * branch ran". Sanitizer evidence is carried ONLY by the cases that reach a real
+ * HTTP 200 (7, 7b, 7c, 8, 9, 10).
+ *
+ * @param {{status: number, text: string}} res
+ * @param {number} expectedStatus the refusal the policy requires
+ * @param {string} context
+ */
+function assertDeniedBeforeProjection(res, expectedStatus, context) {
+  assert.strictEqual(res.status, expectedStatus,
+    `${context}: expected the refused status, not a served projection. Body: ${redacted(res.text)}`);
+  assertNoCredential(res.text, context, []);
+
+  let parsed = null;
+  try {
+    parsed = JSON.parse(res.text);
+  } catch {
+    // A non-JSON refusal body: the status assertion above is the whole contract.
+    return;
+  }
+  assert.ok(!(parsed && parsed.data && parsed.data.user),
+    `${context}: a denied read must produce no user projection - it may not be credited to the sanitizer`);
+}
+
 // ---------------------------------------------------------------------------
 // HTTP harness - the real application, real JWTs
 // ---------------------------------------------------------------------------
@@ -311,45 +347,61 @@ describe('ATM-001-SEC-B3B user credential disclosure', { skip: DB_TEST_SKIP_REAS
   // ------------------------------------------------- B. cross-tenant attempts
 
   describe('B. foreign-tenant attempts disclose no credential', () => {
+    // DENY-ONLY under the approved R-1 policy: "Other users and foreign-tenant
+    // records remain governed by existing #102 authorization and tenant
+    // non-disclosure rules." These cases therefore CANNOT reach the projection,
+    // and they are asserted as refusals rather than as sanitizer evidence. Each
+    // target is first proven to exist, so the refusal is a real denial and not a
+    // disguised "the row was absent".
     it('3. an operator of org A reading an org B user', async () => {
+      assert.ok(await User.findById(TARGET_B), 'the foreign target must exist for the denial to be meaningful');
+      // An operator holds no USERS.VIEW, so the capability gate refuses before
+      // the identifier is even looked up - identically for every target.
       const res = await get(`/api/users/${TARGET_B}`, OP_A);
-      assert.notStrictEqual(res.status, 500, `threw a server error: ${redacted(res.text)}`);
-      assertNoCredential(res.text, 'operator A -> org B user', [await storedHash(TARGET_B)]);
-
-      if (res.status === 200) {
-        const body = JSON.parse(res.text);
-        assert.strictEqual(Number(body.data.user.id), TARGET_B,
-          'the assertion must be exercised against the real foreign row');
-        assert.ok(String(body.data.user.username).startsWith(tag('target-b')),
-          'the assertion must be exercised against the real foreign row');
-      }
+      assertDeniedBeforeProjection(res, 403, 'operator A -> org B user');
     });
 
     it('4. an administrator of org A reading an org B operator', async () => {
+      assert.ok(await User.findById(TARGET_B), 'the foreign target must exist for the denial to be meaningful');
+      // An administrator holds USERS.VIEW but not across tenants: the shared
+      // `authorizeUserScope` core answers the same 404 an absent record produces.
       const res = await get(`/api/users/${TARGET_B}`, ADMIN_A);
-      assert.notStrictEqual(res.status, 500, `threw a server error: ${redacted(res.text)}`);
-      assertNoCredential(res.text, 'admin A -> org B operator', [await storedHash(TARGET_B)]);
+      assertDeniedBeforeProjection(res, 404, 'admin A -> org B operator');
     });
 
     it('5. an administrator of org A reading the org B administrator', async () => {
+      assert.ok(await User.findById(ADMIN_B), 'the foreign target must exist for the denial to be meaningful');
       const res = await get(`/api/users/${ADMIN_B}`, ADMIN_A);
-      assert.notStrictEqual(res.status, 500, `threw a server error: ${redacted(res.text)}`);
-      assertNoCredential(res.text, 'admin A -> org B admin', [await storedHash(ADMIN_B)]);
+      assertDeniedBeforeProjection(res, 404, 'admin A -> org B admin');
     });
 
     it('6. the reverse direction: an org B administrator reading an org A user', async () => {
+      assert.ok(await User.findById(OP_A), 'the foreign target must exist for the denial to be meaningful');
       const res = await get(`/api/users/${OP_A}`, ADMIN_B);
-      assert.notStrictEqual(res.status, 500, `threw a server error: ${redacted(res.text)}`);
-      assertNoCredential(res.text, 'admin B -> org A user', [await storedHash(OP_A)]);
+      assertDeniedBeforeProjection(res, 404, 'admin B -> org A user');
     });
   });
 
   // ------------------------------------------------- C. own tenant
 
   describe('C. own-tenant reads disclose no credential and lose no legitimate field', () => {
-    it('7. an operator reading its own record', async () => {
+    it('7. an operator reading its own record (R-1: the sanitizing branch must actually run)', async () => {
+      // MISSION #107 / R-1 - the positive, NON-VACUOUS sanitizer witness.
+      //
+      // HISTORICAL CONTRADICTION, PRESERVED: as accepted, B3-B asserted 200 for
+      // this call while #102/R3 test 7 asserted 403 for the SAME call and named a
+      // different reason. The OWNER-approved R-1 policy adopts THIS assertion -
+      // an authenticated operator may read its own sanitized record - and #102's
+      // superseded 403 is recorded verbatim in its own case rather than deleted.
+      //
+      // A refusal is explicitly NOT accepted here: the call must reach the
+      // handler's projection and come back 200 with the positive field set
+      // intact, which "blocked before projection" can never produce.
+      const rowBefore = await User.findById(OP_A);
+
       const res = await get(`/api/users/${OP_A}`, OP_A);
-      assert.strictEqual(res.status, 200, `own record must be readable: ${redacted(res.text)}`);
+      assert.strictEqual(res.status, 200,
+        `R-1: the operator's own record must reach the projection: ${redacted(res.text)}`);
       assertNoCredential(res.text, 'operator A -> self', [await storedHash(OP_A)]);
 
       const user = JSON.parse(res.text).data.user;
@@ -358,6 +410,78 @@ describe('ATM-001-SEC-B3B user credential disclosure', { skip: DB_TEST_SKIP_REAS
       assert.strictEqual(Number(user.organization_id), ORG_A);
       assert.strictEqual(user.role, 'operator');
       assert.ok(!('password_hash' in user));
+
+      // The projection RAN and removed exactly the credential fields: every
+      // other persisted column survives. A blanket drop, an empty envelope, or a
+      // refusal all fail here.
+      const expectedKeys = Object.keys(rowBefore).filter((key) => !isSensitiveKey(key));
+      assert.ok(expectedKeys.length >= 5,
+        'the positive field set must be non-trivial for this to be real sanitizer evidence');
+      assert.deepStrictEqual(Object.keys(user).sort(), expectedKeys.sort(),
+        'every non-sensitive column must survive; only credential fields may be removed');
+
+      // Non-effect: a read must not alter the row it read.
+      const rowAfter = await User.findById(OP_A);
+      assert.strictEqual(rowAfter.password_hash, rowBefore.password_hash,
+        'an own-record GET must not rotate or clear the stored credential');
+    });
+
+    it('7b. the already-approved self-profile path also serves an operator (task-1 survey evidence)', async () => {
+      // The task-1 survey found an EXISTING, authenticate-only, self-scoped
+      // profile route - `GET /api/auth/profile` (src/routes/auth.routes.js:18 ->
+      // `authController.getProfile`), which resolves identity from `req.user.id`
+      // and applies `sanitizeUser`. It is exercised here so the survey claim is
+      // demonstrated rather than merely asserted in prose. It is NOT the route
+      // this mission changed; it is reported as the pre-existing own-profile
+      // path and it keeps working unchanged.
+      const res = await get('/api/auth/profile', OP_A);
+      assert.strictEqual(res.status, 200,
+        `the pre-existing self-profile path must serve an operator: ${redacted(res.text)}`);
+      assertNoCredential(res.text, 'operator A -> /api/auth/profile', [await storedHash(OP_A)]);
+
+      const user = JSON.parse(res.text).data.user;
+      assert.strictEqual(Number(user.id), OP_A, 'the self-profile path must return the principal itself');
+      assert.strictEqual(user.role, 'operator');
+      assert.ok(!('password_hash' in user), 'the self-profile path must be sanitized');
+    });
+
+    it('7c. a spoofed identity cannot retarget the own-record read', async () => {
+      // R-1 negatives: a client-supplied user id or organization - in the query
+      // string or in the request body - must never address another user. Identity
+      // is taken from the AUTHENTICATED PRINCIPAL only.
+      const rowBefore = await User.findById(OP_A);
+
+      const viaQuery = await call('GET',
+        `/api/users/${OP_A}?id=${TARGET_B}&userId=${TARGET_B}&organization_id=${ORG_B}`,
+        { userId: OP_A });
+      assert.strictEqual(viaQuery.status, 200,
+        `a query-spoofed own-record read must still be the own record: ${redacted(viaQuery.text)}`);
+      assert.strictEqual(Number(JSON.parse(viaQuery.text).data.user.id), OP_A,
+        'a query-supplied id must not retarget the read');
+
+      const viaBody = await call('GET', `/api/users/${OP_A}`, {
+        userId: OP_A,
+        body: { id: TARGET_B, userId: TARGET_B, organization_id: ORG_B, role: 'admin' }
+      });
+      assert.strictEqual(viaBody.status, 200,
+        `a body-spoofed own-record read must still be the own record: ${redacted(viaBody.text)}`);
+      assert.strictEqual(Number(JSON.parse(viaBody.text).data.user.id), OP_A,
+        'a body-supplied id/org must not retarget the read');
+
+      // Naming somebody else in the PATH is not an own-record read, and the
+      // unchanged capability gate still refuses it however the query is dressed.
+      const foreignTarget = await call('GET',
+        `/api/users/${TARGET_B}?id=${OP_A}&organization_id=${ORG_A}`, { userId: OP_A });
+      assert.strictEqual(foreignTarget.status, 403,
+        'a foreign path target must still be refused regardless of query claims');
+
+      assertNoCredential(viaQuery.text, 'query spoof', [await storedHash(TARGET_B)]);
+      assertNoCredential(viaBody.text, 'body spoof', [await storedHash(TARGET_B)]);
+
+      // Non-effect on the caller's own row.
+      const rowAfter = await User.findById(OP_A);
+      assert.strictEqual(rowAfter.password_hash, rowBefore.password_hash,
+        'a spoofed read must not alter the caller row');
     });
 
     it('8. an administrator reading an own-tenant operator (exact redaction, not a blanket drop)', async () => {
@@ -414,25 +538,26 @@ describe('ATM-001-SEC-B3B user credential disclosure', { skip: DB_TEST_SKIP_REAS
   // ------------------------------------------------- D. absent and malformed
 
   describe('D. absent and malformed identifiers disclose no credential', () => {
+    // DENY-ONLY. An operator holds no USERS.VIEW, so every malformed identifier
+    // is refused by the capability gate before the identifier is parsed; the
+    // projection is unreachable and these cases therefore carry no sanitizer
+    // evidence. They are asserted as refusals with an explicit status.
     for (const raw of ['99999999', '0', '-1', 'abc', '1e5', '%20']) {
       it(`12. identifier "${raw}"`, async () => {
         const res = await get(`/api/users/${encodeURIComponent(raw)}`, OP_A);
-        assert.notStrictEqual(res.status, 500,
-          `a malformed identifier must not raise a server error: ${redacted(res.text)}`);
-        assertNoCredential(res.text, `malformed identifier "${raw}"`, [FIXTURE_HASH]);
+        assertDeniedBeforeProjection(res, 403, `malformed identifier "${raw}"`);
       });
     }
 
     it('12b. an out-of-integer-range identifier discloses no credential and no internals', async () => {
-      // Pre-existing and NOT remediated here: parseInt("99999999999999999999")
-      // yields a value outside the PostgreSQL INTEGER range, so the lookup raises
-      // a database error and the route answers 500 with the driver's message.
-      // That is the identifier-normalisation concern owned by the
-      // ATM-001-SEC-LEGACY-01 lane (#85 `canViewUser` rejects an out-of-range
-      // identifier before the lookup). What this mission owns - and asserts - is
-      // that the response carries no credential, no stack and no SQL text.
+      // CORRECTED COMMENT (the pre-mission text described a 500 with the driver's
+      // message). For the operator caller used here the USERS.VIEW gate refuses
+      // BEFORE any lookup, so the out-of-range value never reaches the database
+      // and the observed status is 403, not 500. What this case owns is that no
+      // credential, stack or SQL text is disclosed on the refusal, and that the
+      // refusal is not a served projection.
       const res = await get('/api/users/99999999999999999999', OP_A);
-      assertNoCredential(res.text, 'out-of-range identifier', [FIXTURE_HASH]);
+      assertDeniedBeforeProjection(res, 403, 'out-of-range identifier');
       assert.ok(!/\bat\s+\/|node_modules|SELECT\s|INSERT\s|password_hash/i.test(res.text),
         `no stack or SQL may be disclosed: ${redacted(res.text)}`);
     });

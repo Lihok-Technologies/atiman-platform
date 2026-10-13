@@ -11,6 +11,7 @@ const {
   requirePermission,
   canCreateUser,
   canViewUser,
+  requireUsersViewUnlessOwnRecord,
   canUpdateUser,
   canDeleteUser,
   authorizeFacilityAssignment,
@@ -133,8 +134,18 @@ router.get('/facility/operators', requireSupervisor, async (req, res, next) => {
  * then the shared tenant/facility boundary (`canViewUser` ->
  * `authorizeUserScope`). Every out-of-scope outcome is the same 404, and
  * credential material is redacted from the response.
+ *
+ * MISSION #107 / R-1 narrows one case of that contract: an authenticated
+ * operator MAY read its OWN record (HTTP 200), because a principal reading its
+ * own sanitized profile is not the "view users" authority that USERS.VIEW
+ * governs. `requireUsersViewUnlessOwnRecord` performs the identity comparison
+ * from the authenticated principal only and waives the capability requirement
+ * for that single record; every other identifier still meets the unchanged
+ * USERS.VIEW gate, and `canViewUser` still runs on every request. The operator
+ * gains the ability to read its own sanitized row and nothing else - USERS.VIEW
+ * stays 'none' for an operator, so the list route and all writes are unaffected.
  */
-router.get('/:id', requirePermission('USERS', 'VIEW'), canViewUser, async (req, res, next) => {
+router.get('/:id', requireUsersViewUnlessOwnRecord, canViewUser, async (req, res, next) => {
   try {
     res.json({
       success: true,
