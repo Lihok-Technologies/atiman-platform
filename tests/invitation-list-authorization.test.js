@@ -83,6 +83,24 @@ const SEC00E_PRESENT = (routes) =>
 const SEC00H_PRESENT = (routes) =>
   /router\.post\('\/:id\/resend', requireCapability\('org\.user_admin'\), invitationController\.resend\)/.test(routes);
 
+/**
+ * ATM-001-SEC-93-A — invitation CANCELLATION authority (MISSION 3 residual A).
+ *
+ * This branch (SEC-00G standalone) leaves `DELETE /api/invitations/:id` on
+ * `requireAdmin` alone and RECORDS that as out of this correction's scope (see
+ * test 25). MISSION 3 brings it into scope: `requireAdmin` admits a supervisor,
+ * whose compatibility bundle deliberately excludes `org.user_admin`, so a
+ * supervisor could cancel an ADMINISTRATOR invitation — reproduced against the
+ * disposable cluster as HTTP 200 with the row moving `pending` -> `cancelled`.
+ * The integrated tree carries the approved ATM-003-R1 invitation-management
+ * capability instead, and test 25 asserts the CLOSURE, not the baseline.
+ *
+ * The predicate matches the EXACT approved wiring, never a bare substring, so
+ * this suite still runs correctly against the standalone SEC-00G branch.
+ */
+const SEC93A_PRESENT = (routes) =>
+  /router\.delete\('\/:id', requireCapability\('org\.user_admin'\), invitationController\.cancel\)/.test(routes);
+
 const RUN = `${Date.now().toString(36)}${process.pid.toString(36)}`;
 const seq = { n: 0 };
 const tag = () => `${RUN}${(++seq.n).toString(36)}`;
@@ -309,11 +327,20 @@ describe('ATM-001-SEC-00G GET /api/invitations authorization and token protectio
     it('3. no invitation lifecycle operation other than listing was changed', () => {
       const routes = fs.readFileSync(path.join(REPO_ROOT, 'src', 'routes', 'invitation.routes.js'), 'utf8');
 
-      // Unchanged in EVERY configuration this suite may run against: acceptance
-      // stays public and cancel stays on the legacy admin guard. No correction in
-      // this campaign touches either route.
+      // Acceptance is unchanged in EVERY configuration this suite may run
+      // against: it stays public. Cancellation was on the legacy admin guard on
+      // the standalone tree; MISSION 3 (ATM-001-SEC-93-A) moved it to the
+      // approved invitation-management capability, so the assertion follows the
+      // same present/absent inversion as resend and creation below.
       assert.match(routes, /router\.post\('\/accept', invitationController\.accept\)/, 'acceptance is unchanged and still public');
-      assert.match(routes, /router\.delete\('\/:id', requireAdmin, invitationController\.cancel\)/, 'cancel is unchanged');
+      if (SEC93A_PRESENT(routes)) {
+        assert.match(routes, /router\.delete\('\/:id', requireCapability\('org\.user_admin'\), invitationController\.cancel\)/,
+          'with SEC-93-A present, cancellation must carry the approved org.user_admin capability');
+        assert.ok(!/router\.delete\('\/:id', requireAdmin, invitationController\.cancel\)/.test(routes),
+          'with SEC-93-A present, the legacy requireAdmin-only cancellation guard must be gone');
+      } else {
+        assert.match(routes, /router\.delete\('\/:id', requireAdmin, invitationController\.cancel\)/, 'cancel is unchanged');
+      }
 
       // RESEND. SEC-00H/R1 (PR #92) is a separate, independently verified
       // correction. Standalone (absent) the original baseline assertion is kept
@@ -550,10 +577,16 @@ describe('ATM-001-SEC-00G GET /api/invitations authorization and token protectio
       for (const field of ['id', 'email', 'role', 'status', 'created_at']) {
         assert.ok(pending[field] !== undefined && pending[field] !== null, `${field} must survive`);
       }
-      // The reported consumer dependency: the "Copy Link" action needs the token.
+      // The listing is token-free — this is the security property, and it holds
+      // in every tree this suite runs against. The consumer that used to depend
+      // on the token ("Copy Link" reading `inv.token`) was closed by MISSION 3
+      // (ATM-001-SEC-93-C): the view now reads a credential only from the
+      // delivery moment, and the unconditional assertion that keeps it that way
+      // lives in tests/invitation-lifecycle-residuals.test.js (test C5). Nothing
+      // here is relaxed; the consumer-state assertion simply moved to the suite
+      // that owns the correction, so this one cannot report a stale breakage.
       assert.strictEqual(pending.token, undefined,
-        'REPORTED BREAKAGE: the mobile admin "Copy Link" action for an existing invitation '
-        + 'reads inv.token and will no longer work; that view is out of this mission scope');
+        'the listing must not expose a usable enrollment credential');
     });
   });
 
@@ -616,13 +649,37 @@ describe('ATM-001-SEC-00G GET /api/invitations authorization and token protectio
       assert.ok(HEX64.test(String(rows[0].token)), 'creation still issues a usable token');
     });
 
-    it('25. cancel is unchanged, and resend authority is enforced when SEC-00H is present', async () => {
+    it('25. cancel authority is enforced when SEC-93-A is present, and resend authority when SEC-00H is present', async () => {
       const routes = fs.readFileSync(path.join(REPO_ROOT, 'src', 'routes', 'invitation.routes.js'), 'utf8');
 
-      // CANCEL is out of scope for every correction in this campaign and stays on
-      // the legacy admin guard, so a supervisor remains admitted. Unconditional.
-      const cancel = await call('DELETE', `/api/invitations/${INV.A_PENDING_OPERATOR.id}`, { as: 'SUP_A' });
-      assert.notStrictEqual(cancel.status, 403, 'cancel is out of scope and unchanged (supervisor still admitted)');
+      // CANCEL. Standalone (this branch) it stays on the legacy admin guard and a
+      // supervisor remains admitted; that baseline pin is kept VERBATIM so the
+      // suite still describes this tree. Integrated, MISSION 3
+      // (ATM-001-SEC-93-A) brought cancellation into scope, so the closure is
+      // asserted instead — same inversion, and same reasoning, that this test
+      // already applies to resend. The closure assertion is STRICTLY STRONGER:
+      // it asserts the refusal AND the database effect that proves the handler
+      // never ran, instead of merely "not 403".
+      const cancelInv = INV.A_PENDING_OPERATOR;
+      const cancelBefore = await withConn((conn) => conn.query(
+        `SELECT id, status, role, token, updated_at FROM invitations WHERE id = $1`, [cancelInv.id]));
+      const cancel = await call('DELETE', `/api/invitations/${cancelInv.id}`, { as: 'SUP_A' });
+      const cancelAfter = await withConn((conn) => conn.query(
+        `SELECT id, status, role, token, updated_at FROM invitations WHERE id = $1`, [cancelInv.id]));
+
+      if (SEC93A_PRESENT(routes)) {
+        assert.strictEqual(cancel.status, 403,
+          'with SEC-93-A present a supervisor must be refused cancellation authority');
+        assert.match(cancel.text, /org\.user_admin/,
+          'the refusal must come from the approved invitation-management capability');
+        assert.deepStrictEqual(cancelAfter, cancelBefore,
+          'a refused cancellation must leave the invitation row byte-identical: same status, same role, same token');
+        assert.ok(!/requireAdmin, invitationController\.cancel/.test(routes),
+          'the legacy requireAdmin-only cancellation guard must be gone');
+      } else {
+        assert.notStrictEqual(cancel.status, 403,
+          'standalone, cancel is out of scope and unchanged (supervisor still admitted)');
+      }
 
       // RESEND. Capture the original invitation's database state BEFORE the
       // request, so the assertion is made on EFFECT and not merely on status.

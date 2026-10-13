@@ -72,8 +72,31 @@ router.get('/', requireCapability('org.user_admin'), invitationController.getAll
 // request-body organization can never redirect the tenant.
 router.post('/', requireAdmin, canCreateUser, invitationController.create);
 
-// Cancel invitation (admin only)
-router.delete('/:id', requireAdmin, invitationController.cancel);
+// Cancel invitation
+//
+// ATM-001-SEC-93-A (MISSION 3 residual A: invitation cancellation authority).
+// This route was guarded by `requireAdmin` ALONE. `requireAdmin`
+// (src/middleware/auth.js) admits a supervisor, and the supervisor compatibility
+// bundle deliberately EXCLUDES `org.user_admin` (ATM-003-R3 section 4), so a
+// supervisor could cancel any pending invitation in the tenant — including an
+// ADMINISTRATOR invitation. Reproduced against the disposable cluster: a
+// supervisor cancelled an `admin` invitation, HTTP 200, and the row moved
+// `pending` -> `cancelled`.
+//
+// Cancellation is invitation MANAGEMENT, and listing and resend already carry
+// the approved ATM-003-R1 authority for it ("Manage users, invitations, roles",
+// Tenant scope, Tenant Administrator profile). Cancelling is destructive but it
+// confers no enrollment and no role: it forecloses an enrollment that already
+// exists. The canonical primitive is applied here, so one authority decides
+// every invitation-management action on this router and the tenant boundary is
+// the handler's `organization_id` scope.
+//
+// `requireAdmin` is NOT retained, for the same reason it was not retained on
+// resend: it is neither necessary nor sufficient here. It is strictly WIDER
+// (it admits supervisors) and it is not the approved capability. No role,
+// permission, capability, schema or tenant rule is changed by this correction,
+// and no capability is invented.
+router.delete('/:id', requireCapability('org.user_admin'), invitationController.cancel);
 
 // Resend invitation
 //

@@ -94,6 +94,11 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   // authorization, terminal-invitation refusal, stored-role integrity, and the
   // negative control that the baseline reissued dead administrator invitations.
   'tests/invitation-resend-authorization.test.js',
+  // MISSION 3 / ATM-001-SEC-93: invitation security residuals A-D — cancellation
+  // authority, acceptance single use (role/tenant taken solely from the persisted
+  // row), credential redaction on every read path and in the administration view,
+  // and the D-1/D-2 sequencing dependencies (asserted, not repaired).
+  'tests/invitation-lifecycle-residuals.test.js',
   'tests/knowledge-evidence-deletion-integrity.test.js'
 ];
 

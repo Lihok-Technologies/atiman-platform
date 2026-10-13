@@ -30,6 +30,37 @@ const toInvitationListingView = (invitation) => {
   return listing;
 };
 
+/**
+ * Project the account created by an acceptance for the PUBLIC accept response.
+ *
+ * ATM-001-SEC-93-C. `POST /api/invitations/accept` is unauthenticated, and the
+ * handler answered with `data: { user }` — the object `User.create` returned.
+ * `User.create` is `BaseModel.create`, which ends in `this.findById(insertId)`,
+ * i.e. `SELECT * FROM users`. That row carries `password_hash`, so the moment
+ * the pre-existing D-1 defect is repaired the public acceptance response would
+ * return the invitee's bcrypt hash (verified against a real row: the hash is
+ * present at `user.password_hash`). A response that only fails to disclose a
+ * credential because an unrelated write defect suppresses the whole response
+ * body is not a redaction control.
+ *
+ * The projection is an ALLOW-LIST. A field added to `users` later — a reset
+ * token, an SSO subject, a second credential column — is therefore absent by
+ * default rather than disclosed by default.
+ */
+const toAcceptedUserView = (user) => ({
+  id: user.id,
+  username: user.username,
+  email: user.email,
+  full_name: user.full_name,
+  role: user.role,
+  organization_id: user.organization_id,
+  facility_id: user.facility_id,
+  is_active: user.is_active,
+  status: user.status,
+  is_organization_admin: user.is_organization_admin,
+  created_at: user.created_at
+});
+
 class InvitationController {
   /**
    * Get all invitations for current organization
@@ -176,6 +207,12 @@ class InvitationController {
   /**
    * Cancel an invitation
    * DELETE /api/invitations/:id
+   *
+   * ATM-001-SEC-93-A. Authority for this operation is the route's
+   * `requireCapability('org.user_admin')` guard (src/routes/invitation.routes.js),
+   * the same approved invitation-management authority the listing and the resend
+   * route carry. This handler enforces SCOPE: the invitation must belong to the
+   * caller's own tenant, and only a still-pending invitation may be cancelled.
    */
   async cancel(req, res, next) {
     try {
@@ -189,7 +226,23 @@ class InvitationController {
         });
       }
 
-      // Get invitation
+      // ATM-001-SEC-93-A2. The identical shape guard the resend handler already
+      // applies. Without it a non-numeric id reaches the tenant-scoped lookup and
+      // PostgreSQL refuses the comparison itself, so the handler answered 500
+      // carrying a raw driver message ("invalid input syntax for type integer:
+      // \"abc\"") — reproduced against the disposable cluster. A malformed
+      // identifier cannot name an invitation and must be indistinguishable from
+      // one that does not exist, exactly as resend already answers it.
+      if (!/^\d+$/.test(String(invitationId))) {
+        return res.status(404).json({
+          success: false,
+          message: 'Invitation not found'
+        });
+      }
+
+      // Get invitation. Server-side tenant scoping: "not found" and "belongs to
+      // another tenant" are deliberately indistinguishable, so no foreign
+      // invitation is disclosed.
       const [invitation] = await Invitation.findAll({ id: invitationId, organization_id: organizationId });
       
       if (!invitation) {
@@ -258,6 +311,32 @@ class InvitationController {
   /**
    * Accept invitation and create account
    * POST /api/invitations/accept
+   *
+   * ATM-001-SEC-93-B. This route is PUBLIC: possession of the token is the whole
+   * of the caller's claim. The handler therefore derives everything that carries
+   * authority from the PERSISTED invitation row and from nothing else:
+   *
+   *   - the granted `role` is `invitation.role`, never a request-body field;
+   *   - the tenant is `invitation.organization_id`, never a request-body field;
+   *   - `is_organization_admin` is not accepted from the caller at all, so the
+   *     account is created with the column default (false) and acceptance can
+   *     never confer organization-administrator authority.
+   *
+   * The body is read for `token`, `username`, `password`, `full_name` and
+   * `phone` only. Verified against the running server: a public acceptance that
+   * posts `role: 'admin'`, `is_organization_admin: true` and a foreign
+   * `organization_id` against an operator invitation still creates an operator
+   * account in the inviting tenant with `is_organization_admin = false`.
+   *
+   * Single use is decided by `Invitation.claimForAcceptance`, an atomic
+   * conditional write, BEFORE the account is created. The read `findByToken`
+   * performs is an eligibility check, not the decision.
+   *
+   * Re-validation of the ISSUING principal's current authority at acceptance time
+   * is deliberately NOT added: it is a product-policy question about invitations
+   * that already exist (and it is recorded as a residual by
+   * tests/invitation-role-authority.test.js test 28). Inventing it here would
+   * change who may enroll, which this mission forbids. It is escalated instead.
    */
   async accept(req, res, next) {
     try {
@@ -296,6 +375,24 @@ class InvitationController {
         });
       }
 
+      // ATM-001-SEC-93-B2. `users.email` carries a global UNIQUE constraint
+      // (`uq_users_email`, database/postgresql/001_core.sql), and acceptance
+      // inserts `invitation.email` verbatim. The creation path already refuses
+      // that conflict explicitly (`User.findByEmail` -> 409); acceptance did not,
+      // so an already-registered invitee address surfaced as an unhandled driver
+      // error (reproduced: 500 "duplicate key value violates unique constraint
+      // uq_users_email"). Refusing it HERE, before the claim, matters for more
+      // than the status code: a predictable conflict must not consume the
+      // invitation, or a public caller could burn a live invitation by asking a
+      // duplicate address to accept it.
+      const emailTaken = await User.findByEmail(invitation.email);
+      if (emailTaken) {
+        return res.status(409).json({
+          success: false,
+          message: 'A user with this email already exists'
+        });
+      }
+
       // Check seat availability
       const canAdd = await subscriptionService.canAddUser(invitation.organization_id);
       if (!canAdd) {
@@ -308,6 +405,21 @@ class InvitationController {
 
       // Hash password
       const passwordHash = await hashPassword(password);
+
+      // SINGLE-USE CLAIM. Every refusal above runs first, so a refusal persists
+      // nothing and leaves the invitation pending and usable. This is the point
+      // of no return: from here the invitation is consumed exactly once, even if
+      // two acceptances arrive concurrently, even if it is revoked between the
+      // eligibility read and this write, and even if the account creation below
+      // fails (which it does today: see D-1).
+      const claimed = await Invitation.claimForAcceptance(invitation.id);
+      if (!claimed) {
+        return res.status(409).json({
+          success: false,
+          message: 'This invitation is no longer available',
+          code: 'INVITATION_NOT_AVAILABLE'
+        });
+      }
 
       // Create user
       const user = await User.create({
@@ -323,7 +435,13 @@ class InvitationController {
         is_billable: true
       });
 
-      // Mark invitation as accepted
+      // Attribute the acceptance. The status transition already happened in the
+      // claim, so this only records WHO accepted and cannot re-open the row.
+      // PRE-EXISTING DEFECT D-1, deliberately not repaired here: `User.create`
+      // issues its INSERT without RETURNING, so it returns null and this line
+      // throws AFTER the account row has committed. The account exists, the
+      // invitation is retired (the claim committed) and `accepted_by_user_id`
+      // stays NULL. Single use no longer depends on that defect.
       await Invitation.accept(invitation.id, user.id);
 
       // Update seat usage
@@ -332,7 +450,7 @@ class InvitationController {
       res.json({
         success: true,
         message: 'Invitation accepted! Account created successfully.',
-        data: { user }
+        data: { user: toAcceptedUserView(user) }
       });
     } catch (error) {
       next(error);

@@ -166,6 +166,16 @@ function renderInvitations(invitations) {
     'cancelled': { bg: '#fee2e2', text: '#991b1b', label: 'Cancelled' }
   };
   
+  // ATM-001-SEC-93-C. A pending row used to carry a "Copy Link" button built
+  // from `inv.token` in the GET /api/invitations response. That listing is
+  // deliberately token-free (ATM-001-SEC-00G): an invitation token is a usable
+  // enrollment credential and an administration LISTING is not a delivery
+  // channel. The button therefore rendered `?token=undefined`, and it kept a
+  // credential dependency on the listing that would have silently restored the
+  // disclosure if anyone "fixed" it by putting the token back into the listing.
+  // A token is read only where it is DELIVERED — the create and resend responses
+  // (see handleInvite and resendInvitation below). An existing pending row has
+  // no readable credential, so the row offers Resend and Cancel only.
   container.innerHTML = invitations.map(inv => {
     const statusStyle = statusColors[inv.status] || statusColors['pending'];
     const isPending = inv.status === 'pending';
@@ -189,9 +199,6 @@ function renderInvitations(invitations) {
       
       ${isPending ? `
       <div style="display: flex; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--gray-100);">
-        <button class="btn btn-sm btn-outline" onclick="showLinkModal('${inv.token}')" style="flex: 1;">
-          📋 Copy Link
-        </button>
         <button class="btn btn-sm btn-outline" onclick="resendInvitation(${inv.id})" style="flex: 1;">
           🔄 Resend
         </button>
@@ -295,6 +302,13 @@ async function resendInvitation(id) {
     if (data.success) {
       showToast('Invitation resent!', 'success');
       loadInvitations();
+      // ATM-001-SEC-93-C: resend RE-ISSUES, so its response is the delivery
+      // moment for the replacement credential — the same role the create
+      // response plays. This is the only way an administrator can read the
+      // replacement link; the listing deliberately carries no token.
+      if (data.data?.invitation?.token) {
+        showLinkModal(data.data.invitation.token);
+      }
     } else {
       showToast(data.message || 'Failed to resend', 'error');
     }

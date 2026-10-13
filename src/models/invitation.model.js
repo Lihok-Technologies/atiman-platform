@@ -107,14 +107,63 @@ class InvitationModel extends BaseModel {
   }
 
   /**
-   * Accept an invitation
+   * Atomically consume a still-acceptable invitation.
+   *
+   * ATM-001-SEC-93-B (MISSION 3 residual B: double-accept, reuse after
+   * revoke/expiry).
+   *
+   * `findByToken` is a READ: it establishes that an invitation was acceptable a
+   * moment ago, and every check the accept handler performs between that read
+   * and the account insert is time the invitation stays open. Two concurrent
+   * acceptances both pass the read; a revoked, expired or already-consumed
+   * invitation passed the read before the revocation landed. Single-use must
+   * therefore be decided by the WRITE, in one statement, against the same
+   * predicate `findByToken` applies:
+   *
+   *   status = 'pending' AND expires_at > NOW()
+   *
+   * Exactly one caller can observe `affectedRows === 1`. Every other caller
+   * observes 0 and must refuse, so the invitation cannot be consumed twice and
+   * cannot be consumed after a revoke or an expiry.
+   *
+   * This is deliberately independent of the pre-existing D-1 defect
+   * (`BaseModel.create` never reads the INSERT's id, so `User.create` returns
+   * null and the accept handler throws AFTER the account row commits). That
+   * defect previously left the invitation `pending` forever, which made the
+   * token permanently reusable. Deciding single-use here, BEFORE the account is
+   * created, means the security property holds whether or not D-1 is repaired.
+   *
+   * `accepted_by_user_id` is attributed separately, once the account id is
+   * known, by `accept()`.
+   *
+   * @param {number} invitationId
+   * @returns {Promise<boolean>} true only for the call that performed the claim
+   */
+  async claimForAcceptance(invitationId) {
+    const sql = `
+      UPDATE ${this.tableName}
+      SET status = 'accepted', accepted_at = NOW()
+      WHERE id = ? AND status = 'pending' AND expires_at > NOW()
+    `;
+    const result = await this.query(sql, [invitationId]);
+    return Number(result?.affectedRows || 0) === 1;
+  }
+
+  /**
+   * Record the account an invitation was accepted by.
+   *
+   * The status transition is `claimForAcceptance`'s. This method is ATTRIBUTION
+   * ONLY and is deliberately NOT a guard: it updates by id with no status
+   * predicate, so it must only be called after `claimForAcceptance` has returned
+   * true for the same invitation. What makes that safe is the claim — this
+   * method cannot move a row back to `pending` and never creates a credential,
+   * so it cannot re-open an invitation the claim retired.
+   *
    * @param {number} invitationId
    * @param {number} userId
    */
   async accept(invitationId, userId) {
     return this.update(invitationId, {
-      status: 'accepted',
-      accepted_at: new Date(),
       accepted_by_user_id: userId
     });
   }

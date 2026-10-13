@@ -96,6 +96,11 @@ const DB_MUTATING_SUITES = [
   // organizations, subscriptions, users, capability grants and invitations,
   // and issues replacement invitations).
   'invitation-resend-authorization.test.js',
+  // MISSION 3 ATM-001-SEC-93 invitation security residuals A-D (writes real
+  // organizations, facilities, subscriptions, users and invitations across two
+  // tenants, and consumes invitations through the public acceptance path; it
+  // creates no capability grant, so it leaves no undeletable residue).
+  'invitation-lifecycle-residuals.test.js',
   'step6-access-control.test.js',
   'step6-coverage-e2e.test.js',
   'step6-performance.test.js',
@@ -136,7 +141,8 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'knowledge-evidence-deletion-integrity.test.js',
   'invitation-role-authority.test.js',
   'invitation-list-authorization.test.js',
-  'invitation-resend-authorization.test.js'
+  'invitation-resend-authorization.test.js',
+  'invitation-lifecycle-residuals.test.js'
 ];
 
 const REPO_ROOT = path.resolve(__dirname, '..');

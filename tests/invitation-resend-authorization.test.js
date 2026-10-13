@@ -680,10 +680,24 @@ describe('ATM-001-SEC-00H POST /api/invitations/:id/resend authorization and lif
       }
     });
 
-    it('29. acceptance and cancellation are unchanged', () => {
+    it('29. acceptance is unchanged and cancellation carries the approved guard when SEC-93-A is present', () => {
       const source = fs.readFileSync(path.join(REPO_ROOT, 'src', 'routes', 'invitation.routes.js'), 'utf8');
       assert.match(source, /router\.post\('\/accept', invitationController\.accept\)/);
-      assert.match(source, /router\.delete\('\/:id', requireAdmin, invitationController\.cancel\)/);
+
+      // ATM-001-SEC-93-A (MISSION 3 residual A). The standalone tree this suite
+      // was written against left cancellation on `requireAdmin` alone, which
+      // admits a supervisor; that is recorded here VERBATIM so the suite still
+      // describes that tree. Integrated, cancellation carries the approved
+      // ATM-003-R1 invitation-management capability, and the legacy
+      // requireAdmin-only guard is asserted GONE — the same inversion this suite
+      // already applies to the listing route above.
+      if (/router\.delete\('\/:id', requireCapability\('org\.user_admin'\), invitationController\.cancel\)/.test(source)) {
+        assert.ok(!/router\.delete\('\/:id', requireAdmin, invitationController\.cancel\)/.test(source),
+          'with SEC-93-A present, the legacy requireAdmin-only cancellation guard must be gone');
+      } else {
+        assert.match(source, /router\.delete\('\/:id', requireAdmin, invitationController\.cancel\)/,
+          'cancellation is out of this suite\u2019s scope and unchanged on the standalone tree');
+      }
     });
 
     it('29b. resend still delivers no email (pre-existing gap, reported not claimed)', async () => {
