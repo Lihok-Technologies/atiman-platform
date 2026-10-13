@@ -684,19 +684,26 @@ describe('ATM-001-SEC-104 V1 organization security policies', { skip: DB_TEST_SK
         'the ASSERTION form of the removed signup claim must be gone');
       assert.match(routeHeader, /CORRECTED CLAIM \(ATM-001-SEC-104-R3\)/);
 
-      // The correction must record the observed D-1 reality and cite the live
-      // evidence that establishes it, so a reader cannot re-derive the claim.
+      // ATM-001-SEC-B3D condition 2 — THIS PIN IS INVERTED. The assertions below
+      // previously required the documents to record D-1 as OPEN and "NOT
+      // repaired". Defect D-1 IS repaired in the integrated tree (ATM-001-SEC-D1),
+      // so requiring the open-defect wording would pin a false statement. The
+      // historical measurement is still required to be present and quotable; what
+      // is now required is that the documents state the REPAIR.
       assert.match(routeHeader, /HTTP 500/);
       assert.match(routeHeader, /PERSISTS ONE ORGANIZATION/);
       assert.match(routeHeader, /ZERO USERS AND ZERO SUBSCRIPTIONS/);
       assert.match(routeHeader, /result\.insertId/);
       assert.match(routeHeader, /tests\/organization-signup\.integration\.test\.js/);
-      assert.match(routeHeader, /NOT repaired/,
-        'D-1 must be recorded as deliberately unrepaired here, not silently fixed');
+      assert.match(routeHeader, /ATM-001-SEC-D1/,
+        'D-1 must be recorded as REPAIRED by ATM-001-SEC-D1 in the integrated tree');
+      assert.doesNotMatch(routeHeader, /NOT repaired/,
+        'the stale "NOT repaired" claim must be gone once D-1 is repaired');
 
-      // The controller separates intended from observed behaviour the same way.
+      // The controller records intended vs repaired behaviour the same way.
       assert.match(controllerHeader, /INTENDED contract/);
-      assert.match(controllerHeader, /OBSERVED contract at this head/);
+      assert.match(controllerHeader, /DEFECT D-1 \(repaired\)/,
+        'the controller header must record the repair, not the open defect');
       assert.match(controllerHeader, /D-1/);
       assert.doesNotMatch(controllerHeader, /^ \* Creates a new organization with the first user as admin$/m,
         'the bare assertion of the intended contract must not remain unqualified');

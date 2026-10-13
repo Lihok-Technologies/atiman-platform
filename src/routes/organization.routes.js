@@ -47,7 +47,8 @@
  * CORRECTED CLAIM (ATM-001-SEC-104-R3). An earlier version of this comment said
  * the endpoint "creates an organization, its first administrator
  * (`role = 'admin'`, `is_organization_admin = true`) and a default Free
- * subscription". That is FALSE at this head and has been removed. Verified by
+ * subscription". That was FALSE at the ATM-001-SEC-104-R3 head and was removed.
+ * Verified by
  * live request against disposable PostgreSQL
  * (tests/organization-signup.integration.test.js): an anonymous
  * POST /api/auth/organization-signup answers HTTP 500
@@ -60,13 +61,17 @@
  * non-atomic, and the orphan permanently blocks re-registration of the same
  * organization name (HTTP 409 "Organization name already exists").
  *
- * Intended contract (NOT observed at this head, and deliberately NOT repaired
- * here): a 201 that creates the organization, its first administrator with
- * `role = 'admin'` and `is_organization_admin = true`, and a default Free
- * subscription, atomically. Repairing D-1 changes the shared write-path
- * semantics of every `BaseModel.create` caller, which is outside this mission's
- * envelope, so it is PROPOSED and escalated to the OWNER rather than silently
- * applied. The endpoint stays mounted: disabling approved self-service
+ * CONTRACT NOW (ATM-001-SEC-D1 repair, integrated by ATM-001-SEC-B3D): a 201
+ * that creates the organization, its first administrator with `role = 'admin'`
+ * and `is_organization_admin = true`, and a default Free subscription, in ONE
+ * transaction. `BaseModel.create` now issues `RETURNING id` and the handler runs
+ * every write on a single transaction connection, so the non-atomic partial
+ * write and the orphan-record behaviour measured above no longer occur.
+ *
+ * The historical observation above is retained deliberately: it is what was
+ * actually measured at the ATM-001-SEC-104-R3 head, and `result.insertId` is
+ * still the name of the defect that was repaired. It is no longer a description
+ * of this tree. The endpoint stays mounted: disabling approved self-service
  * onboarding is not a policy-1 outcome.
  */
 

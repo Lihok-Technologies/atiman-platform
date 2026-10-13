@@ -17,24 +17,34 @@
  * ROW COUNTS, never a status code alone, because defect D-1 (BaseModel.create
  * never populates `insertId`) lets a write commit behind an HTTP 500.
  *
- * OBSERVED CONTRACT AT THIS HEAD (defect D-1 — PINNED, NOT REPAIRED)
- * ------------------------------------------------------------------
- *   * HTTP 500, body `Cannot read properties of null (reading 'id')`.
- *   * ONE organization row is COMMITTED (the INSERT is never rolled back).
- *   * ZERO administrators: the first-administrator INSERT never runs.
- *   * ZERO subscriptions: the handler throws before the Free-plan lookup.
- *   * The partial state is permanent and name-squatting: a retry of the same
- *     organization name answers 409 "Organization name already exists" and the
- *     orphan cannot be removed through any V1 route (direct organization
- *     deletion is fail-closed, ATM-001-SEC-104 policy 5).
+ * CONTRACT AT THIS HEAD (defect D-1 REPAIRED — pins INVERTED by ATM-001-SEC-B3D)
+ * -----------------------------------------------------------------------------
+ * This suite was authored against the pinned D-1 defect and asserted the DEFECT:
+ * HTTP 500 with ONE ORPHAN organization COMMITTED and ZERO administrators. The
+ * integrated candidate carries the ATM-001-SEC-D1 repair (`BaseModel.create`
+ * RETURNs the inserted id, and the handler runs every write on ONE transaction),
+ * so those assertions are now FALSE and have been INVERTED — never deleted and
+ * never weakened. S2/S3/S4/S5/S7/S8 now assert the repaired behaviour, and S9's
+ * `todo` marker is removed so the intended contract is a strict assertion.
  *
- * The INTENDED contract (201 + exactly one organization + one administrator with
- * role='admin' and is_organization_admin=true + one subscription, atomically) is
- * encoded as a `todo` test, so it is machine-checked, reported as unmet, and does
- * NOT fail the suite while D-1 is open. Repairing D-1 changes the shared
- * `BaseModel.create` write path for every caller and is therefore PROPOSED and
- * ESCALATED to the OWNER, not applied here — see the header of
- * src/routes/organization.routes.js.
+ * REPAIRED CONTRACT (asserted here, on row counts read back from the database):
+ *   * HTTP 201, with exactly ONE organization, ONE administrator
+ *     (role='admin', is_organization_admin=true) and ONE default Free
+ *     subscription.
+ *   * The onboarding is ATOMIC: no organization is ever left without its
+ *     administrator, and no partial state is visible from independent
+ *     connections.
+ *   * A retry of an already-onboarded name is refused 409 because the tenant
+ *     genuinely EXISTS (not because an orphan squats the name).
+ *
+ * NOTE (ATM-001-SEC-B3D condition 2): the brief enumerated S2-S4 as the failing
+ * pins. In fact S5, S7 and S8 also asserted the defect and would also have
+ * failed; all six are inverted here, and that under-enumeration is recorded as a
+ * finding rather than silently absorbed.
+ *
+ * STILL CARRIED AS A RELEASE BLOCKER: this suite has no failure-injection case
+ * proving that a mid-onboarding failure rolls back. That is the same missing
+ * detector class as condition 4 (resend mutation M8). It is NOT authored here.
  *
  * SECURITY BOUNDARY (asserted, not assumed)
  * -----------------------------------------
@@ -223,7 +233,7 @@ describe('ATM-001-SEC-104-R3 organization signup: live disposable-PostgreSQL evi
         'a real free plan exists, so "0 subscriptions" cannot be explained by a missing plan');
     });
 
-    it('S2. anonymous signup answers HTTP 500 and persists ONE ORPHAN organization with ZERO users and ZERO subscriptions (D-1 pinned)', async (t) => {
+    it('S2. anonymous signup answers HTTP 201 and persists exactly ONE organization, ONE administrator and ONE subscription (D-1 repaired; pin inverted)', async (t) => {
       const before = await counts('S2');
       assert.deepStrictEqual(before, { organizations: 0, users: 0, subscriptions: 0 },
         'no fixture may exist before the attempt');
@@ -231,147 +241,173 @@ describe('ATM-001-SEC-104-R3 organization signup: live disposable-PostgreSQL evi
       const res = await anonymousSignup(signupBody('S2'));
 
       // --- the HTTP result ------------------------------------------------
-      assert.strictEqual(res.status, 500,
-        'the observed result at this head is a server error, not a 201');
-      assert.strictEqual(res.json.success, false);
-      assert.match(res.json.message, /Cannot read properties of null \(reading 'id'\)/,
-        'the failure is defect D-1 surfacing at organization.id');
+      assert.strictEqual(res.status, 201,
+        'the ATM-001-SEC-D1 repair makes the approved self-service onboarding succeed');
+      assert.strictEqual(res.json.success, true);
+      assert.doesNotMatch(res.text, /Cannot read properties of null/,
+        'the D-1 null-id failure must no longer surface at organization.id');
 
       // --- the DATABASE EFFECT, not the status code ------------------------
       const after = await counts('S2');
-      assert.strictEqual(after.organizations, 1,
-        'database effect: exactly ONE organization row was committed');
-      assert.strictEqual(after.users, 0,
-        'database effect: ZERO administrators were created — the first-user INSERT never ran');
-      assert.strictEqual(after.subscriptions, 0,
-        'database effect: ZERO subscriptions were created, even though a real free plan exists');
+      assert.strictEqual(after.organizations, 1, 'database effect: exactly ONE organization row');
+      assert.strictEqual(after.users, 1,
+        'database effect: exactly ONE administrator — the first-user INSERT now runs');
+      assert.strictEqual(after.subscriptions, 1,
+        'database effect: exactly ONE subscription from the real free plan');
 
-      // The orphan is real and belongs to this attempt, and nothing references it.
-      const orphan = await rows(
+      const created = await rows(
         'SELECT id FROM organizations WHERE organization_name = $1', [`${TAG} S2`]);
-      assert.strictEqual(orphan.length, 1, 'the committed organization row is findable by its name');
-      const orphanId = Number(orphan[0].id);
+      assert.strictEqual(created.length, 1, 'the organization row is findable by its name');
+      const orgId = Number(created[0].id);
 
       const dependants = await rows(
         `SELECT
            (SELECT count(*)::int FROM users WHERE organization_id = $1) AS users,
            (SELECT count(*)::int FROM organization_subscriptions WHERE organization_id = $1) AS subscriptions`,
-        [orphanId]);
+        [orgId]);
       assert.deepStrictEqual(
         { users: dependants[0].users, subscriptions: dependants[0].subscriptions },
-        { users: 0, subscriptions: 0 },
-        'ORPHAN-RECORD behaviour: the committed organization has no owner and no subscription');
+        { users: 1, subscriptions: 1 },
+        'ATOMICITY: the organization has exactly one owner and one subscription — no orphan record');
 
-      // The submitted username was never persisted ANYWHERE, which is the
-      // difference between "created then failed" and "never created".
-      const named = await rows('SELECT count(*)::int AS c FROM users WHERE username = $1',
-        [userPattern('S2').replace(/%$/, '')]);
-      assert.strictEqual(named[0].c, 0,
-        'the submitted administrator username exists nowhere in the database');
+      const admin = await rows(
+        'SELECT role, is_organization_admin FROM users WHERE organization_id = $1', [orgId]);
+      assert.deepStrictEqual(
+        { role: admin[0].role, is_organization_admin: admin[0].is_organization_admin },
+        { role: 'admin', is_organization_admin: true },
+        'the first user is the tenant administrator');
 
-      t.diagnostic(`D-1 observed: HTTP ${res.status}; committed organizations=${after.organizations}, `
-        + `administrators=${after.users}, subscriptions=${after.subscriptions}; INTENDED: 201 with `
-        + 'organizations=1, administrators=1 (role=admin, is_organization_admin=true), subscriptions=1');
+      t.diagnostic(`D-1 repaired: HTTP ${res.status}; organizations=${after.organizations}, `
+        + `administrators=${after.users}, subscriptions=${after.subscriptions}`);
     });
 
-    it('S3. the failure is NOT transactional: the partial write is committed and visible from independent connections', async () => {
+    it('S3. the write IS transactional: a completed onboarding is complete and stable from independent connections', async () => {
       const res = await anonymousSignup(signupBody('S3'));
-      assert.strictEqual(res.status, 500);
+      assert.strictEqual(res.status, 201);
 
-      // Two reads on two freshly acquired pooled connections. If the INSERT were
-      // inside a rolled-back (or still-open) transaction, neither could see it.
+      // Two reads on two freshly acquired pooled connections. The retired D-1 pin
+      // asserted that a partial write survived the handler; the repaired contract
+      // asserts the inverse: only the COMPLETE onboarding is observable.
       const first = await counts('S3');
       const second = await counts('S3');
-      assert.strictEqual(first.organizations, 1, 'the organization INSERT committed');
-      assert.strictEqual(second.organizations, 1, 'the committed row is stable, not an in-flight write');
-      assert.strictEqual(first.users, 0, 'no administrator row was ever written');
-      assert.strictEqual(first.subscriptions, 0, 'no subscription row was ever written');
+      assert.deepStrictEqual(first, { organizations: 1, users: 1, subscriptions: 1 },
+        'the complete onboarding is visible from an independent connection');
+      assert.deepStrictEqual(second, first,
+        'the committed state is stable, not an in-flight write');
 
-      // A signup that throws after committing a write is non-atomic: there is no
-      // wrapping transaction to roll back, so the orphan survives the 500.
       assert.notStrictEqual(first.organizations, 0,
-        'transaction behaviour: the handler threw but the write was NOT rolled back');
+        'transaction behaviour: the organization is committed together with its administrator');
+
+      const orphans = await rows(
+        `SELECT count(*)::int AS c FROM organizations o
+          WHERE o.organization_name LIKE $1
+            AND NOT EXISTS (SELECT 1 FROM users u WHERE u.organization_id = o.id)`,
+        [orgPattern('S3')]);
+      assert.strictEqual(orphans[0].c, 0,
+        'no organization may be left without its administrator (the D-1 orphan is gone)');
     });
 
-    it('S4. ORPHAN-RECORD behaviour: a retry of the same name is refused 409 and the orphan blocks it permanently', async () => {
+    it('S4. a retry of an onboarded name is refused 409 because the tenant genuinely EXISTS, and nothing is duplicated', async () => {
       const body = signupBody('S4');
 
       const first = await anonymousSignup(body);
-      assert.strictEqual(first.status, 500, 'the first attempt fails with D-1 and commits an orphan');
-      assert.strictEqual((await counts('S4')).organizations, 1);
+      assert.strictEqual(first.status, 201,
+        'the first attempt onboards the tenant completely (the D-1 orphan pin is inverted)');
+      assert.deepStrictEqual(await counts('S4'),
+        { organizations: 1, users: 1, subscriptions: 1 });
 
       const retry = await anonymousSignup(body);
       assert.strictEqual(retry.status, 409,
-        'the orphaned name is now taken, so the legitimate retry is refused');
+        'the name is now taken by a REAL, fully onboarded tenant');
       assert.strictEqual(retry.json.message, 'Organization name already exists');
-      assert.strictEqual((await counts('S4')).organizations, 1,
-        'database effect: the refused retry persisted nothing (no second orphan)');
-      assert.strictEqual((await counts('S4')).users, 0,
-        'database effect: still zero administrators after the retry');
+      assert.deepStrictEqual(await counts('S4'),
+        { organizations: 1, users: 1, subscriptions: 1 },
+        'database effect: the refused retry persisted nothing and duplicated nothing');
     });
 
-    it('S5. the partial state is systematic: a second, distinct name reproduces it', async () => {
+    it('S5. two distinct names both onboard completely: the complete state is systematic', async () => {
       const first = await anonymousSignup(signupBody('S5a'));
       const second = await anonymousSignup(signupBody('S5b'));
 
-      assert.strictEqual(first.status, 500);
-      assert.strictEqual(second.status, 500);
-      assert.strictEqual((await counts('S5a')).organizations, 1);
-      assert.strictEqual((await counts('S5b')).organizations, 1);
-      assert.strictEqual((await counts('S5')).users, 0,
-        'neither attempt created an administrator');
-      assert.strictEqual((await counts('S5')).subscriptions, 0,
-        'neither attempt created a subscription');
+      assert.strictEqual(first.status, 201);
+      assert.strictEqual(second.status, 201);
+      assert.deepStrictEqual(await counts('S5a'),
+        { organizations: 1, users: 1, subscriptions: 1 });
+      assert.deepStrictEqual(await counts('S5b'),
+        { organizations: 1, users: 1, subscriptions: 1 });
+      assert.strictEqual((await counts('S5')).users, 2,
+        'each attempt created its own administrator');
+      assert.strictEqual((await counts('S5')).subscriptions, 2,
+        'each attempt created its own subscription');
     });
 
     it('S6. the endpoint cannot join or mutate an existing tenant', async () => {
       await anonymousSignup(signupBody('S6'));
-      const orphanId = Number((await rows(
+      const orgId = Number((await rows(
         'SELECT id FROM organizations WHERE organization_name = $1', [`${TAG} S6`]))[0].id);
       assert.deepStrictEqual(await counts('S6'),
-        { organizations: 1, users: 0, subscriptions: 0 });
+        { organizations: 1, users: 1, subscriptions: 1 });
 
       // Re-using the EXISTING organization name with a NEW username must not
-      // attach a user to the orphan (the pre-write uniqueness check refuses it).
+      // attach a user to that tenant (the pre-write uniqueness check refuses it).
       const joinAttempt = await anonymousSignup(signupBody('S6', {
         username: `${TAG}-s6-second`.toLowerCase(),
         email: `${TAG}-s6-second@test.local`.toLowerCase()
       }));
       assert.strictEqual(joinAttempt.status, 409,
         'an existing organization name cannot be joined through signup');
-      assert.strictEqual((await counts('S6')).users, 0,
-        'database effect: no user was attached to the existing organization');
+      assert.deepStrictEqual(await counts('S6'),
+        { organizations: 1, users: 1, subscriptions: 1 },
+        'database effect: no second user was attached to the existing organization');
 
       const subs = await rows(
-        'SELECT count(*)::int AS c FROM organization_subscriptions WHERE organization_id = $1', [orphanId]);
-      assert.strictEqual(subs[0].c, 0, 'database effect: no subscription was attached');
+        'SELECT count(*)::int AS c FROM organization_subscriptions WHERE organization_id = $1', [orgId]);
+      assert.strictEqual(subs[0].c, 1, 'database effect: no additional subscription was attached');
     });
 
-    it('S7. security boundary: the anonymous endpoint creates NO principal and discloses no credential material', async () => {
+    it('S7. security boundary: the anonymous endpoint creates EXACTLY the designed first administrator and discloses no credential material', async () => {
       const password = 'NotARealPassword-104!';
       const res = await anonymousSignup(signupBody('S7', { password }));
 
-      assert.strictEqual(res.status, 500);
+      assert.strictEqual(res.status, 201,
+        'the approved self-service onboarding succeeds after the D-1 repair');
 
-      // No principal of any kind — so there is nothing to privilege-escalate.
+      // EXACTLY the designed principal: one administrator, and only for the NEW
+      // tenant. The retired D-1 pin asserted "no principal at all", which was an
+      // artefact of the defect rather than a security property of the endpoint.
       const principals = await rows(
         'SELECT count(*)::int AS c FROM users WHERE username LIKE $1', [userPattern('S7')]);
-      assert.strictEqual(principals[0].c, 0,
-        'signup created no user, so it created no administrator and no is_organization_admin principal');
+      assert.strictEqual(principals[0].c, 1, 'exactly one principal is created');
       const admins = await rows(
         `SELECT count(*)::int AS c FROM users
-          WHERE username LIKE $1 AND (role = 'admin' OR is_organization_admin = true)`, [userPattern('S7')]);
-      assert.strictEqual(admins[0].c, 0, 'no privileged principal was minted');
+          WHERE username LIKE $1 AND role = 'admin' AND is_organization_admin = true`, [userPattern('S7')]);
+      assert.strictEqual(admins[0].c, 1, 'that principal is the tenant administrator of the NEW tenant');
 
-      // Non-disclosure: assert against the WHOLE response body, never a
-      // hand-picked field list. No token, no cookie, no hash, no SQL, no path.
-      assert.ok(!/token/i.test(res.text), 'no token may be disclosed');
-      assert.ok(!/set-cookie/i.test(JSON.stringify(res.headers)), 'no session cookie may be set');
+      const owner = await rows(
+        'SELECT organization_id FROM users WHERE username LIKE $1', [userPattern('S7')]);
+      const ownerOrg = await rows(
+        'SELECT organization_name FROM organizations WHERE id = $1', [Number(owner[0].organization_id)]);
+      assert.strictEqual(ownerOrg[0].organization_name, `${TAG} S7`,
+        'the principal belongs to the newly created tenant and confers nothing in any other');
+
+      // The designed auto-login token and its cookie ARE approved product
+      // behaviour and are therefore NOT asserted absent. Everything that would
+      // leak a SECRET still is.
       assert.ok(!/\$2[aby]\$\d\d\$/.test(res.text), 'no bcrypt hash material may be disclosed');
       assert.ok(!new RegExp(password).test(res.text), 'the submitted password must never echo back');
       assert.ok(!/password_hash|insertId|BaseModel|SELECT |INSERT /i.test(res.text),
         'no internal identifier, SQL or schema detail may be disclosed');
       assert.ok(!/\bat\s+\S+\s+\(.*:\d+:\d+\)/.test(res.text), 'no stack frame may be disclosed');
+
+      // The JWT payload is a hand-picked allow-list; pin its exact shape so a
+      // future change cannot stuff the row (and therefore password_hash) into it.
+      const token = res.json && res.json.data && res.json.data.token;
+      assert.strictEqual(typeof token, 'string', 'the designed auto-login token is present');
+      const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'));
+      assert.deepStrictEqual(Object.keys(payload).sort(),
+        ['exp', 'iat', 'isOrgAdmin', 'organizationId', 'role', 'userId'],
+        'the JWT payload is the hand-picked allow-list, never a full user row');
+      assert.ok(!('password_hash' in payload), 'the JWT payload must not carry password_hash');
     });
 
     it('S8. an AUTHENTICATED caller gains no additional reach: no confused deputy, no write into its own tenant', async () => {
@@ -400,27 +436,25 @@ describe('ATM-001-SEC-104-R3 organization signup: live disposable-PostgreSQL evi
         body: signupBody('S8'), bearer
       });
 
-      // The endpoint ignores the ambient identity: it does not mint a user into
-      // the caller's tenant, and it changes nothing in it.
-      assert.strictEqual(res.status, 500,
-        'an authenticated caller gets the same D-1 result; the endpoint confers nothing');
-      assert.strictEqual((await counts('S8')).users, 0,
-        'no user was created for the authenticated attempt');
-      assert.strictEqual((await counts('S8')).organizations, 1,
-        'the anonymous write path is unchanged by the presence of a bearer token');
+      // The endpoint ignores the ambient identity: it creates a NEW tenant rather
+      // than minting the caller's. The retired D-1 pin asserted a 500; the
+      // repaired contract asserts the same PERMISSION outcome with a real write.
+      assert.strictEqual(res.status, 201,
+        'an authenticated caller gets the same NEW-tenant result');
+      assert.deepStrictEqual(await counts('S8'),
+        { organizations: 1, users: 1, subscriptions: 1 });
       assert.deepStrictEqual(await shape(), before,
         'database effect: the authenticated caller\u2019s own tenant is unchanged in shape');
+
+      const created = await rows(
+        'SELECT organization_id FROM users WHERE username LIKE $1', [userPattern('S8')]);
+      assert.notStrictEqual(Number(created[0].organization_id), callerOrg,
+        'the created administrator belongs to the NEW tenant, never to the caller\u2019s');
     });
 
-    // ------------------------------------------------------------------
-    // The INTENDED contract, machine-checked and reported as unmet while D-1 is
-    // open. A `todo` failure does not fail the suite (verified on this runtime);
-    // it is reported in the summary so the gap cannot be forgotten. When D-1 is
-    // fixed this test starts passing and the `todo` marker must be removed
-    // together with the D-1 pins above.
-    // ------------------------------------------------------------------
+    // The D-1 `todo` marker is REMOVED (ATM-001-SEC-B3D condition 2): the repair
+    // is present in this tree, so the intended contract is now a strict assertion.
     it('S9. INTENDED contract: 201 with exactly one organization, one administrator and one subscription, atomically',
-      { todo: 'D-1 open: BaseModel.create never populates insertId, so signup commits an orphan and answers HTTP 500' },
       async () => {
         const res = await anonymousSignup(signupBody('S9'));
 
