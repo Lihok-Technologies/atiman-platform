@@ -59,28 +59,33 @@ const isInvitationId = (value) => {
  * the administration view needs them. The listing is deliberately NOT a
  * delivery channel, and that route is separately restricted to `org.user_admin`.
  *
- * ATM-001-SEC-93-D (c2): WHAT THIS DOES AND DOES NOT RESTORE. The remaining
- * delivery paths are `POST /api/invitations` (create) and
- * `POST /api/invitations/:id/resend`, which are the only responses that carry a
- * token. Under the UNREPAIRED pre-existing defect D-1 (`BaseModel.create` never
- * reads the INSERT's generated id, so `Invitation.createInvitation` throws at
- * `result.id`), BOTH of those responses are HTTP 500 with no token and no
- * delivered email:
+ * ATM-001-SEC-93-D (c2), RECONCILED WITH ATM-001-SEC-D1. The token-bearing
+ * responses are `POST /api/invitations` (create) and
+ * `POST /api/invitations/:id/resend`; this listing is deliberately not one of
+ * them and stays token-free.
  *
- *   - create commits the invitation row, then throws at
- *     `Invitation.createInvitation` BEFORE `emailService.sendInvitation` is
- *     called, so no token is returned and no email is sent;
- *   - resend commits the replacement row, then throws at the same call; the
- *     resend handler never calls `emailService.sendInvitation` at all, so it
- *     would deliver nothing even on success.
+ * At the ATM-001-SEC-93-D head BOTH of those responses were dead: under the
+ * then-unrepaired defect D-1 (`BaseModel.create` never read the INSERT's
+ * generated id) `Invitation.createInvitation` threw at `result.id` AFTER its
+ * INSERT had committed, so create answered HTTP 500 with no token and no email,
+ * and resend answered 500 after committing a replacement while leaving the
+ * original pending.
  *
- * The listing is token-free, so there is currently NO path by which an
- * administrator can obtain a link for an EXISTING pending invitation. This
- * correction does NOT repair D-1 and does NOT restore that delivery path; the
- * token-free listing is a credential-disclosure control, not a delivery
- * channel, and it must not become one again to work around D-1. See condition
- * c2 / section G of tests/invitation-lifecycle-residuals.test.js for the
- * recorded escalation.
+ * In the ATM-001-SEC-B3D integrated candidate D-1 IS repaired
+ * (`BaseModel.create` issues `RETURNING id`; see src/models/base.model.js):
+ *
+ *   - create answers 201, calls `emailService.sendInvitation`, and returns the
+ *     invitation including its `token` and `invitationLink`;
+ *   - resend answers 200 and returns the REPLACEMENT invitation including its
+ *     `token`, so an administrator CAN now obtain a link for an existing
+ *     pending invitation. The replaced row is retired in the same transaction,
+ *     so exactly one pending token remains. Resend still sends no email of its
+ *     own; that residual is unchanged by the D-1 repair.
+ *
+ * The listing therefore stays token-free as a credential-disclosure control, and
+ * deliberately does NOT become a delivery channel now that a working one exists.
+ * The former condition-c2 delivery escalation (section G) is RESOLVED by the D-1
+ * repair, not by re-exposing the listing token.
  */
 const toInvitationListingView = (invitation) => {
   // eslint-disable-next-line no-unused-vars
@@ -221,18 +226,17 @@ class InvitationController {
         });
       }
 
-      // Create invitation
+      // Create invitation.
       //
-      // ATM-001-SEC-93-D (c2). Under the UNREPAIRED defect D-1 this call throws
-      // AFTER the INSERT has committed, because `BaseModel.create` never reads
-      // the generated id and `createInvitation` dereferences `result.id`. The
-      // row is therefore persisted with a live token while the response is a
-      // 500 that carries no token, and the throw happens BEFORE the
-      // `emailService.sendInvitation` call below — so no email is sent either.
-      // This handler is NOT repaired here: the instance-only RETURNING fix would
-      // leave the public accept path on `User.create` (BaseModel.create on
-      // `users`) still failing, so it would not close the gap and must not be
-      // claimed to. Recorded, not repaired.
+      // ATM-001-SEC-93-D (c2), RECONCILED WITH ATM-001-SEC-D1. At the SEC-93-D
+      // head this call threw AFTER the INSERT had committed, because
+      // `BaseModel.create` never read the generated id and `createInvitation`
+      // dereferences `result.id`: the row was persisted with a live token while
+      // the response was a 500 carrying no token, and no email was sent. Defect
+      // D-1 is repaired in the ATM-001-SEC-B3D integrated candidate
+      // (`BaseModel.create` issues `RETURNING id`), so this call now returns the
+      // committed row and the `emailService.sendInvitation` call below is
+      // reached.
       const invitation = await Invitation.createInvitation({
         organization_id: organizationId,
         email: email.toLowerCase(),

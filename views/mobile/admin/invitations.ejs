@@ -177,17 +177,15 @@ function renderInvitations(invitations) {
   // handleInvite and resendInvitation below). An existing pending row has no
   // readable credential, so the row offers Resend and Cancel only.
   //
-  // ATM-001-SEC-93-D (c2) — THE CLAIM THIS COMMENT USED TO MAKE WAS WRONG. It
-  // said a token "is read where it is DELIVERED — the create and resend
-  // responses", which implied a working replacement delivery path. Under the
-  // UNREPAIRED defect D-1 both of those responses are HTTP 500 carrying no
-  // token (`Invitation.createInvitation` throws at `result.id`), and resend
-  // sends no email at all. So there is currently NO way for an administrator to
-  // deliver a link for an EXISTING pending invitation: the listing is
-  // token-free by design and the two token-bearing responses are dead. That gap
-  // is recorded and escalated (condition c2 / section G of
-  // tests/invitation-lifecycle-residuals.test.js), NOT worked around by
-  // re-exposing the listing token.
+  // ATM-001-SEC-93-D (c2), RECONCILED WITH ATM-001-SEC-D1. The earlier (c2)
+  // correction recorded that BOTH token-bearing responses were dead under the
+  // then-unrepaired defect D-1 (`Invitation.createInvitation` threw at
+  // `result.id`), leaving no way to deliver a link for an existing pending
+  // invitation. Defect D-1 IS repaired in the ATM-001-SEC-B3D integrated
+  // candidate: create and resend now return the invitation WITH its token, so a
+  // link IS obtainable from those responses. The listing stays token-free by
+  // design — it is a credential-disclosure control, not a delivery channel —
+  // and deliberately does not become one now that a working path exists.
   container.innerHTML = invitations.map(inv => {
     const statusStyle = statusColors[inv.status] || statusColors['pending'];
     const isPending = inv.status === 'pending';

@@ -898,48 +898,48 @@ describe('MISSION 3 ATM-001-SEC-93 invitation security residuals A-D', { skip: D
         'the link affordance itself is preserved (retained for the post-D-1 state)');
     });
 
-    it('C6. (c2) the corrected claim: create/resend are DEAD under D-1 and no link can be delivered today', async () => {
-      // NEGATIVE CONTROL for condition c2. On 203b36a the code comment claimed a
-      // token "is read where it is DELIVERED — the create and resend responses",
-      // i.e. a working replacement path. It is not working: D-1 makes BOTH
-      // responses 500 with no token. This test fails on that candidate because
-      // the corrected wording is absent, and it re-asserts the DATABASE EFFECT
-      // that makes the old claim false.
+    it('C6. (c2) the corrected claim: the D-1 repair RESTORES the create/resend delivery path', async () => {
+      // INVERTED (ATM-001-SEC-B3D condition 2). This test previously pinned the
+      // OPPOSITE claim — that create/resend were DEAD under D-1 and no link
+      // could be delivered. Defect D-1 is repaired in this tree, so that claim is
+      // now false in both directions: it asserted a 500 that no longer happens
+      // and a source phrase that has been corrected.
       const view = fs.readFileSync(
         path.join(REPO_ROOT, 'views', 'mobile', 'admin', 'invitations.ejs'), 'utf8');
       const controller = controllerSource();
       const flatController = controller.replace(/^\s*[*/]+/gm, ' ').replace(/\s+/g, ' ');
-      assert.match(view, /NO way for an administrator to[\s\S]{0,20}deliver a link for an EXISTING pending invitation/,
-        'the view comment must state that no link can be delivered for an existing pending invitation');
-      assert.match(flatController, /does NOT repair D-1 and does NOT restore that delivery path/,
-        'the controller must state what this correction does NOT restore');
-      assert.match(flatController, /BEFORE `emailService\.sendInvitation` is called/,
-        'the controller must record that create throws BEFORE the email is sent');
 
-      // The DATABASE EFFECT behind the corrected claim: create persists a token
-      // yet delivers nothing.
+      // The listing must STILL be token-free: the restored delivery path must not
+      // have been bought by re-exposing the credential in the administration list.
+      assert.ok(!/\$\{inv\.token\}/.test(view),
+        'the listing token must NOT be re-exposed now that a delivery path exists');
+      assert.match(flatController, /listing therefore stays token-free[\s\S]{0,80}credential-disclosure control/,
+        'the controller must keep the token-free listing as a control, not a workaround');
+      assert.match(flatController, /create answers 201[\s\S]{0,220}resend answers 200/,
+        'the controller must record the RESTORED delivery path');
+
+      // The DELIVERY EFFECT behind the corrected claim: create returns a live
+      // token to the caller and the invitation email is actually sent.
       const email = `sec93-c6-${tag()}@test.local`;
       delivered = [];
       const create = await withSeatMaskNeutralized(() =>
         call('POST', '/api/invitations', { as: 'ADMIN_A', body: { email, role: 'operator' } }));
-      assert.strictEqual(create.status, 500, 'D-1: create cannot serialise');
+      assert.strictEqual(create.status, 201, 'D-1 repaired: create serialises');
       const rows = await withConn((conn) => conn.query(
         `SELECT id, token, status FROM invitations WHERE email = ?`, [email]));
       assert.strictEqual(rows.length, 1, 'the row IS persisted');
       assert.match(String(rows[0].token), HEX64, 'with a live token');
-      assert.ok(!create.text.includes(String(rows[0].token)),
-        'which the caller NEVER receives — the create response carries no token');
-      assert.strictEqual(delivered.length, 0,
-        'and no email is sent, because the throw precedes sendInvitation');
-      // An existing pending invitation therefore has no obtainable link: the
-      // listing is token-free (C5) and neither token-bearing response works.
+      assert.ok(create.text.includes(String(rows[0].token)),
+        'which the caller DOES receive now that the write is observable');
+      assert.strictEqual(delivered.length, 1,
+        'and the invitation email IS sent, because the throw no longer precedes sendInvitation');
     });
   });
 
   // =====================================================================
-  // D. D-1 / D-2 sequencing dependencies, reported not repaired
+  // D. D-1 (REPAIRED in this candidate) / D-2 (STILL UNREPAIRED) sequencing
   // =====================================================================
-  describe('D. D-1 / D-2 sequencing dependencies (reported, not repaired)', () => {
+  describe('D. D-1 (repaired) / D-2 (still unrepaired) sequencing dependencies', () => {
     it('D1. D-2 is reproduced: canAddUser() is false for a tenant with spare seats', async () => {
       const unpatched = await REAL_CAN_ADD_USER.call(subscriptionService, ORG_A);
       assert.strictEqual(unpatched, false,
@@ -964,62 +964,66 @@ describe('MISSION 3 ATM-001-SEC-93 invitation security residuals A-D', { skip: D
       'the masked path persists nothing');
     });
 
-    it('D3. D-1 is reproduced: a create commits the invitation and then answers 500', async () => {
+    it('D3. D-1 is REPAIRED: a create persists the invitation AND delivers a live token', async () => {
       const email = `sec93-d1-${tag()}@test.local`;
       const response = await withSeatMaskNeutralized(() =>
         call('POST', '/api/invitations', { as: 'ADMIN_A', body: { email, role: 'operator' } }));
-      assert.strictEqual(response.status, 500,
-        'D-1: BaseModel.create returns null, so Invitation.createInvitation throws at result.id');
+      assert.strictEqual(response.status, 201,
+        'the ATM-001-SEC-D1 repair makes create() observable, so it answers 201');
       const rows = await withConn((conn) => conn.query(
         `SELECT id, token, status, role FROM invitations WHERE email = ?`, [email]));
-      assert.strictEqual(rows.length, 1,
-        'REPORTED: the invitation IS persisted despite the error response, with a live token');
+      assert.strictEqual(rows.length, 1, 'exactly one invitation row is persisted');
       assert.match(String(rows[0].token), HEX64);
       assert.strictEqual(rows[0].status, 'pending');
-      assert.ok(!HEX64.test(response.text),
-        'and the token was never delivered — the caller cannot learn the credential it created');
+      assert.ok(response.text.includes(String(rows[0].token)),
+        'the created credential is DELIVERED — the path D-1 removed is restored');
     });
 
-    it('D4. D-1 is reproduced: a resend commits a REPLACEMENT and leaves the ORIGINAL live', async () => {
+    it('D4. D-1 is REPAIRED: a resend retires the ORIGINAL, leaving exactly ONE live token', async () => {
       const inv = await makeInvitation('D4_RESEND', { organizationId: ORG_A, role: 'operator', invitedBy: U.ADMIN_A });
       const response = await resendAs('ADMIN_A', inv.id);
-      assert.strictEqual(response.status, 500, 'D-1 throws after the replacement has committed');
+      assert.strictEqual(response.status, 200,
+        'the issue-then-retire pair now commits in one transaction and the request succeeds');
 
       const rows = await withConn((conn) => conn.query(
         `SELECT id, status, token FROM invitations WHERE email = ? ORDER BY id`, [inv.email]));
-      assert.strictEqual(rows.length, 2,
-        'REPORTED: the replacement is persisted even though the request failed');
+      assert.strictEqual(rows.length, 2, 'a replacement row exists');
       const live = rows.filter((r) => r.status === 'pending');
-      assert.strictEqual(live.length, 2,
-        'REPORTED: Invitation.cancel is never reached, so BOTH rows stay pending — two live tokens '
-        + 'for one invitee. Their role is identical, so this adds no privilege; it is a lifecycle '
-        + 'integrity defect caused by D-1 and it is escalated, not repaired here.');
-      for (const row of live) assert.match(String(row.token), HEX64);
+      assert.strictEqual(live.length, 1,
+        'ATOMICITY: exactly ONE pending token remains — the replacement. The original is retired in the '
+        + 'same transaction, so the two-live-tokens lifecycle defect D-1 caused is gone.');
+      assert.match(String(live[0].token), HEX64);
+      const original = rows.find((r) => Number(r.id) === Number(inv.id));
+      assert.strictEqual(original.status, 'cancelled',
+        'the invitation being replaced is retired, never left live');
     });
 
-    it('D5. single-use acceptance does NOT depend on D-1 (the one dependency this correction removed)', async () => {
-      // The accept handler still cannot serialise under D-1, but the invitation
-      // must be retired by the claim regardless. This is the assertion that made
-      // residual B a security defect: on 24b3f48 the invitation stayed pending.
+    it('D5. single-use acceptance is INDEPENDENT of D-1, and the repair now records attribution', async () => {
+      // The accept path must retire the invitation through the ONE claim whether
+      // or not D-1 is repaired. This is the assertion that made residual B a
+      // security defect: on 24b3f48 the invitation stayed pending.
       const inv = await makeInvitation('D5_INDEP', { organizationId: ORG_A, role: 'operator', invitedBy: U.ADMIN_A });
       const username = `sec93-acc-d5-${tag()}`;
       const response = await withSeatMaskNeutralized(() => accept(acceptBody(inv.token, 'd5', { username })));
-      assert.strictEqual(response.status, 500,
-        'D-1 is still in force: the account row commits and the handler throws at user.id');
-      assert.strictEqual((await usersForUsername(username)).length, 1, 'the account row IS committed');
+      assert.strictEqual(response.status, 200,
+        'the atomic onboarding now commits and serialises (D-1 repaired)');
+      assert.strictEqual((await usersForUsername(username)).length, 1, 'exactly one account row is committed');
 
       const row = await invitationRow(inv.id);
       assert.strictEqual(row.status, 'accepted',
-        'THE PROPERTY: the invitation is retired by the atomic claim, so D-1 no longer re-opens the token');
+        'THE PROPERTY: the invitation is retired by the single claim, so the token cannot be re-used');
       assert.notStrictEqual(row.accepted_at, null);
-      assert.strictEqual(row.accepted_by_user_id, null,
-        'REPORTED RESIDUAL: attribution stays NULL while D-1 prevents reading the created account id');
+      assert.notStrictEqual(row.accepted_by_user_id, null,
+        'the repair also records attribution, which D-1 previously left NULL');
     });
 
-    it('D6. the D-1/D-2 repairs were NOT attempted (shared write-path semantics untouched)', () => {
+    it('D6. D-1 is REPAIRED; D-2 is NOT (the seat helper is untouched and remains a release blocker)', () => {
       const base = fs.readFileSync(path.join(REPO_ROOT, 'src', 'models', 'base.model.js'), 'utf8');
-      assert.match(base, /const insertId = \(result && result\.insertId\) \|\| \(Array\.isArray\(result\) && result\.insertId\);/,
-        'D-1: BaseModel.create is unchanged');
+      assert.match(base, /RETURNING id/,
+        'D-1: BaseModel.create now issues RETURNING id (ATM-001-SEC-D1 repair)');
+      assert.doesNotMatch(base,
+        /const insertId = \(result && result\.insertId\) \|\| \(Array\.isArray\(result\) && result\.insertId\);/,
+        'D-1: the insertId read that returned null for every caller is gone');
       const subs = fs.readFileSync(path.join(REPO_ROOT, 'src', 'services', 'subscription.service.js'), 'utf8');
       assert.match(subs, /SELECT COUNT\(\*\) as activeBillableUsers/,
         'D-2: the seat helper is unchanged');
@@ -1128,34 +1132,36 @@ describe('MISSION 3 ATM-001-SEC-93 invitation security residuals A-D', { skip: D
         'role-issuance authority belongs to re-issue (resend), which DOES grant the stored role');
     });
 
-    it('G3. (c3/E3-E4) OPEN OWNER escalation, with the accept-path acknowledgement it MUST carry', () => {
-      // E3/E4 are scope questions for the OWNER. Any E3 acceptance must
-      // acknowledge: an invitation-only D-1 repair (for example giving
-      // `Invitation.createInvitation` a RETURNING id) does NOT fix the accept
-      // path. `POST /api/invitations/accept` creates the account through
-      // `User.create` -> `BaseModel.create` on the `users` table, which still
-      // never reads the generated id, so acceptance still throws and still
-      // returns 500 after the account row commits. The invitation-side repair is
-      // NOT implemented here and is NOT claimed to close anything.
+    it('G3. (c3/E3-E4) E3/E4 remain OWNER scope questions; the former D-1 acknowledgement is historical', () => {
+      // E3/E4 are scope questions for the OWNER and are NOT decided here. The
+      // former acknowledgement this test required — that an invitation-only D-1
+      // repair would NOT fix the accept path — is INVERTED (ATM-001-SEC-B3D
+      // condition 2): the repair integrated here is NOT invitation-only.
+      // `BaseModel.create` is repaired at the CLASS level, so the accept path's
+      // `User.create` is repaired by the same change, and the acknowledgement
+      // that accept would still fail is no longer true.
       const base = fs.readFileSync(path.join(REPO_ROOT, 'src', 'models', 'base.model.js'), 'utf8');
-      assert.match(base, /INSERT INTO \$\{this\.tableName\}/,
-        'the shared write path is unchanged: BaseModel.create still has no RETURNING');
+      assert.match(base, /RETURNING id/,
+        'the shared write path IS repaired: BaseModel.create uses RETURNING id');
       const controller = controllerSource();
-      assert.match(controller, /throw happens BEFORE the[\s\S]{0,120}emailService\.sendInvitation/,
-        'create still throws at Invitation.createInvitation before delivery');
       assert.ok(controller.includes('const user = await User.create({'),
-        'accept still goes through User.create, so an invitation-only repair cannot fix the accept path');
+        'accept still goes through User.create, so the repair must be class-level — and it is');
+      assert.match(controller, /DEFECT D-1 \(REPAIRED/,
+        'the accept handler must record the repair rather than the open defect');
     });
 
-    it('G4. (c2) OPEN OWNER escalation: no delivery path for an EXISTING pending invitation', () => {
-      // The gap condition (c2) describes is recorded as an escalation, NOT
-      // repaired and NOT worked around by re-exposing the listing token.
-      assert.match(controllerSource(),
-        /no path by which an\s+\*?\s*administrator can obtain a link for an EXISTING pending invitation/i,
-        'the delivery gap must be recorded in the controller');
+    it('G4. (c2) the delivery escalation is RESOLVED by the D-1 repair, and the listing is still not the workaround', () => {
+      // INVERTED (ATM-001-SEC-B3D condition 2). The former escalation recorded
+      // that no path existed for an existing pending invitation. The D-1 repair
+      // restores the create/resend delivery path, so the escalation is resolved —
+      // and it was resolved by repairing the write path, NOT by re-exposing the
+      // listing token. That second half is the control and is still asserted.
+      const flat = controllerSource().replace(/^\s*[*/]+/gm, ' ').replace(/\s+/g, ' ');
+      assert.match(flat, /RESOLVED by the D-1 repair, not by re-exposing the listing token/,
+        'the controller must record that the delivery gap is RESOLVED by the D-1 repair');
       const view = fs.readFileSync(path.join(REPO_ROOT, 'views', 'mobile', 'admin', 'invitations.ejs'), 'utf8');
       assert.ok(!/\$\{inv\.token\}/.test(view),
-        'the listing token must NOT be re-exposed as a workaround for the dead delivery path');
+        'the listing token must NOT be re-exposed as a workaround for the delivery path');
     });
   });
 
@@ -1183,8 +1189,8 @@ describe('MISSION 3 ATM-001-SEC-93 invitation security residuals A-D', { skip: D
           'C2 (a row containing password_hash is not echoed), C1 (no credential path in listings)',
         'view no longer interpolating a listing token':
           'C5 (no ${inv.token} in the administration view)',
-        'corrected delivery claim (create/resend are dead under D-1)':
-          'C6 (the claim and the database effect it describes), G4 (recorded as an open escalation)'
+        'restored delivery-path claim (create/resend deliver after the D-1 repair)':
+          'C6 (the restored claim and the delivery effect it measures), G4 (the resolved escalation)'
       };
       assert.strictEqual(Object.keys(index).length, 9);
     });
