@@ -27,10 +27,12 @@ therefore executes **nothing** under `npm test`, and unless it is also registere
 | `Test inventory coverage` | `node scripts/assert-test-coverage.js` | no suite is unaccounted for; no registration is stale; the executed glob has not been narrowed; the contract parses |
 | `Dependency security audit` | `npm audit --omit=dev --audit-level=high` | no high or critical **production**-dependency advisory is present |
 | `Disposable PostgreSQL integration` | `npm run test:integration` | the sanctioned PostgreSQL acceptance suites pass against a disposable database |
+| `Independent execution oracle (unit)` | `node scripts/ci-execution-oracle.js --scope unit` | the verifier's printed set, its actually-started suite runners and the counts it prints all agree with expectations derived **outside** the verifier — see §4.3 |
 
 The first three live in `.github/workflows/ci-verification.yml`; the fourth is the pre-existing
 `.github/workflows/db-integration.yml`, unchanged except that its actions are now pinned to full
-commit SHAs.
+commit SHAs. The fifth (ATM-001-SEC-103) is added to `.github/workflows/ci-verification.yml` by that
+change.
 
 ## 3. Known blocker — `Dependency security audit` is expected to FAIL
 
@@ -177,6 +179,75 @@ legacy suites, which are **not** reported as executed or passed).
   in §4.2 is what makes reliable. **Stated limit:** this catches unreachable definitions at runtime,
   but a suite that is unreachable only under some conditions may still execute in others.
 
+### 4.3 Independent execution oracle (ATM-001-SEC-103)
+
+**The problem.** Every control in §4.1 and §4.2 that runs inside `npm test` asserts the verifier's
+**own** behaviour: the verifier selects the suites, executes them, counts them and prints the result.
+Eight independent adversarial rounds defeated that arrangement by editing the verifier alone — a
+`.slice(0, 1)` on its targets, a selection conditional on `--json`/`--quiet` (argv the tests pass and
+CI does not), a selection keyed on a **test-only** marker the tests themselves introduce
+(`ATM001_SEC_SEL_REAL_REPO_DEPTH`), a name-targeted exclusion, and printed identities that never ran.
+The gate was its own oracle, so any control written against it was inside the same trust boundary.
+
+**The oracle.** `scripts/ci-execution-oracle.js` (with `scripts/lib/ci-oracle-probe.cjs`) is a separate
+required job that asserts the verifier from **outside** it:
+
+1. **Expectations come from the repository, not the verifier.** The expected unit class is derived
+   from the filesystem (`tests/*.test.js`), from the integration ledger
+   (`SANCTIONED_POSTGRES_INTEGRATION_SUITES` in `scripts/run-integration-tests.js`, parsed by the
+   oracle's own scanner) and from a hardcoded, documented legacy list. `analyse()`,
+   `classifySuite()` and `discoverSuites()` are never imported or called. The exact commands under
+   test are read **verbatim from the workflow files**, so deleting or rewriting a CI step fails
+   check `C0`.
+2. **Execution is measured, not read.** The oracle runs every expected unit suite **itself**, with the
+   TAP reporter writing into a directory it owns, and reads the Node runner's own `# pass` / `# fail`
+   counters (`C3`). It then runs the exact CI argv and compares the counts the verifier prints with
+   that measurement (`C8`).
+3. **The verifier's own process tree is observed.** A `--require` preload
+   (`scripts/lib/ci-oracle-probe.cjs`) appends to an append-only journal, in a per-run directory the
+   verifier never writes to, which suite runners the verifier **started** and which of them
+   **terminated** (`C7`, `C7b`). Only the outer command's direct children count as evidence, so the
+   nested self-probes the focused suites deliberately spawn are excluded by construction.
+4. **The CI environment is reproduced**: `CI=true`, `GITHUB_ACTIONS=true`, `GITHUB_WORKSPACE=<repo>`,
+   no database gate, and **no test-only marker** — then the same command is re-run with every
+   test-only marker set to assert the selection is unchanged (`C10`), and once more with **no
+   observation channel** at all (`C11`).
+
+Checks: `C0` commands present · `C1` inventory partition · `C2` inventory command agrees · `C3` the
+oracle's own execution of the expected class · `C5` exit code · `C6` printed set · `C7`/`C7b` started
+and reaped runners · `C8` printed counts vs measured counts · `C9` legacy-exempt suites never printed
+or started · `C10` marker invariance · `C11` unchanneled selection · `C12` printed set == started set ·
+`C13`/`C14` `npm test` total and per-suite starts · `C15a`–`C15c` the integration arg.
+
+**Why a preload and not a reporter.** A custom `--test-reporter` *replaces* the runner's normal output
+and therefore perturbs what is observed: measured on this repository, injecting one made 93 of 104
+`database-test-guard` tests fail, because that suite asserts on the output of the nested
+`node --test` probes it spawns. The observer must not change the observed system, so the channel
+records only what the runtime gives every process (pid, ppid, argv, exit code). Measured: `npm test`
+under the preload is identical in outcome to `npm test` without it (237 pass, exit 0).
+
+**Scope and limits.**
+
+* `--scope unit` is the job wired into `ci-verification.yml`. It re-runs `npm test` and the unit
+  evidence command under observation, so it is a second, independent execution of the same commands.
+  Measured budget (Node 22.23.2): ~7 minutes; the job limit is 45 minutes and the oracle also applies
+  its own per-command timeout.
+* `--scope integration` asserts that the integration arg prints and starts exactly the 26 registered
+  suites (`C15a`, `C15b`). Its execution assertion (`C15c`) requires a reachable disposable database
+  and is **escalated, not weakened**, when none is present — the gate is then pointed at an
+  unreachable port so selection can be observed without any possibility of touching a database. It is
+  **not** wired into `db-integration.yml`: the serial evidence pass there is already estimated at ~15
+  minutes inside a 45-minute job, and adding a second full pass risks the job budget. Wiring it is a
+  separate decision.
+* **Residual limit.** The observation channel introduces two environment names of its own
+  (`ATM001_ORACLE_JOURNAL`, `ATM001_ORACLE_TOKEN`) plus a `NODE_OPTIONS` preload. A production edit
+  that keys its behaviour on *those exact names* could in principle behave correctly only under
+  observation. `C11` re-runs the CI argv with no channel and compares the printed selection, which
+  bounds the class but does not eliminate it; the names are documented here so a reviewer can see them.
+* **Node version.** CI pins Node 22; the oracle reports the runtime it used and warns if it is not
+  Node 22. Execution counts are the Node test runner's own, so they are version-sensitive in principle
+  and the oracle's comparisons are always made within a single run.
+
 ## 5. Checks to require on `main`
 
 Recommended required status checks, by exact job name:
@@ -185,6 +256,7 @@ Recommended required status checks, by exact job name:
 Unit tests (npm test)
 Test inventory coverage
 Disposable PostgreSQL integration
+Independent execution oracle (unit)
 ```
 
 `Dependency security audit` should be added to the required set **once WP5 remediates the known
@@ -192,10 +264,15 @@ advisories**. Requiring it before then would block every merge on a known, alrea
 condition.
 
 > Enabling branch protection / rulesets is **not** part of this change and is not authorized here.
-> See ATM-001-SEC-CLOSURE-MASTER-01 (WP2).
+> See ATM-001-SEC-CLOSURE-MASTER-01 (WP2). Naming the oracle job above is a recommendation; requiring
+> it is likewise not part of this change.
 
 ## 6. Scope
 
 This contract changes CI configuration, a coverage-verification script and its focused tests, and
 this document. It changes **no** application logic, business rule, schema, migration, dependency,
 lockfile, or deployment configuration.
+
+ATM-001-SEC-103 (§4.3) adds one CI job, the oracle script and its preload probe, and the §4.3 text. It
+changes no existing step, no suite, and no application logic, and it does not touch branch protection
+or rulesets.

@@ -63,6 +63,57 @@ jobs:
       - name: Verify runtime execution evidence (unit suites)
         run: node scripts/test-execution-evidence.js --mode unit
 
+  # ATM-001-SEC-103 — INDEPENDENT EXECUTION ORACLE.
+  #
+  # WHY THIS JOB EXISTS
+  #
+  # `unit-tests` above runs the verifier (scripts/test-execution-evidence.js) and
+  # trusts what it prints. Eight adversarial rounds showed why that cannot work:
+  # the verifier was its own oracle, so an edit to the verifier alone could reduce
+  # its selection to 1 of 13 suites, or print 13 identities while executing fewer,
+  # with every other check still green.
+  #
+  # This job makes the verifier answer to something it does not control:
+  #
+  #   * the EXPECTED suite identities are derived by scripts/ci-execution-oracle.js
+  #     from the filesystem (tests/*.test.js), from the integration registration
+  #     ledger and from a hardcoded documented legacy list — never from analyse();
+  #   * the EXPECTED commands are read verbatim from these workflow files;
+  #   * what actually EXECUTED is observed through the oracle's own reporter,
+  #     injected via NODE_OPTIONS, writing to an append-only journal in a per-run
+  #     directory the verifier never writes to — not from the verifier's stdout,
+  #     JSON record or JUnit documents;
+  #   * the CI environment is reproduced (CI=true, GITHUB_ACTIONS=true, no database
+  #     gate, no test-only markers), and the selection must be unchanged when every
+  #     test-only env marker is set, which closes the marker-conditional escape.
+  #
+  # It deliberately re-runs `npm test` and the unit evidence command under
+  # observation, so it is a second, independent execution of the same commands
+  # rather than a review of their logs. Measured budget (Node 22.23.2, one
+  # developer machine): ~13 minutes; the job limit is set well above that and the
+  # oracle applies its own per-command timeout, so a hang fails visibly.
+  #
+  # No repository secrets and no production credentials are referenced. The
+  # observation channel is inert in any process that is not the Node test runner.
+  independent-execution-oracle:
+    name: Independent execution oracle (unit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      # Pinned to a full commit SHA. actions/checkout v4.4.0
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      # Pinned to a full commit SHA. actions/setup-node v4.4.0
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Verify CI command, environment and executed suite identities
+        run: node scripts/ci-execution-oracle.js --scope unit
+
   test-inventory:
     name: Test inventory coverage
     runs-on: ubuntu-latest
