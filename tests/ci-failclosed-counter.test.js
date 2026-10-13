@@ -206,3 +206,76 @@ test('C13 — BEHAVIOURAL (multi-row): a counter-less suite is not ignored for n
   );
   fs.rmSync(jsonOut, { force: true });
 });
+
+// ---------------------------------------------------------------------------
+// C14 — the counter-less branch must be reached from a REAL reporter shape.
+//
+// C2/C4/C6/C7 exercise `countersMissing` only with a hand-written XML fixture.
+// This captures the REAL JUnit reporter document for a container-only suite and
+// derives the counter-less form by removing the two counter comments, so the
+// fail-closed branch is reached by a document the reporter actually emits rather
+// than one this suite invented. The genuine document is asserted first, which
+// also pins the M-2 reconciliation on reporter output rather than on a fixture.
+// ---------------------------------------------------------------------------
+
+/** Capture the real JUnit reporter output for one disposable suite. */
+function captureReporterJunit(body, label) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `wp311-real-${label}-`));
+  const suite = path.join(dir, `${label}.test.js`);
+  const dest = path.join(dir, 'report.xml');
+  fs.writeFileSync(suite, body);
+  // This test itself runs under `node --test`, so NODE_TEST_CONTEXT is set. An
+  // inherited value makes the spawned runner behave as a nested test context and
+  // it emits no reporter output at all — the same reason the verifier strips it.
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  const res = spawnSync(process.execPath,
+    ['--test', '--test-reporter=junit', `--test-reporter-destination=${dest}`, suite],
+    { cwd: REPO_ROOT, encoding: 'utf8', timeout: 60000, env });
+  let xml = '';
+  try { xml = fs.readFileSync(dest, 'utf8'); } catch { /* no report */ }
+  fs.rmSync(dir, { recursive: true, force: true });
+  return { xml, status: res.status };
+}
+
+/**
+ * The M-2 / F-3 container: a registered describe() whose only leaf is
+ * conditionally unreachable. The reporter emits the container as a bare
+ * <testcase> that is indistinguishable by shape from a real top-level test.
+ */
+const REAL_CONTAINER_BODY = [
+  "const { describe, it } = require('node:test');",
+  "describe('Conditional Suite', () => {",
+  "  if (process.env.RUN_THE_LEAF === '1') { it('the only real test', () => {}); }",
+  '});'
+].join('\n');
+
+test('C14 — BEHAVIOURAL (real reporter): a counter-less real-shaped document fails closed', () => {
+  const { xml } = captureReporterJunit(REAL_CONTAINER_BODY, 'container');
+  assert.match(xml, /<testsuites>/, 'the real reporter must have emitted a document');
+  assert.match(xml, /<testcase name="Conditional Suite"/,
+    'the document must carry the reporter-emitted container artefact');
+  assert.match(xml, /<!-- tests \d+ -->/, 'the real document carries the runner counters');
+  assert.match(xml, /<!-- pass \d+ -->/, 'the real document carries the pass counter');
+  assert.match(xml, /<!-- fail \d+ -->/, 'the real document carries the fail counter');
+
+  // The genuine document is reconciled to ZERO executed: the container artefact
+  // is clamped by the runner's own counters (the M-2 behaviour).
+  const genuine = parseJunit(xml, SUITE);
+  assert.strictEqual(genuine.countersMissing, false);
+  assert.strictEqual(genuine.executed, 0, 'the real container artefact must be clamped to the runner count');
+  assert.strictEqual(violates(genuine), true);
+
+  // The counter-less form of the SAME real document must fail closed rather than
+  // fall back to "no ceiling" and count the container artefact as executed.
+  const counterLess = xml
+    .replace(/<!-- pass \d+ -->\r?\n?/, '')
+    .replace(/<!-- fail \d+ -->\r?\n?/, '');
+  assert.notStrictEqual(counterLess, xml, 'the counters must actually have been removed');
+  assert.strictEqual(runnerExecutedCount(counterLess), null, 'no counter => no ceiling');
+  const r = parseJunit(counterLess, SUITE);
+  assert.strictEqual(r.countersMissing, true,
+    'a real-shaped document without counters must report the absence');
+  assert.strictEqual(violates(r), true, 'and must be a VIOLATION, not an unreconcilable pass');
+  assert.strictEqual(summarise([{ suite: SUITE, ...r, exempt: false }]).exitCode, 1);
+});

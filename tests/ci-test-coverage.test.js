@@ -859,3 +859,202 @@ describe('ATM-001-SEC-CLOSURE-WP3-09 M-2 reporter container artefacts', () => {
     assert.strictEqual(exit, 1, 'F-3 must still fail the evidence pass');
   });
 });
+
+// ===========================================================================
+// WP3-11 R5 — SELECTION CONTRACT: the assessed row set must equal the analysed
+// class, in BOTH modes that CI actually runs.
+//
+// The defect (sixth independent VUDA): every behavioural CLI control in this
+// repository drove the verifier with an explicit `--suite`, so neither
+// `--mode unit` (the class `analysis.runsUnderNpmTest`) nor a multi-suite
+// `--mode integration` (the class `analysis.gated ∩ contracted`) was ever
+// executed by a test. A one-line reduction at target selection —
+//
+//     targets = analysis.runsUnderNpmTest.map(...).slice(0, 1);
+//
+// — therefore left `npm test`, the coverage checker and every focused suite
+// green, while the real CI step verified 1 of 13 unit suites and passed the
+// runtime-dead suite the step exists to fail.
+//
+// These controls drive the REAL CLI in both modes and pin the row SET. They are
+// behavioural, not source-text pins: a text pin is an unbounded obligation (an
+// independent reviewer has defeated one with a single edit three times), while
+// an asserted row set is a bounded one.
+// ===========================================================================
+
+/** Run the real verifier WITHOUT --quiet, so the human-facing verdict table is captured. */
+function runEvidenceVerbose(root, args, extraEnv = {}) {
+  const jsonPath = path.join(root, 'evidence-verbose.json');
+  const res = spawnSync(process.execPath,
+    [path.join(root, 'scripts', 'test-execution-evidence.js'),
+      '--repo-root', root, '--json', jsonPath, ...args],
+    { encoding: 'utf8', timeout: 120000, env: { ...process.env, ...GATE_ENV, ...extraEnv } });
+  let record = null;
+  try { record = JSON.parse(fs.readFileSync(jsonPath, 'utf8')); } catch { /* none */ }
+  return { exit: res.status, record, stdout: res.stdout || '', stderr: res.stderr || '' };
+}
+
+const assessed = (record) => record.rows.map((r) => path.basename(r.suite)).sort();
+const selectedRow = (record, name) => record.rows.find((r) => path.basename(r.suite) === name);
+
+/**
+ * makeRuntimeFixture declares the two required security-critical suites with a
+ * leaf test whose NAME equals the FILE name. The verifier correctly classifies
+ * that as the reporter's file-level artefact rather than an executed case, so
+ * those files read as runtime-dead under `--mode unit`. The selection controls
+ * need a live baseline, so re-declare them with a leaf name that is not the file
+ * name. This changes no production behaviour and no other control.
+ */
+function makeSelectionFixture(spec) {
+  const root = makeRuntimeFixture(spec);
+  for (const name of ['runtime-security.test.js', 'phase3-cutover-guard.test.js']) {
+    fs.writeFileSync(path.join(root, 'tests', name), plainSuiteBody(name.replace(/\.test\.js$/, '')));
+  }
+  return root;
+}
+
+/**
+ * The repository's documented F-3 shape: a registered describe() whose ONLY leaf
+ * definition is conditionally unreachable. The static classifier accepts it (the
+ * leaf call is in executable code); only execution evidence can see that nothing
+ * ran. It uses no conditional-skip construct, so it belongs to the `--mode unit`
+ * class rather than the gated class.
+ */
+const unreachableLeafBody = (label) => [
+  "const { describe, it } = require('node:test');",
+  `describe('${label}', () => {`,
+  "  if (process.env.RUN_THE_LEAF === '1') { it('the only real test', () => {}); }",
+  '});'
+].join('\n');
+
+/** The same F-3 shape, gated by the recognised idiom: a contracted integration suite that executes nothing. */
+const gatedUnreachableLeafBody = (label) => [
+  "const { describe, it } = require('node:test');",
+  "const { isIntegration" + "Test } = require('../src/config/database');",
+  `const SKIP_${label} = isIntegration` + "Test() ? false : 'requires the gate';",
+  `describe('${label}', { skip: SKIP_${label} }, () => {`,
+  "  if (process.env.RUN_THE_LEAF === '1') { it('the only real test', () => {}); }",
+  '});'
+].join('\n');
+
+describe('ATM-001-SEC-CLOSURE-WP3-11 R5 selection contract (both CI modes)', () => {
+  it('S1 (unit). the assessed row set equals the analysed unit class — no scope reduction', () => {
+    const root = makeSelectionFixture({
+      ledger: ['a.test.js'],
+      contract: ["'tests/a.test.js'"],
+      suites: { 'a.test.js': plainSuiteBody('a') }
+    });
+    // Independent ground truth for the fixture, so this control does not merely
+    // compare the CLI against the same analysis that chose its targets.
+    const expected = ['a.test.js', 'database-test-guard.test.js',
+      'phase3-cutover-guard.test.js', 'runtime-security.test.js'];
+    assert.deepStrictEqual(analyse({ repoRoot: root }).runsUnderNpmTest.slice().sort(), expected,
+      'the fixture must present the intended unconditional class');
+    const { exit, record } = runEvidence(root, ['--mode', 'unit']);
+    assert.strictEqual(record.mode, 'unit');
+    assert.strictEqual(exit, 0, `a live unit class must pass; record: ${JSON.stringify(record)}`);
+    assert.strictEqual(record.rows.length, analyse({ repoRoot: root }).runsUnderNpmTest.length,
+      'the assessed row set must be the WHOLE analysed class (a .slice(0,1) selection must fail)');
+    assert.deepStrictEqual(assessed(record), expected,
+      'every analysed unit suite must be assessed, and nothing else');
+    for (const r of record.rows) {
+      assert.strictEqual(r.violation, false, `${r.suite} is live and must not be flagged`);
+      assert.ok(r.executed >= 1, `${r.suite} must be observed to execute`);
+    }
+  });
+
+  it('S2 (unit). an F-3 runtime-dead suite in a NON-FIRST position fails the CLI and is reported', () => {
+    const dead = 'b-dead-f3.test.js';
+    const root = makeSelectionFixture({
+      ledger: ['a.test.js', dead],
+      contract: ["'tests/a.test.js'", `'tests/${dead}'`],
+      suites: { 'a.test.js': plainSuiteBody('a'), [dead]: unreachableLeafBody('deadunit') }
+    });
+    const expected = ['a.test.js', dead, 'database-test-guard.test.js',
+      'phase3-cutover-guard.test.js', 'runtime-security.test.js'];
+    const { exit, record, stdout } = runEvidenceVerbose(root, ['--mode', 'unit']);
+    assert.deepStrictEqual(assessed(record), expected,
+      'the WHOLE unit class must be assessed, so a first-row-only reduction cannot stay green');
+    assert.notStrictEqual(assessed(record)[0], dead, 'the dead suite must NOT be first — that is the point');
+    assert.notStrictEqual(exit, 0, 'a runtime-dead suite in the class must fail the CLI');
+    assert.strictEqual(record.ok, false);
+    assert.ok(record.violations.includes(`tests/${dead}`),
+      `the dead suite must be reported; got ${JSON.stringify(record.violations)}`);
+    const deadRow = selectedRow(record, dead);
+    assert.strictEqual(deadRow.executed, 0, 'the unreachable leaf must not be counted as executed');
+    assert.strictEqual(deadRow.violation, true);
+    assert.strictEqual(selectedRow(record, 'a.test.js').violation, false, 'a live neighbour must stay clean');
+
+    // The verdict column (the F-2 fix): the human-facing table is rendered from
+    // the SAME decision, so moving summarise(rows) below the table must fail here.
+    const lines = stdout.split('\n');
+    const deadLine = lines.find((l) => l.includes(dead));
+    assert.ok(deadLine, 'the verbose table must render a row for the dead suite');
+    assert.match(deadLine, /\*\*\* ZERO EXECUTED \*\*\*/,
+      'the verdict column must report the dead suite as ZERO EXECUTED');
+    const liveLine = lines.find((l) => l.includes('a.test.js'));
+    assert.ok(liveLine && /executed\s*$/.test(liveLine) && !liveLine.includes('***'),
+      `a live suite must read as executed; got ${JSON.stringify(liveLine)}`);
+  });
+
+  it('S3 (integration). the assessed row set equals gated ∩ contracted — no scope reduction', () => {
+    // g3 is gated but deliberately NOT in the integration contract. It is the
+    // discriminator that makes the intersection load-bearing: a selection that
+    // merely takes `analysis.gated` would assess one suite too many. The static
+    // checker rejects this fixture with C3 (exactly as R9 documents), which the
+    // runtime pass does not consult — the runtime pass is what is under test.
+    const root = makeSelectionFixture({
+      ledger: ['a.test.js', 'g1.test.js', 'g2.test.js', 'g3-unregistered.test.js'],
+      contract: ["'tests/a.test.js'", "'tests/g1.test.js'", "'tests/g2.test.js'"],
+      suites: {
+        'a.test.js': plainSuiteBody('a'),
+        'g1.test.js': gatedSuiteBody('g1'),
+        'g2.test.js': gatedSuiteBody('g2'),
+        'g3-unregistered.test.js': gatedSuiteBody('g3')
+      }
+    });
+    const a = analyse({ repoRoot: root });
+    assert.deepStrictEqual(a.failures.map((f) => f.id), ['C3'],
+      'the fixture must be rejected for the unregistered gated suite, and only for that');
+    assert.ok(a.gated.includes('g3-unregistered.test.js'),
+      'g3 must really be in the gated class, or this control cannot discriminate');
+    const expected = a.gated.filter((f) => a.sanctioned.includes(f)).slice().sort();
+    assert.deepStrictEqual(expected, ['g1.test.js', 'g2.test.js'],
+      'the fixture must present at least two contracted gated suites');
+    const { exit, record } = runEvidence(root, ['--mode', 'integration'], { RUN_DB_TESTS: 'true' });
+    assert.strictEqual(record.mode, 'integration');
+    assert.strictEqual(exit, 0, `a live gated class must pass; record: ${JSON.stringify(record)}`);
+    assert.strictEqual(record.rows.length, expected.length,
+      'the assessed row set must be the WHOLE gated class (a .slice(0,1) selection must fail)');
+    assert.deepStrictEqual(assessed(record), expected,
+      'exactly the CONTRACTED gated suites must be assessed');
+    assert.ok(!assessed(record).includes('a.test.js'),
+      'an unconditional suite must not be pulled into the integration class');
+    assert.ok(!assessed(record).includes('g3-unregistered.test.js'),
+      'an unregistered gated suite must not be pulled into the integration class');
+  });
+
+  it('S4 (integration). a contracted gated suite that executes nothing fails, even when not first', () => {
+    const dead = 'g2-dead.test.js';
+    const root = makeSelectionFixture({
+      ledger: ['a.test.js', 'g1.test.js', dead],
+      contract: ["'tests/a.test.js'", "'tests/g1.test.js'", `'tests/${dead}'`],
+      suites: {
+        'a.test.js': plainSuiteBody('a'),
+        'g1.test.js': gatedSuiteBody('g1'),
+        [dead]: gatedUnreachableLeafBody('g2dead')
+      }
+    });
+    const expected = ['g1.test.js', dead];
+    const { exit, record } = runEvidence(root, ['--mode', 'integration'], { RUN_DB_TESTS: 'true' });
+    assert.deepStrictEqual(assessed(record), expected, 'both contracted gated suites must be assessed');
+    assert.notStrictEqual(assessed(record)[0], dead, 'the dead gated suite must NOT be first');
+    assert.notStrictEqual(exit, 0, 'a contracted gated suite that executes nothing must fail the CLI');
+    assert.strictEqual(record.ok, false);
+    assert.ok(record.violations.includes(`tests/${dead}`),
+      `the dead gated suite must be reported; got ${JSON.stringify(record.violations)}`);
+    assert.strictEqual(selectedRow(record, dead).executed, 0);
+    assert.strictEqual(selectedRow(record, dead).violation, true);
+    assert.strictEqual(selectedRow(record, 'g1.test.js').violation, false);
+  });
+});
