@@ -169,8 +169,13 @@ const LEGACY_COMPATIBILITY_BUNDLES = Object.freeze({
  * `users.is_organization_admin = true` — the same flag the application already
  * uses to recognise an organization administrator
  * (src/middleware/tenant.js, src/routes/user.routes.js,
- * views/mobile/admin/users.ejs), and the flag that organization creation and the
- * public self-service signup set on the first administrator of a tenant.
+ * views/mobile/admin/users.ejs), and the flag that the administrative
+ * organization-creation path sets on a tenant's first administrator. The public
+ * self-service signup is INTENDED to set it too, but at this head it creates no
+ * user at all (defect D-1: HTTP 500 after committing an orphan organization —
+ * see src/routes/organization.routes.js and
+ * tests/organization-signup.integration.test.js), so this comment does not claim
+ * that it does.
  *
  * ATM-003-R1 §4 defines the **Tenant Administrator** launch profile as exactly
  * `org.user_admin` + `org.config_admin`, "required to operate at all". The

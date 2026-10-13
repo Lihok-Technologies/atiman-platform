@@ -14,7 +14,16 @@
  *   3. Tenant administrators cannot change subscription or capacity fields. R2
  *      extends this to the CAPABILITY, not merely /api/organizations: every
  *      route that writes, or crosses a tenant to read, `organization_subscriptions`
- *      requires the platform-scoped `platform.admin` (VUDA finding F1).
+ *      requires the platform-scoped `platform.admin` (VUDA finding F1). R3 closes
+ *      the two residual tenant-scoped writes (§I) that were still reachable with
+ *      `authenticate` alone: POST /api/subscriptions/cancel now requires the
+ *      legacy matrix's `SUBSCRIPTION.CANCEL` and POST /api/subscriptions/reactivate
+ *      its `SUBSCRIPTION.UPDATE`, both `admin: 'all'` with supervisor and operator
+ *      `'none'`. The tenant's approved cancellation-request workflow is preserved;
+ *      no capability was invented (the approved vocabulary names no subscription
+ *      capability). The treatment of the `status` column written by /reactivate is
+ *      left in conflict with case H5 and ESCALATED to the OWNER rather than
+ *      reconciled here — see the subscription route header.
  *   4. Tenant isolation covers organization reading, listing, statistics and
  *      logo management — including a logo request that ADDRESSES a foreign
  *      tenant through the body, which must be refused and must write nothing in
@@ -70,6 +79,7 @@ const {
   RESOLUTION_MODES, TENANT_ADMINISTRATOR_PROFILE
 } = require('../src/config/capabilities');
 const { resolveCapabilities } = require('../src/services/capability.service');
+const { checkPermission: permCheck, PERMISSIONS } = require('../src/config/permissions');
 const subscriptionService = require('../src/services/subscription.service');
 const organizationController = require('../src/controllers/organization.controller');
 const Organization = require('../src/models/organization.model');
@@ -563,12 +573,44 @@ describe('ATM-001-SEC-104 V1 organization security policies', { skip: DB_TEST_SK
       assert.ok(Object.values(CAPABILITIES).includes('platform.admin'));
       assert.ok(NON_HUMAN_GRANTABLE.includes('platform.admin'));
 
-      // Recorded residual, deliberately NOT closed here: POST /cancel and
-      // /reactivate still write subscription state with authentication only.
-      // Asserting their existence keeps the gap visible rather than hidden.
-      assert.match(flat, /router\.post\('\/cancel', subscriptionController\.cancelSubscription\)/,
-        'the tenant cancellation-request route is preserved unchanged (see the route header)');
-      assert.match(flat, /router\.post\('\/reactivate', subscriptionController\.reactivateSubscription\)/);
+      // R3: the §I residual is CLOSED. The two tenant-scoped subscription writes
+      // now carry an authority from the approved legacy matrix, because the
+      // approved capability vocabulary contains no subscription capability at
+      // all. CANCEL is the matrix's cancellation authority; UPDATE is its
+      // remaining enumerated modification authority and is NOT a reuse of CANCEL.
+      // Neither is platform.admin, so the tenant's sanctioned "cancel at period
+      // end" request (views/mobile/admin/subscription.ejs) keeps working.
+      assert.match(flat, /const \{ requirePermission \} = require\('\.\.\/middleware\/rbac'\)/,
+        'the tenant-scoped subscription authority is the legacy matrix adapter');
+      assert.match(flat, /router\.post\('\/cancel', requirePermission\('SUBSCRIPTION', 'CANCEL'\),\s*subscriptionController\.cancelSubscription\)/,
+        'POST /cancel must carry the matrix cancellation authority so the tenant workflow survives');
+      assert.match(flat, /router\.post\('\/reactivate', requirePermission\('SUBSCRIPTION', 'UPDATE'\),\s*subscriptionController\.reactivateSubscription\)/,
+        'POST /reactivate must carry the matrix modification authority — never platform.admin, never CANCEL');
+
+      assert.strictEqual((flat.match(/router\.post\(/g) || []).length, 2,
+        'exactly the two tenant-scoped subscription POST routes may exist');
+      for (const registration of flat.match(/router\.post\([^;]*\)/g) || []) {
+        assert.match(registration, /requirePermission\('SUBSCRIPTION', '(CANCEL|UPDATE)'\)/,
+          `every tenant-scoped subscription write must carry a matrix authority: ${registration}`);
+      }
+      assert.doesNotMatch(flat, /router\.post\('\/cancel', subscriptionController/,
+        'the cancellation-request route must not be reachable with authentication alone');
+      assert.doesNotMatch(flat, /router\.post\('\/reactivate', subscriptionController/,
+        'the reactivation route must not be reachable with authentication alone');
+
+      // The named matrix authority must really be admin-only: the guard is only
+      // an authority if the entry it consults refuses supervisor and operator.
+      assert.strictEqual(permCheck('admin', 'SUBSCRIPTION', 'CANCEL'), 'all');
+      assert.strictEqual(permCheck('supervisor', 'SUBSCRIPTION', 'CANCEL'), 'none');
+      assert.strictEqual(permCheck('operator', 'SUBSCRIPTION', 'CANCEL'), 'none');
+      assert.strictEqual(permCheck('admin', 'SUBSCRIPTION', 'UPDATE'), 'all');
+      assert.strictEqual(permCheck('supervisor', 'SUBSCRIPTION', 'UPDATE'), 'none');
+      assert.strictEqual(permCheck('operator', 'SUBSCRIPTION', 'UPDATE'), 'none');
+      // …and the act named for reactivation must not be the cancellation act.
+      assert.notStrictEqual(
+        flat.match(/router\.post\('\/reactivate', requirePermission\('SUBSCRIPTION', '([A-Z]+)'\)/)[1],
+        'CANCEL',
+        'reactivation must not silently reuse the cancellation authority');
     });
 
     it('A7. keeps the sanctioned paid-subscription path intact (F1 preservation)', () => {
@@ -623,6 +665,47 @@ describe('ATM-001-SEC-104 V1 organization security policies', { skip: DB_TEST_SK
         'the approved self-service registration endpoint must stay mounted and unauthenticated');
       assert.doesNotMatch(header, /organization-signup'\)/,
         'the organization route family must not try to re-guard the self-service endpoint');
+    });
+
+    it('A9. states the signup endpoint\u2019s OBSERVED behaviour, not the unsupported claim (R3 claim correction)', () => {
+      const routeHeader = fs.readFileSync(ROUTES_FILE, 'utf8');
+      const controllerHeader = fs.readFileSync(
+        path.join(REPO_ROOT, 'src', 'controllers', 'auth.controller.js'), 'utf8');
+
+      // The removed claim said signup "creates an organization, its first
+      // administrator (role='admin', is_organization_admin=true) and a default
+      // Free subscription". It may survive ONLY inside the block that quotes it
+      // in order to correct it (the same convention as the F2 overstatement).
+      const quotedClaim = (routeHeader.match(/creates an organization, its first administrator/g) || []).length;
+      assert.strictEqual(quotedClaim, 1,
+        'the unsupported signup claim may survive only as the quoted correction');
+      assert.doesNotMatch(routeHeader,
+        /subscription, and it neither requires nor should require/,
+        'the ASSERTION form of the removed signup claim must be gone');
+      assert.match(routeHeader, /CORRECTED CLAIM \(ATM-001-SEC-104-R3\)/);
+
+      // The correction must record the observed D-1 reality and cite the live
+      // evidence that establishes it, so a reader cannot re-derive the claim.
+      assert.match(routeHeader, /HTTP 500/);
+      assert.match(routeHeader, /PERSISTS ONE ORGANIZATION/);
+      assert.match(routeHeader, /ZERO USERS AND ZERO SUBSCRIPTIONS/);
+      assert.match(routeHeader, /result\.insertId/);
+      assert.match(routeHeader, /tests\/organization-signup\.integration\.test\.js/);
+      assert.match(routeHeader, /NOT repaired/,
+        'D-1 must be recorded as deliberately unrepaired here, not silently fixed');
+
+      // The controller separates intended from observed behaviour the same way.
+      assert.match(controllerHeader, /INTENDED contract/);
+      assert.match(controllerHeader, /OBSERVED contract at this head/);
+      assert.match(controllerHeader, /D-1/);
+      assert.doesNotMatch(controllerHeader, /^ \* Creates a new organization with the first user as admin$/m,
+        'the bare assertion of the intended contract must not remain unqualified');
+
+      // A claim correction is not a policy-1 removal: the approved self-service
+      // endpoint stays mounted and anonymous.
+      const authRoutes = fs.readFileSync(path.join(REPO_ROOT, 'src', 'routes', 'auth.routes.js'), 'utf8');
+      assert.match(authRoutes, /router\.post\('\/organization-signup', authController\.organizationSignup\)/,
+        'the approved self-service signup endpoint must stay mounted and unauthenticated');
     });
   });
 
@@ -1532,6 +1615,204 @@ describe('ATM-001-SEC-104 V1 organization security policies', { skip: DB_TEST_SK
       assert.strictEqual(res.json.code, 'ORGANIZATION_UPDATE_FIELD_TYPE_INVALID');
       assert.strictEqual(await orgSnapshot(ORG_A), before,
         'database effect: no partial application — industry must not have been written either');
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // K. Policy 3 residual (§I closed) — tenant-scoped cancel / reactivate
+  //
+  // At candidate b795a04 both routes were reachable with `authenticate` alone.
+  // An independent reviewer reproduced a tenant OPERATOR reactivating a
+  // suspended subscription (status suspended -> active) and persisting a
+  // cancellation request. Every case below asserts BOTH the decision AND the
+  // persisted effect read back from the database: a failed HTTP request is NOT
+  // proof that the row is unchanged, and defect D-1 (a committed write behind
+  // HTTP 500) means a status code alone is never evidence.
+  //
+  // These cases are the adversarial negative controls: remove either guard from
+  // src/routes/subscription.routes.js and the corresponding case fails on the
+  // status AND on the database effect (verified by mutation, section D of the
+  // mission run).
+  // ------------------------------------------------------------------
+
+  describe('K. policy 3 residual: cancel and reactivate authority (§I closed)', () => {
+    /** Plant a known, unambiguous subscription state so any write is visible. */
+    const plantState = (organizationId, { status, cancelAtPeriodEnd, reason }) => rows(
+      `UPDATE organization_subscriptions
+          SET status = $2, cancel_at_period_end = $3, cancellation_reason = $4,
+              cancelled_at = CASE WHEN $3 THEN NOW() ELSE NULL END, updated_at = NOW()
+        WHERE organization_id = $1`,
+      [organizationId, status, cancelAtPeriodEnd, reason ?? null]);
+
+    const cancelState = async (organizationId) => {
+      const row = await subscriptionRow(organizationId);
+      return {
+        status: row.status,
+        cancelAtPeriodEnd: row.cancel_at_period_end,
+        cancelledAtSet: row.cancelled_at !== null,
+        reason: row.cancellation_reason
+      };
+    };
+
+    it('K1. refuses a tenant OPERATOR the cancellation request and persists nothing', async () => {
+      await plantState(ORG_A, { status: 'active', cancelAtPeriodEnd: false, reason: null });
+      const before = await subscriptionSnapshot(ORG_A);
+
+      const res = await post('/api/subscriptions/cancel', { reason: 'operator attempt' }, { userId: USER_OP_A });
+
+      assert.strictEqual(res.status, 403, 'a tenant operator must not request cancellation');
+      assert.strictEqual(res.json.success, false);
+      assert.match(res.json.message, /CANCEL permission required for SUBSCRIPTION/,
+        'the refusal must come from the approved matrix entry, not incidentally');
+      assert.strictEqual(await subscriptionSnapshot(ORG_A), before,
+        'database effect: the subscription row must be byte-identical');
+    });
+
+    it('K2. refuses a tenant SUPERVISOR the cancellation request and persists nothing', async () => {
+      await plantState(ORG_A, { status: 'active', cancelAtPeriodEnd: false, reason: null });
+      const before = await subscriptionSnapshot(ORG_A);
+
+      const res = await post('/api/subscriptions/cancel', { reason: 'supervisor attempt' }, { userId: USER_SUP_A });
+
+      assert.strictEqual(res.status, 403, 'a tenant supervisor must not request cancellation');
+      assert.match(res.json.message, /CANCEL permission required for SUBSCRIPTION/);
+      assert.strictEqual(await subscriptionSnapshot(ORG_A), before,
+        'database effect: the subscription row must be byte-identical');
+    });
+
+    it('K3. PRESERVES the sanctioned tenant cancellation request and persists it', async () => {
+      await plantState(ORG_A, { status: 'active', cancelAtPeriodEnd: false, reason: null });
+
+      const res = await post('/api/subscriptions/cancel',
+        { reason: 'Sanctioned SEC104 cancellation request' }, { userId: USER_ADMIN_A });
+
+      assert.strictEqual(res.status, 200,
+        'the tenant administrator workflow views/mobile/admin/subscription.ejs performs must keep working');
+      assert.strictEqual(res.json.success, true);
+
+      const after = await cancelState(ORG_A);
+      assert.strictEqual(after.cancelAtPeriodEnd, true, 'database effect: cancel_at_period_end persisted');
+      assert.strictEqual(after.reason, 'Sanctioned SEC104 cancellation request',
+        'database effect: the cancellation reason persisted');
+      assert.strictEqual(after.cancelledAtSet, true, 'database effect: cancelled_at persisted');
+      assert.strictEqual(after.status, 'active',
+        'database effect: a cancellation REQUEST is not a status change');
+    });
+
+    it('K4. refuses a tenant OPERATOR reactivation of a SUSPENDED subscription and leaves it suspended (the reproduced defect)', async () => {
+      await plantState(ORG_A, { status: 'suspended', cancelAtPeriodEnd: true, reason: 'independent review' });
+      const before = await subscriptionSnapshot(ORG_A);
+
+      const res = await post('/api/subscriptions/reactivate', {}, { userId: USER_OP_A });
+
+      assert.strictEqual(res.status, 403, 'a tenant operator must not reactivate a subscription');
+      assert.strictEqual(res.json.success, false);
+      assert.match(res.json.message, /UPDATE permission required for SUBSCRIPTION/,
+        'the refusal must come from the approved matrix entry, not incidentally');
+      assert.strictEqual(await subscriptionSnapshot(ORG_A), before,
+        'database effect: the row must be byte-identical — status must still be suspended');
+      assert.strictEqual((await subscriptionRow(ORG_A)).status, 'suspended',
+        'database effect: the operator did NOT flip status suspended -> active');
+    });
+
+    it('K5. refuses a tenant SUPERVISOR reactivation and leaves the row unchanged', async () => {
+      await plantState(ORG_A, { status: 'suspended', cancelAtPeriodEnd: true, reason: 'supervisor attempt' });
+      const before = await subscriptionSnapshot(ORG_A);
+
+      const res = await post('/api/subscriptions/reactivate', {}, { userId: USER_SUP_A });
+
+      assert.strictEqual(res.status, 403, 'a tenant supervisor must not reactivate a subscription');
+      assert.match(res.json.message, /UPDATE permission required for SUBSCRIPTION/);
+      assert.strictEqual(await subscriptionSnapshot(ORG_A), before,
+        'database effect: the row must be byte-identical');
+    });
+
+    it('K6. admits the tenant administrator and persists the reactivation', async () => {
+      await plantState(ORG_A, { status: 'suspended', cancelAtPeriodEnd: true, reason: 'to be cleared' });
+
+      const res = await post('/api/subscriptions/reactivate', {}, { userId: USER_ADMIN_A });
+
+      assert.strictEqual(res.status, 200, 'the tenant administrator must keep the reactivation workflow');
+      const after = await cancelState(ORG_A);
+      assert.strictEqual(after.status, 'active', 'database effect: status persisted as active');
+      assert.strictEqual(after.cancelAtPeriodEnd, false, 'database effect: cancel_at_period_end cleared');
+      assert.strictEqual(after.cancelledAtSet, false, 'database effect: cancelled_at cleared');
+      assert.strictEqual(after.reason, null, 'database effect: cancellation_reason cleared');
+    });
+
+    it('K7. refuses an OPERATOR that also carries is_organization_admin = true (the flag is not authority)', async () => {
+      await plantState(ORG_A, { status: 'suspended', cancelAtPeriodEnd: true, reason: 'flagged operator' });
+      const before = await subscriptionSnapshot(ORG_A);
+
+      const flagRow = await rows('SELECT is_organization_admin FROM users WHERE id = $1', [USER_OP_FLAGGED]);
+      assert.strictEqual(flagRow[0].is_organization_admin, true, 'the fixture must really carry the flag');
+
+      for (const [path, action] of [['/api/subscriptions/cancel', 'CANCEL'], ['/api/subscriptions/reactivate', 'UPDATE']]) {
+        const res = await post(path, { reason: 'flagged operator' }, { userId: USER_OP_FLAGGED });
+        assert.strictEqual(res.status, 403,
+          `an operator with is_organization_admin=true must still be refused ${path}`);
+        assert.match(res.json.message, new RegExp(`${action} permission required for SUBSCRIPTION`));
+      }
+      assert.strictEqual(await subscriptionSnapshot(ORG_A), before,
+        'database effect: neither attempt changed the row');
+    });
+
+    it('K8. admits a granted tenant administrator (explicit grants neither help nor hinder: the matrix role is the authority)', async () => {
+      await plantState(F3_ORG, { status: 'suspended', cancelAtPeriodEnd: true, reason: 'granted admin' });
+      try {
+        const res = await post('/api/subscriptions/reactivate', {}, { userId: F3_USER_GRANTED });
+
+        assert.strictEqual(res.status, 200,
+          'the legacy-matrix authority is role-based, so a granted administrator is admitted exactly like an un-granted one');
+        assert.strictEqual((await subscriptionRow(F3_ORG)).status, 'active',
+          'database effect: the granted administrator reactivated its own tenant');
+      } finally {
+        await plantState(F3_ORG, { status: 'active', cancelAtPeriodEnd: false, reason: null });
+      }
+    });
+
+    it('K9. cannot address another tenant: a body-named foreign organization is never written', async () => {
+      await plantState(ORG_A, { status: 'suspended', cancelAtPeriodEnd: true, reason: 'own tenant A' });
+      await plantState(ORG_B, { status: 'suspended', cancelAtPeriodEnd: true, reason: 'foreign tenant B' });
+      const beforeB = await subscriptionSnapshot(ORG_B);
+
+      const res = await post('/api/subscriptions/reactivate',
+        { organizationId: ORG_B, organization_id: ORG_B }, { userId: USER_ADMIN_A });
+
+      assert.strictEqual(res.status, 200, 'the call resolves to the caller\u2019s own tenant');
+      assert.strictEqual(await subscriptionSnapshot(ORG_B), beforeB,
+        'database effect: the foreign tenant row must be byte-identical');
+      assert.strictEqual((await subscriptionRow(ORG_B)).status, 'suspended',
+        'database effect: a body-supplied tenant identifier is not addressable');
+      assert.strictEqual((await subscriptionRow(ORG_A)).status, 'active',
+        'database effect: only the caller\u2019s own tenant changed');
+    });
+
+    it('K10. refuses both writes without authentication and persists nothing', async () => {
+      await plantState(ORG_A, { status: 'suspended', cancelAtPeriodEnd: true, reason: 'anonymous attempt' });
+      const before = await subscriptionSnapshot(ORG_A);
+
+      assert.strictEqual((await post('/api/subscriptions/cancel', { reason: 'anonymous' })).status, 401);
+      assert.strictEqual((await post('/api/subscriptions/reactivate', {})).status, 401);
+
+      assert.strictEqual(await subscriptionSnapshot(ORG_A), before,
+        'database effect: unchanged');
+    });
+
+    it('K11. consults the approved matrix by role, not the capability resolver', () => {
+      const rbac = codeOnly(path.join(REPO_ROOT, 'src', 'middleware', 'rbac.js'));
+      assert.match(rbac, /const role = req\.user\?\.role/,
+        'requirePermission must decide from the matrix role');
+      assert.doesNotMatch(rbac, /resolveCapabilities|capability\.service/,
+        'requirePermission must not consult capability resolution');
+
+      // The authority really is enumerated in the approved matrix, and the
+      // approved capability vocabulary really has no subscription capability —
+      // so there is nothing a grant could confer on these two routes.
+      assert.deepStrictEqual(Object.keys(PERMISSIONS.SUBSCRIPTION).sort(), ['CANCEL', 'UPDATE', 'VIEW']);
+      const capabilityValues = Object.values(CAPABILITIES);
+      assert.ok(!capabilityValues.some((c) => c.includes('subscription')),
+        'no approved capability may name subscription authority');
     });
   });
 

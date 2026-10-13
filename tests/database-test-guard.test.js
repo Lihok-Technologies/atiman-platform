@@ -95,6 +95,13 @@ const DB_MUTATING_SUITES = [
   // and is reused rather than recreated on every run. That bounded, documented
   // residue is the only fixture the suite cannot remove.
   'organization-security-policies.test.js',
+  // ATM-001-SEC-104-R3: live disposable-PostgreSQL evidence for the approved
+  // self-service POST /api/auth/organization-signup (writes real organizations
+  // and reads the committed row counts back; pins defect D-1). Residue: none —
+  // every row it creates is an orphan with no dependants and is removed by its
+  // per-run prefix, and the `free` plan fixture is created only when absent and
+  // removed again only when this run created it.
+  'organization-signup.integration.test.js',
   'step6-access-control.test.js',
   'step6-coverage-e2e.test.js',
   'step6-performance.test.js',
@@ -135,7 +142,10 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'knowledge-evidence-deletion-integrity.test.js',
   // ATM-001-SEC-104: the five OWNER-approved V1 organization security policies
   // (creation, profile update, subscription/capacity, tenant isolation, deletion).
-  'organization-security-policies.test.js'
+  'organization-security-policies.test.js',
+  // ATM-001-SEC-104-R3: live signup evidence on disposable PostgreSQL (the
+  // endpoint had only static file-content assertions before this suite).
+  'organization-signup.integration.test.js'
 ];
 
 const REPO_ROOT = path.resolve(__dirname, '..');

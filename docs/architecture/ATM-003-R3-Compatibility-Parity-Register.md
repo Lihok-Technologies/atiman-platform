@@ -101,4 +101,88 @@ admin profile.
 - It changes no route, permission or role, and does not migrate `users.role`.
 - It does not decide the explicit-grant future: explicit grants remain the
   authority, and any principal holding one resolves in `EXPLICIT_GRANTS` mode
-  with the legacy bundle discarded entirely.
+  with the legacy bundle discarded entirely — **with exactly one recorded
+  qualification, §6 below.**
+
+---
+
+## 6. Recorded qualification: the tenant-administrator compatibility restoration (ATM-001-SEC-104-R2 F3)
+
+**Status: RECORDED, awaiting OWNER acknowledgment. This section carries no
+authority of its own and changes no rule by itself.**
+
+### 6.1 The rule this qualifies
+
+§5 states that a principal holding any explicit grant resolves in
+`EXPLICIT_GRANTS` mode with the legacy bundle **discarded entirely**. ATM-003-R2's
+mode rule is a strict disjunction: a principal resolves in exactly one mode and
+there is no union. The F3 preservation recorded here is the **single, explicit
+exception** to that "no union" property.
+
+### 6.2 What the exception is
+
+`src/config/capabilities.js` records the tenant administrator as the principal
+shape `users.role = 'admin'` **and** `users.is_organization_admin = true`, and
+preserves for that one shape the `ATM-003-R1 §4` **Tenant Administrator** profile
+in **both** resolution modes.
+
+That profile is exactly:
+
+| Capability | Scope | ATM-003-R1 §4 wording |
+|---|---|---|
+| `org.user_admin` | Tenant | "Tenancy administration is required to operate at all" |
+| `org.config_admin` | Tenant | (same profile row) |
+
+**Verified effect (independently reviewed at the R2 head).** For a principal with
+`role = 'admin'` AND `is_organization_admin = true` AND explicit grants `G`, the
+resolved set is exactly `G ∪ {org.user_admin, org.config_admin}` — no union of the
+rest of the legacy `admin` bundle, and no capability outside the ATM-003-R1 §4
+Tenant Administrator profile.
+
+### 6.3 Why it exists (a restoration, not an addition)
+
+Before the capability model, any `admin` could administer its own organization
+profile. The mode rule discards the legacy bundle once *any* grant exists, so a
+tenant administrator that received one unrelated grant silently lost that ability
+— reviewed at R2 as a regression (baseline `200` + persisted write; candidate
+`403`). The preservation restores the pre-capability behaviour for that principal
+shape and nothing more.
+
+### 6.4 Consistency with ATM-003-R1, and why it is not new authority
+
+1. **It is exactly an approved profile.** ATM-003-R1 §4 defines the Tenant
+   Administrator launch profile as `org.user_admin` + `org.config_admin`, and
+   neither capability is new: both are in the `admin` legacy bundle and in
+   `V1_HUMAN_GRANTABLE`. No capability, role or profile is introduced.
+2. **The preserved set is bounded by the legacy bundle.** The preserved entries
+   are exactly the `admin` bundle's two organization-administration entries;
+   every other `admin`-bundle capability still requires an explicit grant in
+   `EXPLICIT_GRANTS` mode.
+3. **The flag is not an authority.** Holding `is_organization_admin = true`
+   grants nothing on its own — `role = 'admin'` is also required, so a
+   flag-true non-administrator gains nothing. (Asserted live: an operator with
+   the flag is refused every route it was refused before.)
+4. **It stays tenant-scoped.** `platform.admin`, `knowledge.taxonomy_admin` and
+   `integration.service` remain unreachable, `knowledge.legacy_clearance` is
+   **not** preserved, and tenant scope is still enforced separately by the
+   routes' ownership predicates and tenant-exact writes.
+
+### 6.5 What the OWNER is asked to acknowledge
+
+That the "explicit grants are the only authority, with the legacy bundle
+discarded entirely" rule has **one recorded exception** — the tenant
+administrator profile above — and that this exception is a compatibility
+restoration bounded to an approved ATM-003-R1 §4 profile rather than a union of
+the legacy bundle.
+
+**Until the OWNER acknowledges it, this exception must be treated as a recorded
+compatibility exception, not as a ratified rule.** Nothing in this section
+asserts an approval, and no source is reclassified by it.
+
+### 6.6 What this section does not do
+
+- It creates no authority, for anyone, at any scope.
+- It changes no route, permission, role or migration, and ratifies nothing.
+- It does not generalise: no other principal shape, role or bundle gains any
+  union between modes. The exception is enumerated for one shape only, and a
+  capability added to the vocabulary later is still not silently preserved.

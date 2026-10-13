@@ -38,13 +38,36 @@
  *   POST /api/auth/organization-signup  (src/routes/auth.routes.js)
  *
  * is the pre-authentication self-service tenant-registration endpoint reached by
- * views/signup.ejs. It creates an organization, its first administrator
+ * views/signup.ejs. It is approved, it is deliberately anonymous, and it neither
+ * requires nor should require `platform.admin`. Policy 1 restricts the
+ * ADMINISTRATIVE provisioning endpoint — POST /api/organizations, which mints a
+ * tenant under a caller-supplied plan, capacity and administrator password — not
+ * self-service registration.
+ *
+ * CORRECTED CLAIM (ATM-001-SEC-104-R3). An earlier version of this comment said
+ * the endpoint "creates an organization, its first administrator
  * (`role = 'admin'`, `is_organization_admin = true`) and a default Free
- * subscription, and it neither requires nor should require `platform.admin`.
- * Policy 1 restricts the ADMINISTRATIVE provisioning endpoint — POST
- * /api/organizations, which mints a tenant under a caller-supplied plan, capacity
- * and administrator password — not self-service registration. Only that narrower
- * statement is supported by the code.
+ * subscription". That is FALSE at this head and has been removed. Verified by
+ * live request against disposable PostgreSQL
+ * (tests/organization-signup.integration.test.js): an anonymous
+ * POST /api/auth/organization-signup answers HTTP 500
+ * `Cannot read properties of null (reading 'id')` and PERSISTS ONE ORGANIZATION
+ * ROW WITH ZERO USERS AND ZERO SUBSCRIPTIONS. The cause is defect D-1:
+ * `BaseModel.create` (src/models/base.model.js) reads `result.insertId`, which
+ * the PostgreSQL adapter never populates, so `Organization.create` returns null
+ * after its INSERT has already committed and the handler throws at
+ * `organization.id`. The write is not rolled back, so the endpoint is
+ * non-atomic, and the orphan permanently blocks re-registration of the same
+ * organization name (HTTP 409 "Organization name already exists").
+ *
+ * Intended contract (NOT observed at this head, and deliberately NOT repaired
+ * here): a 201 that creates the organization, its first administrator with
+ * `role = 'admin'` and `is_organization_admin = true`, and a default Free
+ * subscription, atomically. Repairing D-1 changes the shared write-path
+ * semantics of every `BaseModel.create` caller, which is outside this mission's
+ * envelope, so it is PROPOSED and escalated to the OWNER rather than silently
+ * applied. The endpoint stays mounted: disabling approved self-service
+ * onboarding is not a policy-1 outcome.
  */
 
 const express = require('express');

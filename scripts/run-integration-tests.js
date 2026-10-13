@@ -90,7 +90,14 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   // to the whole /api/subscriptions capability), tenant isolation for
   // reading/listing/statistics/logo including a body-addressed foreign tenant, and
   // fail-closed denial of direct organization deletion.
-  'tests/organization-security-policies.test.js'
+  'tests/organization-security-policies.test.js',
+  // ATM-001-SEC-104-R3: live disposable-PostgreSQL evidence for the approved
+  // self-service POST /api/auth/organization-signup — HTTP result, committed
+  // organization / administrator / subscription row counts, transaction
+  // behaviour, orphan-record behaviour and the security boundary. Pins defect
+  // D-1 (the endpoint commits an orphan organization and answers HTTP 500); the
+  // intended contract is carried as a `todo` test, never as a silent repair.
+  'tests/organization-signup.integration.test.js'
 ];
 
 /**
