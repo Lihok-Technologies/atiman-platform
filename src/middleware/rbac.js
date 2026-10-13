@@ -512,7 +512,17 @@ const canCreateUser = async (req, res, next) => {
 };
 
 /**
- * Middleware to check if supervisor can view/manage a specific user in their facility
+ * LEGACY, SUPERSEDED, RETAINED FOR REFERENCE ONLY.
+ *
+ * Middleware to check if a supervisor can view/manage a specific user in their
+ * facility. This guard is deliberately no longer used by any single-user route:
+ * it admits an operator for ANY record in ANY tenant (the final
+ * `return next()`), admits an administrator with no organization check at all,
+ * and answers 403 where the reconciliation core answers 404, so it is an
+ * existence oracle. `GET`, `PUT` and `DELETE /api/users/:id` now use
+ * `canViewUser` / `canUpdateUser` / `canDeleteUser`, which share
+ * `authorizeUserScope` (ATM-001-SEC-LEGACY-01-R3). Do not attach this guard to
+ * a user route; it has no tenant predicate.
  */
 const canManageUser = async (req, res, next) => {
   const role = req.user?.role;
@@ -560,6 +570,330 @@ const canManageUser = async (req, res, next) => {
   
   // For operators viewing own profile
   return next();
+};
+
+/**
+ * ATM-001-SEC-LEGACY-01-R3: ONE authorization core for the single-user routes
+ * `GET /api/users/:id` (R1 / PR #85), `PUT /api/users/:id` (R2) and
+ * `DELETE /api/users/:id` (00B / PR #87).
+ *
+ * Those three remediations were authored independently against the same anchor
+ * and each grew its own copy of the same rules. That is how the lane drifted:
+ * `canViewUser` answered 403 where `canUpdateUser` answered 404 for the same
+ * out-of-scope target. This file now ships the rule once - identifier
+ * normalisation, the not-found response, the tenant comparison and target
+ * resolution - and the three guards below are thin, role-shaped applications of
+ * it. A change to the tenant rule can no longer land on one route only.
+ *
+ * The rule, in one place:
+ *
+ *   - only a plain positive integer inside the PostgreSQL INTEGER range is a
+ *     user identifier; every other form collapses into the same 404 before any
+ *     lookup, so malformed input never reaches the database and cannot be told
+ *     apart from an absent record;
+ *   - a caller with no resolved role is 401;
+ *   - a supervisor with no facility has no managed-user scope at all. That is
+ *     decided from the caller's OWN state before the lookup, so the denial is
+ *     byte-identical for every non-self identifier and discloses nothing about
+ *     the target; it is a 403 because it says nothing about which record was
+ *     addressed;
+ *   - a caller may always address its own record (`isSelf`); the PUT handler
+ *     keeps its existing self-service restrictions (no self-role change, no
+ *     self-deactivation, no self-demotion, no self-delete);
+ *   - an operator may address ONLY its own record. `USERS.VIEW` and
+ *     `USERS.DELETE` are 'none' for an operator, so those two routes never reach
+ *     this core, but the core still refuses a non-self operator target with the
+ *     same 404 a foreign tenant produces - never a distinguishable 403. That is
+ *     the drift this reconciliation removes;
+ *   - every non-self target must share the caller's organization, and a missing
+ *     organization on either side fails closed: a role is not a cross-tenant
+ *     grant;
+ *   - within the tenant, a supervisor is bounded to its own facility;
+ *   - every out-of-scope target - foreign tenant, foreign facility, absent
+ *     record, malformed identifier - collapses into the identical 404 body, so
+ *     none of the three routes is an existence oracle.
+ *
+ * The resolved record is attached as `req.targetUser`, so the record that was
+ * authorized is the record that is read, written or deleted.
+ */
+
+// PostgreSQL INTEGER upper bound. An identifier above it is not a user id and
+// must be refused before the database sees an out-of-range value.
+const USER_ID_MAX = 2147483647;
+
+const respondUserNotFound = (res) => res.status(404).json({
+  success: false,
+  message: 'User not found'
+});
+
+/**
+ * Normalise a route parameter into a user identifier.
+ * @param {*} rawParam - the raw `req.params.id`
+ * @returns {number|null} the identifier, or null when the value is not a plain
+ *   positive integer inside the PostgreSQL INTEGER range
+ */
+const parseUserIdParam = (rawParam) => {
+  const raw = String(rawParam ?? '');
+  if (!/^\d+$/.test(raw)) {
+    return null;
+  }
+  const id = Number(raw);
+  if (!Number.isSafeInteger(id) || id < 1 || id > USER_ID_MAX) {
+    return null;
+  }
+  return id;
+};
+
+/**
+ * True only when both sides carry an organization and it is the same one. A
+ * missing organization on either side is NOT a match: it fails closed.
+ */
+const isSameOrganization = (caller, target) => target.organization_id != null
+  && caller.organization_id != null
+  && target.organization_id === caller.organization_id;
+
+/**
+ * The single users-scope core. Responds and returns null when the caller is out
+ * of scope; otherwise attaches the resolved record to `req.targetUser` and
+ * returns it.
+ *
+ * @param {import('express').Request} req
+ * @param {import('express').Response} res
+ * @returns {Promise<Object|null>}
+ */
+const authorizeUserScope = async (req, res) => {
+  const role = req.user?.role;
+
+  if (!role) {
+    res.status(401).json({
+      success: false,
+      message: 'Authentication required'
+    });
+    return null;
+  }
+
+  const targetUserId = parseUserIdParam(req.params.id);
+  if (targetUserId === null) {
+    respondUserNotFound(res);
+    return null;
+  }
+
+  // `req.params.id` is always a string while `req.user.id` is whatever the
+  // adapter returned, so compare numerically rather than relying on both being
+  // the same JS type.
+  const isSelf = Number(req.user.id) === targetUserId;
+
+  // A supervisor with no facility has no managed-user scope at all. Deciding
+  // this from the caller's own state BEFORE the lookup keeps the denial
+  // byte-identical for every non-self identifier.
+  if (role === 'supervisor' && !isSelf && !req.user.facility_id) {
+    res.status(403).json({
+      success: false,
+      message: 'Supervisor must be assigned to a facility'
+    });
+    return null;
+  }
+
+  const { User } = require('../models');
+  const targetUser = await User.findById(targetUserId);
+
+  if (!targetUser) {
+    respondUserNotFound(res);
+    return null;
+  }
+
+  if (!isSelf) {
+    // An operator's USERS.VIEW/UPDATE/DELETE level is at most 'own', so a
+    // colleague is refused exactly like a foreign record.
+    if (role === 'operator') {
+      respondUserNotFound(res);
+      return null;
+    }
+
+    // Fail closed on a foreign tenant, and on either side missing an
+    // organization.
+    if (!isSameOrganization(req.user, targetUser)) {
+      respondUserNotFound(res);
+      return null;
+    }
+
+    // Supervisor keeps the legacy facility boundary, now bounded to its tenant.
+    if (role === 'supervisor' && targetUser.facility_id !== req.user.facility_id) {
+      respondUserNotFound(res);
+      return null;
+    }
+
+    // Unknown role: fail closed without becoming an existence oracle.
+    if (role !== 'admin' && role !== 'supervisor') {
+      respondUserNotFound(res);
+      return null;
+    }
+  }
+
+  req.targetUser = targetUser;
+  return targetUser;
+};
+
+/**
+ * GET /api/users/:id - the USERS.VIEW tenant/facility boundary.
+ * Thin wrapper: the rule lives in `authorizeUserScope`.
+ */
+const canViewUser = async (req, res, next) => {
+  try {
+    if (await authorizeUserScope(req, res)) {
+      return next();
+    }
+  } catch (error) {
+    return next(error);
+  }
+};
+
+/**
+ * PUT /api/users/:id - the USERS.UPDATE tenant/facility/ownership boundary.
+ * Thin wrapper: the rule lives in `authorizeUserScope`. The approved
+ * USERS.ASSIGN_FACILITY policy on the same route is enforced separately by
+ * `authorizeFacilityAssignment` below.
+ */
+const canUpdateUser = async (req, res, next) => {
+  try {
+    if (await authorizeUserScope(req, res)) {
+      return next();
+    }
+  } catch (error) {
+    return next(error);
+  }
+};
+
+/**
+ * DELETE /api/users/:id - the USERS.DELETE tenant boundary.
+ * Thin wrapper: the rule lives in `authorizeUserScope`.
+ */
+const canDeleteUser = async (req, res, next) => {
+  try {
+    if (await authorizeUserScope(req, res)) {
+      return next();
+    }
+  } catch (error) {
+    return next(error);
+  }
+};
+
+/**
+ * ATM-001-SEC-LEGACY-01-R3: the approved USERS.ASSIGN_FACILITY policy on the
+ * user write path.
+ *
+ * OWNER-APPROVED POLICY: "Only explicitly authorized USERS.ASSIGN_FACILITY
+ * principals can modify facility assignments within their authorized tenant and
+ * facility scope; ordinary operators cannot assign to self/others."
+ *
+ * The authority is the existing matrix, not a new one:
+ *   `src/config/permissions.js` -> USERS.ASSIGN_FACILITY
+ *     = { admin: 'all', supervisor: 'none', operator: 'none' }
+ *
+ * This middleware runs AFTER `canUpdateUser`, so `req.targetUser` is the record
+ * the caller has already been authorized to write. It enforces three things:
+ *
+ *   1. An explicit `facility_id` that does not change the persisted value is not
+ *      a modification. The shipped mobile admin form always posts the target's
+ *      current facility, so an authorized edit of other fields keeps working.
+ *   2. A real change - including clearing the assignment - requires
+ *      USERS.ASSIGN_FACILITY. A level of 'none' (supervisor, operator) is
+ *      refused with 403 and the stored assignment is untouched. This closes
+ *      operator self-repointing and operator-to-colleague repointing.
+ *   3. A principal who does hold the permission may only assign a facility of
+ *      its own organization. A facility that does not exist, or that belongs to
+ *      another tenant, yields the same 404 the user routes use for an absent
+ *      record, so the route is not a cross-tenant facility oracle.
+ *
+ * The normalised value is attached as `req.facilityAssignment` and is the only
+ * value the handler uses to write `facility_id`, so authorization and effect
+ * cannot diverge.
+ */
+const parseFacilityIdParam = (value) => {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+  const raw = String(value);
+  if (!/^\d+$/.test(raw)) {
+    return undefined;
+  }
+  const id = Number(raw);
+  if (!Number.isSafeInteger(id) || id < 1 || id > USER_ID_MAX) {
+    return undefined;
+  }
+  return id;
+};
+
+const authorizeFacilityAssignment = async (req, res, next) => {
+  try {
+    const role = req.user?.role;
+    const targetUser = req.targetUser;
+
+    // Route order is part of the contract: without a resolved, authorized
+    // target there is nothing to compare against. Fail closed rather than
+    // assume.
+    if (!targetUser) {
+      return res.status(500).json({
+        success: false,
+        message: 'User scope was not resolved before facility authorization'
+      });
+    }
+
+    const provided = Object.prototype.hasOwnProperty.call(req.body || {}, 'facility_id');
+
+    if (!provided) {
+      // Not an assignment request. The handler leaves the stored value alone.
+      req.facilityAssignment = { provided: false, facilityId: null };
+      return next();
+    }
+
+    const requestedFacilityId = parseFacilityIdParam(req.body.facility_id);
+
+    if (requestedFacilityId === undefined) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid facility_id'
+      });
+    }
+
+    const currentFacilityId = targetUser.facility_id == null
+      ? null
+      : Number(targetUser.facility_id);
+
+    if (requestedFacilityId === currentFacilityId) {
+      // Re-sending the current value is not a modification of the assignment.
+      req.facilityAssignment = { provided: true, facilityId: requestedFacilityId };
+      return next();
+    }
+
+    if (checkPermission(role, 'USERS', 'ASSIGN_FACILITY') !== 'all') {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied: facility assignment requires an authorized principal'
+      });
+    }
+
+    if (requestedFacilityId !== null) {
+      const { Facility } = require('../models');
+      const facility = req.user.organization_id == null
+        ? null
+        : await Facility.findById(requestedFacilityId);
+
+      if (!facility
+          || facility.organization_id == null
+          || Number(facility.organization_id) !== Number(req.user.organization_id)) {
+        return res.status(404).json({
+          success: false,
+          message: 'Facility not found'
+        });
+      }
+    }
+
+    req.facilityAssignment = { provided: true, facilityId: requestedFacilityId };
+    return next();
+  } catch (error) {
+    return next(error);
+  }
 };
 
 /**
@@ -719,6 +1053,10 @@ module.exports = {
   canManageSchedule,
   canCreateUser,
   canManageUser,
+  canViewUser,
+  canUpdateUser,
+  canDeleteUser,
+  authorizeFacilityAssignment,
   filterReportsByFacility,
   filterEquipmentByFacility,
   filterFacilitiesByAccess,

@@ -102,6 +102,13 @@ const DB_MUTATING_SUITES = [
   // per-run prefix, and the `free` plan fixture is created only when absent and
   // removed again only when this run created it.
   'organization-signup.integration.test.js',
+  // ATM-001-SEC-LEGACY-01-R3: the reconciled single-user authorization lane -
+  // GET / PUT / DELETE /api/users/:id tenant, ownership and facility scope, the
+  // approved USERS.ASSIGN_FACILITY policy, and the reactivation/seat branch.
+  // Creates and deletes its own organizations, facilities, subscription and
+  // users, so it is database-mutating and must be gated on isIntegrationTest()
+  // exactly like the suites above.
+  'user-authorization-reconciliation.test.js',
   'step6-access-control.test.js',
   'step6-coverage-e2e.test.js',
   'step6-performance.test.js',
@@ -145,7 +152,8 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'organization-security-policies.test.js',
   // ATM-001-SEC-104-R3: live signup evidence on disposable PostgreSQL (the
   // endpoint had only static file-content assertions before this suite).
-  'organization-signup.integration.test.js'
+  'organization-signup.integration.test.js',
+  'user-authorization-reconciliation.test.js'
 ];
 
 const REPO_ROOT = path.resolve(__dirname, '..');

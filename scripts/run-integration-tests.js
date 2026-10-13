@@ -97,7 +97,12 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   // behaviour, orphan-record behaviour and the security boundary. Pins defect
   // D-1 (the endpoint commits an orphan organization and answers HTTP 500); the
   // intended contract is carried as a `todo` test, never as a silent repair.
-  'tests/organization-signup.integration.test.js'
+  'tests/organization-signup.integration.test.js',
+  // ATM-001-SEC-LEGACY-01-R3: the reconciled single-user authorization lane —
+  // GET / PUT / DELETE /api/users/:id tenant, ownership and facility scope, the
+  // approved USERS.ASSIGN_FACILITY policy, and the reactivation/seat branch. The
+  // three prior remediations (R1/PR #85, R2, 00B/PR #87) are one contract here.
+  'tests/user-authorization-reconciliation.test.js'
 ];
 
 /**
