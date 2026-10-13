@@ -75,14 +75,45 @@
  * `PUT /api/subscriptions/admin/organizations/:id` form, that even a
  * same-tenant administrator is refused (tests/organization-security-policies
  * .test.js case H5). This route now admits a tenant-scoped administrator write
- * of that same column. The two positions are left in conflict on purpose rather
- * than reconciled here: the mission directed the tenant-scoped authority to
- * preserve the tenant workflow, and the approved sources do not name a separate
- * reactivation authority that would settle it. The OWNER must adjudicate
- * whether tenant reactivation is a sanctioned act (tenant-scoped `UPDATE`), a
- * platform act (then `platform.admin`, which no V1 human may hold, and the
- * route becomes unreachable), or a distinct capability. No code here presumes
- * the answer beyond the mission's explicit direction.
+ * of that same column.
+ *
+ * THE RECORD THE OWNER ADJUDICATES ON MUST INCLUDE THE SANCTIONED PAID PATH.
+ * R2 (F1)'s "status is platform-scoped" holds only for the DIRECT
+ * administrative write — `PUT /api/subscriptions/admin/organizations/:id`
+ * (`requireCapability('platform.admin')`, this file :215), whose controller
+ * writes `status` at src/controllers/subscription.controller.js:349-355 — and
+ * NOT for status transitions generally, because the sanctioned, tenant-scoped,
+ * admin-only paid path ALREADY performs them. Without that fact the OWNER would
+ * adjudicate R2 (F1) on an incomplete record. Verified link by link at this
+ * head:
+ *   * POST /api/payments/checkout is admin-only: src/routes/payment.routes.js
+ *     :13-17, `requirePermission('SUBSCRIPTION', 'UPDATE')`, which is
+ *     `admin: 'all'`, `supervisor: 'none'`, `operator: 'none'` at
+ *     src/config/permissions.js:116.
+ *   * The signature-validated webhook POST /api/payments/webhook
+ *     (payment.routes.js:31-34) is PUBLIC by design and authenticated by the
+ *     Stripe signature, not by a permission: it is not an HTTP caller that any
+ *     route guard could refuse, and it is unaddressable by a human principal
+ *     without the webhook secret. It calls paymentService.handleWebhook
+ *     (src/services/payment.service.js:254), which dispatches
+ *     `checkout.session.completed` to handleCheckoutCompleted (:288-301) ->
+ *     handleSubscriptionUpgrade (:306-311) ->
+ *     subscriptionService.changePlan().
+ *   * changePlan() executes the transition `SET status = 'active'` at
+ *     src/services/subscription.service.js:281, whatever the target plan; the
+ *     same write is reached from `customer.subscription.deleted` through
+ *     handleSubscriptionCancelled (payment.service.js:400-405).
+ * If any link above differs, this paragraph must be CORRECTED rather than
+ * relied on. The conflict is therefore not a bare column-scope question: the
+ * DIRECT admin write and the paid transition write both set the same column
+ * under different authorities. The two positions are left in conflict on
+ * purpose rather than reconciled here: the mission directed the tenant-scoped
+ * authority to preserve the tenant workflow, and the approved sources do not
+ * name a separate reactivation authority that would settle it. The OWNER must
+ * adjudicate whether tenant reactivation is a sanctioned act (tenant-scoped
+ * `UPDATE`), a platform act (then `platform.admin`, which no V1 human may hold,
+ * and the route becomes unreachable), or a distinct capability. No code here
+ * presumes the answer beyond the mission's explicit direction.
  *
  * The former guard on the two /admin routes was `requireAdmin`
  * (src/middleware/auth.js), which admits `supervisor` as well as `admin`, so any
