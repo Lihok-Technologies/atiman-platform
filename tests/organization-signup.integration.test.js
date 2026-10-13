@@ -316,13 +316,31 @@ describe('ATM-001-SEC-104-R3 organization signup: live disposable-PostgreSQL evi
       assert.deepStrictEqual(await counts('S4'),
         { organizations: 1, users: 1, subscriptions: 1 });
 
+      // (a) The IDENTICAL body is refused by the pre-write uniqueness checks that
+      // run BEFORE the organization-name check: the username now exists. Any of
+      // those refusals is correct, so this asserts the refusal and the absence of
+      // duplication, not one specific message.
       const retry = await anonymousSignup(body);
       assert.strictEqual(retry.status, 409,
         'the name is now taken by a REAL, fully onboarded tenant');
-      assert.strictEqual(retry.json.message, 'Organization name already exists');
+      assert.match(retry.json.message, /already exists/);
       assert.deepStrictEqual(await counts('S4'),
         { organizations: 1, users: 1, subscriptions: 1 },
         'database effect: the refused retry persisted nothing and duplicated nothing');
+
+      // (b) A retry with a NEW username but the SAME organization name reaches the
+      // organization-name check and is refused there — the tenant genuinely
+      // EXISTS now, rather than an orphan squatting the name.
+      const reorg = await anonymousSignup(signupBody('S4', {
+        username: `${TAG}-s4-second`.toLowerCase(),
+        email: `${TAG}-s4-second@test.local`.toLowerCase()
+      }));
+      assert.strictEqual(reorg.status, 409,
+        'an existing, fully onboarded organization name cannot be reused');
+      assert.strictEqual(reorg.json.message, 'Organization name already exists');
+      assert.deepStrictEqual(await counts('S4'),
+        { organizations: 1, users: 1, subscriptions: 1 },
+        'database effect: the second refusal persisted nothing either');
     });
 
     it('S5. two distinct names both onboard completely: the complete state is systematic', async () => {

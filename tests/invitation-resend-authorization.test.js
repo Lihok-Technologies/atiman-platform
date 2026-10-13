@@ -418,9 +418,11 @@ describe('ATM-001-SEC-00H POST /api/invitations/:id/resend authorization and lif
       assert.strictEqual(replacement.status, 'pending');
       assert.strictEqual(replacement.role, 'admin', 'the authorized role must be preserved');
       assert.strictEqual(Number(replacement.organization_id), ORG_A);
-      // D-1 means the handler throws after the INSERT commits, so a success
-      // status is not asserted anywhere in this suite.
-      assert.notStrictEqual(response.status, 200, 'D-1 prevents a serialized success response');
+      // INVERTED (ATM-001-SEC-B3D condition 2). D-1 is repaired in this tree, so
+      // the handler now serialises a success response instead of throwing after
+      // the INSERT commits.
+      assert.strictEqual(response.status, 200,
+        'D-1 repaired: an authorized resend serialises a success response');
     });
 
     it('06. a cross-tenant administrator cannot resend a foreign invitation', async () => {
@@ -843,9 +845,11 @@ describe('ATM-001-SEC-00H POST /api/invitations/:id/resend authorization and lif
       await resend('ADMIN_A', authorized.id);
       const original = (await rowById(authorized.id))[0];
       assert.strictEqual(original.role, 'admin', 'the original stored role is untouched');
-      // D-1 throws after the replacement commits, before Invitation.cancel runs.
-      assert.strictEqual(original.status, 'pending',
-        'the original is retired only after its replacement exists (D-1 residual)');
+      // INVERTED (ATM-001-SEC-B3D condition 2). D-1 is repaired and the
+      // issue-then-retire pair runs in ONE transaction, so Invitation.cancel DOES
+      // run and the original is retired with its replacement.
+      assert.strictEqual(original.status, 'cancelled',
+        'D-1 repaired: the original is retired in the same transaction as its replacement');
 
       const refused = await makeInvitation('R1_13B', { organizationId: ORG_A, role: 'admin', invitedBy: U.ADMIN_A });
       delivered = [];

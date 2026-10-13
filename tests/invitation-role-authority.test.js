@@ -590,8 +590,10 @@ describe('ATM-001-SEC-00E POST /api/invitations role-assignment authority', { sk
       // today. Recorded, not assumed. The delivery assertion that carries
       // security weight is therefore the refusal case in section B — a refused
       // request must attempt no delivery — and it is asserted there.
-      assert.strictEqual(delivered.length, 0,
-        'D-1 prevents the delivery call on every path; this is stated, not treated as a security property');
+      // INVERTED (ATM-001-SEC-B3D condition 2). D-1 is repaired in this tree, so
+      // the create handler now reaches the delivery call on the authorized path.
+      assert.strictEqual(delivered.length, 1,
+        'D-1 repaired: the authorized create path reaches exactly one delivery call');
     });
 
     it('19. a missing role still defaults to operator for an authorized supervisor', async () => {
