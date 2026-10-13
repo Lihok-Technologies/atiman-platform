@@ -1058,3 +1058,409 @@ describe('ATM-001-SEC-CLOSURE-WP3-11 R5 selection contract (both CI modes)', () 
     assert.strictEqual(selectedRow(record, 'g1.test.js').violation, false);
   });
 });
+
+// ===========================================================================
+// WP3-11 R8 — CI ARGUMENT-VECTOR SELECTION CONTRACT
+//
+// The seventh independent VUDA defeated R5 with a one-line escape that was
+// conditional on an argument vector the TESTS used but CI does not:
+//
+//     if (!JSON_OUT) targets = targets.slice(0, 1);
+//
+// Every R5 control passed `--json` (and `--quiet`) to the verifier, while the
+// GitHub Actions steps pass neither. Read verbatim from the workflows:
+//
+//   .github/workflows/ci-verification.yml  (Verify runtime execution evidence (unit suites))
+//     node scripts/test-execution-evidence.js --mode unit
+//   .github/workflows/db-integration.yml   (Verify runtime execution evidence (database-gated suites))
+//     node scripts/test-execution-evidence.js --mode integration --concurrency 1
+//
+// Under those vectors the escaped code verified 1 of 13 unit suites (1 of 26
+// integration) while `npm test`, `assert-test-coverage.js` and every focused
+// suite stayed green. Two further name-targeted escapes were also green: a
+// `.filter(f => f !== 'app.test.js')` at target selection, and the same filter
+// inside `discoverSuites()` in scripts/assert-test-coverage.js.
+//
+// These controls therefore:
+//   * execute the EXACT CI argument vectors, against the REAL repository root,
+//     and read what CI reads — the process exit code and the human-readable
+//     report (the assessed-suite table and the `suites verified` total);
+//   * compare the assessed set against a HARDCODED ground-truth basename list,
+//     so excluding ANY expected suite, by count or by name, fails;
+//   * prove the selection is invariant under `--json` and `--quiet` (the exact
+//     shape of the round-7 escape);
+//   * pin the real repository's discovery set, unit class and integration class
+//     against hardcoded ground truth, so a narrowing inside `discoverSuites()`
+//     fails a test rather than silently shrinking the class.
+//
+// No `--json`, `--quiet` or `--repo-root` argument is added to the two
+// production-path controls; the flag-invariance controls below are separate and
+// say so explicitly.
+// ===========================================================================
+
+const REAL_CLI = path.join(REPO_ROOT, 'scripts', 'test-execution-evidence.js');
+
+/**
+ * Recursion breaker for the REAL-repository unit control (P1).
+ *
+ * ci-test-coverage.test.js is itself one of the 13 UNCONDITIONAL suites, so a
+ * control that spawns the whole unit class against the real repository root is
+ * necessarily self-referential. The CLI forwards `process.env` to every suite it
+ * spawns, so setting this marker on the child bounds the nesting at depth one:
+ * the control asserts at depth 0 (under `npm test` and under the CLI's own unit
+ * pass) and returns immediately when it is itself inside a spawned real pass.
+ * It fails closed rather than open — the nested process still executes a test,
+ * and a mutation that strips the marker would recurse until it timed out.
+ */
+const REAL_PROBE_DEPTH_VAR = 'ATM001_SEC_SEL_REAL_REPO_DEPTH';
+const insideRealProbe = () => process.env[REAL_PROBE_DEPTH_VAR] === '1';
+
+/**
+ * The EXACT argument vectors GitHub Actions runs. They add no `--json`, no
+ * `--quiet` and no `--repo-root` — which is the entire point of this contract.
+ */
+const CI_ARGV = Object.freeze({
+  unit: Object.freeze(['--mode', 'unit']),
+  integration: Object.freeze(['--mode', 'integration', '--concurrency', '1'])
+});
+
+/**
+ * A database gate that cannot reach any database: port 1 on loopback is always
+ * refused, and the ambient TEST_DB_* (if a developer has any) is overridden, so
+ * this can never touch a real database. The 26 contracted integration suites are
+ * still SELECTED and spawned — the selection is what P2 pins — they simply fail
+ * to connect, which is why P2 asserts the assessed set rather than the exit code.
+ */
+const UNREACHABLE_GATE = Object.freeze({
+  TEST_DB_HOST: '127.0.0.1',
+  TEST_DB_PORT: '1',
+  TEST_DB_NAME: 'atiman_test',
+  TEST_DB_USER: 'unreachable',
+  TEST_DB_PASSWORD: 'unreachable'
+});
+
+/**
+ * HARDCODED ground truth for the REAL repository. These lists are deliberately
+ * literal and independent of `analyse()`: a selection that reads its expectation
+ * from the code under test proves nothing.
+ */
+const REAL_DISCOVERED_GROUND_TRUTH = Object.freeze([
+  'admin-bootstrap.test.js',
+  'ai-assistance-disclosure.test.js',
+  'app.test.js',
+  'asset-context.test.js',
+  'asset-import-resolver-safety.test.js',
+  'asset-import-validation.test.js',
+  'atiman-shell.test.js',
+  'basemodel-query-shape.test.js',
+  'capability-grants.test.js',
+  'ci-failclosed-counter.test.js',
+  'ci-test-coverage.test.js',
+  'database-test-guard.test.js',
+  'environment.test.js',
+  'external-authority-edition-groundwork.test.js',
+  'external-classification-crosswalk-evidence.test.js',
+  'external-classification-crosswalk.test.js',
+  'external-classification-foundation.test.js',
+  'governed-knowledge-foundation.test.js',
+  'knowledge-accession-authority.test.js',
+  'knowledge-authoring.test.js',
+  'knowledge-browser-scope.test.js',
+  'knowledge-crosswalk-application.test.js',
+  'knowledge-evidence-deletion-integrity.test.js',
+  'knowledge-pack-membership.test.js',
+  'knowledge-pack-publication-admission.test.js',
+  'knowledge-provenance-authoring.test.js',
+  'knowledge-publication-admission.test.js',
+  'knowledge-versioning.test.js',
+  'm6r3-r1-remediation.test.js',
+  'migration-runner.test.js',
+  'observation-foundation.test.js',
+  'phase3-cutover-guard.test.js',
+  'provenance-write-scope.test.js',
+  'report-capture.test.js',
+  'runtime-migration.test.js',
+  'runtime-security.test.js',
+  'step6-access-control.test.js',
+  'step6-coverage-e2e.test.js',
+  'step6-performance.test.js',
+  'step6-regression.test.js',
+  'step6-seed-migration.test.js',
+  'taxonomy-application.test.js',
+  'taxonomy-identity-lifecycle.test.js',
+  'workflow.test.js'
+]);
+
+/** The 13 suites `--mode unit` (the CI unit argv) must assess. */
+const REAL_UNIT_GROUND_TRUTH = Object.freeze([
+  'admin-bootstrap.test.js',
+  'app.test.js',
+  'asset-import-validation.test.js',
+  'basemodel-query-shape.test.js',
+  'ci-failclosed-counter.test.js',
+  'ci-test-coverage.test.js',
+  'database-test-guard.test.js',
+  'environment.test.js',
+  'knowledge-browser-scope.test.js',
+  'phase3-cutover-guard.test.js',
+  'runtime-migration.test.js',
+  'runtime-security.test.js',
+  'workflow.test.js'
+]);
+
+/** The 26 contracted gated suites `--mode integration --concurrency 1` must assess. */
+const REAL_INTEGRATION_GROUND_TRUTH = Object.freeze([
+  'ai-assistance-disclosure.test.js',
+  'asset-context.test.js',
+  'asset-import-resolver-safety.test.js',
+  'atiman-shell.test.js',
+  'capability-grants.test.js',
+  'external-authority-edition-groundwork.test.js',
+  'external-classification-crosswalk-evidence.test.js',
+  'external-classification-crosswalk.test.js',
+  'external-classification-foundation.test.js',
+  'governed-knowledge-foundation.test.js',
+  'knowledge-accession-authority.test.js',
+  'knowledge-authoring.test.js',
+  'knowledge-crosswalk-application.test.js',
+  'knowledge-evidence-deletion-integrity.test.js',
+  'knowledge-pack-membership.test.js',
+  'knowledge-pack-publication-admission.test.js',
+  'knowledge-provenance-authoring.test.js',
+  'knowledge-publication-admission.test.js',
+  'knowledge-versioning.test.js',
+  'm6r3-r1-remediation.test.js',
+  'migration-runner.test.js',
+  'observation-foundation.test.js',
+  'provenance-write-scope.test.js',
+  'report-capture.test.js',
+  'taxonomy-application.test.js',
+  'taxonomy-identity-lifecycle.test.js'
+]);
+
+const sorted = (list) => list.slice().sort();
+
+/**
+ * The disposable unit fixture's class, as hardcoded ground truth: the two
+ * suites this file declares, plus the three required security-critical suites
+ * `makeRuntimeFixture` always writes. Used by the flag-invariance and
+ * path-shape controls so neither reads its expectation from the code under test.
+ */
+const UNIT_FIXTURE_TRUTH = Object.freeze(sorted([
+  'a.test.js', 'b.test.js', 'database-test-guard.test.js',
+  'phase3-cutover-guard.test.js', 'runtime-security.test.js'
+]));
+
+/** Spawn the REAL verifier with an exact CI argument vector. No --json, no --quiet. */
+function runRealCi(mode, extraEnv = {}) {
+  return spawnSync(process.execPath, [REAL_CLI, ...CI_ARGV[mode]], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    timeout: 600000,
+    maxBuffer: 32 * 1024 * 1024,
+    env: { ...process.env, [REAL_PROBE_DEPTH_VAR]: '1', ...extraEnv }
+  });
+}
+
+/**
+ * Parse the assessed-suite identities out of the HUMAN-READABLE report — the
+ * same artifact a CI log reader sees. The table is the block between the
+ * `----` separator and the first blank line; the EXEMPT list further down is
+ * indented differently and is deliberately not matched.
+ */
+function assessedFromReport(stdout) {
+  const lines = String(stdout).split('\n');
+  const separator = lines.findIndex((l) => /^ {2}-{20,}/.test(l));
+  assert.notStrictEqual(separator, -1,
+    `the report must contain the assessed-suite table separator; got:\n${stdout}`);
+  const rows = [];
+  for (let i = separator + 1; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (line.trim() === '') break;
+    const m = line.match(/^ {2}(\S+\.test\.js)\s/);
+    assert.ok(m, `unparseable report row: ${JSON.stringify(line)}`);
+    rows.push(m[1]);
+  }
+  return rows.sort();
+}
+
+/** The `suites verified : N` total the report states. */
+function verifiedCount(stdout) {
+  const m = String(stdout).match(/suites verified\s*:\s*(\d+)/);
+  assert.ok(m, `the report must state the verified total; got:\n${stdout}`);
+  return Number(m[1]);
+}
+
+/**
+ * Relocate a disposable fixture to an explicit path. Fixture contents are
+ * path-independent (every require is relative), so this is how the path-shape
+ * control below reproduces the GitHub Actions checkout path.
+ */
+function relocateFixture(root, target) {
+  fs.rmSync(target, { recursive: true, force: true });
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.renameSync(root, target);
+  fixtures.push(target);
+  return target;
+}
+
+/** Run a fixture CLI invocation; the caller supplies the full argument vector. */
+function probeFixture(root, argv, extraEnv = {}) {
+  const res = spawnSync(process.execPath,
+    [path.join(root, 'scripts', 'test-execution-evidence.js'), '--repo-root', root, ...argv],
+    { encoding: 'utf8', timeout: 240000, maxBuffer: 16 * 1024 * 1024,
+      env: { ...process.env, ...GATE_ENV, ...extraEnv } });
+  return { status: res.status, stdout: res.stdout || '', stderr: res.stderr || '' };
+}
+
+const readRecord = (p) => JSON.parse(fs.readFileSync(p, 'utf8'));
+
+describe('ATM-001-SEC-CLOSURE-WP3-11 R8 CI argument-vector selection contract', () => {
+  it('P1 (unit, EXACT CI argv, REAL repository). the CI command assesses exactly the 13 unit suites', () => {
+    if (insideRealProbe()) return;
+    const res = runRealCi('unit');
+    assert.notStrictEqual(res.status, null, 'the unit evidence pass must terminate (not time out)');
+    assert.strictEqual(res.status, 0,
+      `\`node scripts/test-execution-evidence.js --mode unit\` must pass against the real repository; `
+      + `status=${res.status} stderr=${res.stderr}`);
+    assert.strictEqual(verifiedCount(res.stdout), 13,
+      'the real CI unit command must state 13 suites verified');
+    const reported = assessedFromReport(res.stdout);
+    assert.strictEqual(reported.length, 13,
+      'the printed assessed set must have 13 identities, not merely a 13 total');
+    assert.deepStrictEqual(reported, sorted(REAL_UNIT_GROUND_TRUTH),
+      'the CI unit argv must assess EXACTLY the 13 unit suites — a slice or a name filter must fail here');
+    assert.match(res.stdout, /violations\s*:\s*0/, 'no assessed suite may be in violation');
+  });
+
+  it('P2 (integration, EXACT CI argv, REAL repository). the CI command assesses exactly the 26 contracted suites', () => {
+    if (insideRealProbe()) return;
+    const res = runRealCi('integration', UNREACHABLE_GATE);
+    assert.notStrictEqual(res.status, null,
+      'the integration evidence pass must terminate (not time out)');
+    assert.strictEqual(verifiedCount(res.stdout), 26,
+      'the real CI integration command must state 26 suites verified');
+    const reported = assessedFromReport(res.stdout);
+    assert.strictEqual(reported.length, 26,
+      'the printed assessed set must have 26 identities, not merely a 26 total');
+    assert.strictEqual(new Set(reported).size, 26, 'no suite may be assessed twice');
+    assert.deepStrictEqual(reported, sorted(REAL_INTEGRATION_GROUND_TRUTH),
+      'the CI integration argv must assess EXACTLY the 26 contracted suites — '
+      + 'a slice or a name filter must fail here');
+    // The exit code is deliberately NOT asserted: the gate points at port 1 so
+    // the contracted suites cannot connect. The pass's exit-code contract for a
+    // reachable gate is exercised by S3/S4 above and by the CI integration job
+    // itself (which runs the same vector against a real disposable database).
+  });
+
+  it('P3 (REAL repository). discovery, unit class and integration class equal their hardcoded ground truth', () => {
+    const result = analyse({ repoRoot: REPO_ROOT });
+    assert.deepStrictEqual(sorted(result.discovered), sorted(REAL_DISCOVERED_GROUND_TRUTH),
+      'a narrowing inside discoverSuites() must fail HERE, not silently reduce the class');
+    assert.strictEqual(result.discovered.length, new Set(result.discovered).size,
+      'discovery must not return duplicates');
+    assert.deepStrictEqual(sorted(result.runsUnderNpmTest), sorted(REAL_UNIT_GROUND_TRUTH),
+      'the analysed unit class must be exactly the 13 ground-truth suites');
+    assert.deepStrictEqual(sorted(result.sanctioned), sorted(REAL_INTEGRATION_GROUND_TRUTH),
+      'the parsed integration contract must be exactly the 26 ground-truth suites');
+    assert.deepStrictEqual(
+      sorted(result.gated.filter((f) => result.sanctioned.includes(f))),
+      sorted(REAL_INTEGRATION_GROUND_TRUTH),
+      'the analysed integration class (gated AND contracted) must be exactly the 26 ground-truth suites');
+    assert.deepStrictEqual(result.failures, [],
+      'the real repository must remain fully accounted for');
+  });
+
+  it('S5 (path shape + suite names). the CI unit vector is not conditional on the repository path or on a suite name', () => {
+    // The GitHub Actions checkout lives at
+    // /home/runner/work/atiman-platform/atiman-platform, and the fixture's suite
+    // names (a/b) are not the real repository's. A selection keyed on the CI path
+    // shape, on `/home/runner`, on `atiman-platform`, or on any hardcoded suite
+    // name therefore cannot select the whole class here.
+    const staged = makeSelectionFixture({
+      ledger: ['a.test.js'],
+      contract: ["'tests/a.test.js'"],
+      suites: { 'a.test.js': plainSuiteBody('a'), 'b.test.js': plainSuiteBody('b') }
+    });
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'r8-cishape-'));
+    fixtures.push(base);
+    const root = relocateFixture(staged,
+      path.join(base, 'home', 'runner', 'work', 'atiman-platform', 'atiman-platform'));
+    assert.ok(root.includes(path.join('home', 'runner', 'work', 'atiman-platform', 'atiman-platform')),
+      'the fixture must sit at the GitHub Actions checkout path shape');
+    const res = probeFixture(root, [...CI_ARGV.unit]);
+    assert.strictEqual(res.status, 0, `the CI unit vector must pass at a CI-shaped path; ${res.stderr}`);
+    assert.strictEqual(verifiedCount(res.stdout), UNIT_FIXTURE_TRUTH.length);
+    assert.deepStrictEqual(assessedFromReport(res.stdout), UNIT_FIXTURE_TRUTH,
+      'the selected set must not depend on the repository path shape or on real suite names');
+  });
+
+  it('I1 (unit). the selected set is INVARIANT under --json and --quiet', () => {
+    const root = makeSelectionFixture({
+      ledger: ['a.test.js'],
+      contract: ["'tests/a.test.js'"],
+      suites: { 'a.test.js': plainSuiteBody('a'), 'b.test.js': plainSuiteBody('b') }
+    });
+    const truth = UNIT_FIXTURE_TRUTH;
+
+    const ci = probeFixture(root, [...CI_ARGV.unit]);
+    assert.strictEqual(ci.status, 0, `the exact CI unit vector must pass on a live fixture; ${ci.stderr}`);
+    assert.strictEqual(verifiedCount(ci.stdout), truth.length);
+    assert.deepStrictEqual(assessedFromReport(ci.stdout), truth,
+      'the CI unit vector (no --json, no --quiet) must select the WHOLE unit class');
+
+    const quiet = probeFixture(root, [...CI_ARGV.unit, '--quiet']);
+    assert.strictEqual(quiet.status, 0, '--quiet alone must not change the outcome');
+    assert.strictEqual(quiet.stdout.trim(), '',
+      '--quiet suppresses the table by design, so the record is the only observable for that flag');
+
+    const jsonPath = path.join(root, 'unit-json.json');
+    const withJson = probeFixture(root, [...CI_ARGV.unit, '--json', jsonPath]);
+    assert.strictEqual(withJson.status, 0);
+    assert.deepStrictEqual(assessed(readRecord(jsonPath)), truth,
+      'adding --json must not change the selected set');
+
+    const quietJsonPath = path.join(root, 'unit-quiet-json.json');
+    const withQuietJson = probeFixture(root, [...CI_ARGV.unit, '--quiet', '--json', quietJsonPath]);
+    assert.strictEqual(withQuietJson.status, 0);
+    assert.deepStrictEqual(assessed(readRecord(quietJsonPath)), truth,
+      'adding --quiet must not change the selected set');
+  });
+
+  it('I2 (integration). the selected set is INVARIANT under --json and --quiet', () => {
+    const root = makeSelectionFixture({
+      ledger: ['g1.test.js', 'g2.test.js', 'g3.test.js'],
+      contract: ["'tests/g1.test.js'", "'tests/g2.test.js'", "'tests/g3.test.js'"],
+      suites: {
+        'g1.test.js': gatedSuiteBody('g1'),
+        'g2.test.js': gatedSuiteBody('g2'),
+        'g3.test.js': gatedSuiteBody('g3')
+      }
+    });
+    const truth = sorted(['g1.test.js', 'g2.test.js', 'g3.test.js']);
+
+    const ci = probeFixture(root, [...CI_ARGV.integration], { RUN_DB_TESTS: 'true' });
+    assert.strictEqual(ci.status, 0, `the exact CI integration vector must pass on a live fixture; ${ci.stderr}`);
+    assert.strictEqual(verifiedCount(ci.stdout), truth.length);
+    assert.deepStrictEqual(assessedFromReport(ci.stdout), truth,
+      'the CI integration vector (no --json, no --quiet) must select the WHOLE contracted gated class');
+
+    const quiet = probeFixture(root, [...CI_ARGV.integration, '--quiet'], { RUN_DB_TESTS: 'true' });
+    assert.strictEqual(quiet.status, 0, '--quiet alone must not change the outcome');
+    assert.strictEqual(quiet.stdout.trim(), '', '--quiet suppresses the table by design');
+
+    const jsonPath = path.join(root, 'integration-json.json');
+    const withJson = probeFixture(root, [...CI_ARGV.integration, '--json', jsonPath],
+      { RUN_DB_TESTS: 'true' });
+    assert.strictEqual(withJson.status, 0);
+    assert.deepStrictEqual(assessed(readRecord(jsonPath)), truth,
+      'adding --json must not change the selected integration set');
+
+    const quietJsonPath = path.join(root, 'integration-quiet-json.json');
+    const withQuietJson = probeFixture(root, [...CI_ARGV.integration, '--quiet', '--json', quietJsonPath],
+      { RUN_DB_TESTS: 'true' });
+    assert.strictEqual(withQuietJson.status, 0);
+    assert.deepStrictEqual(assessed(readRecord(quietJsonPath)), truth,
+      'adding --quiet must not change the selected integration set');
+  });
+});
