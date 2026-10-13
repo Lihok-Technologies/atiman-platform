@@ -84,11 +84,16 @@ const DB_MUTATING_SUITES = [
   // steps, sources, versions, working evidence, a global source fixture and
   // out-of-band published versions).
   'knowledge-evidence-deletion-integrity.test.js',
-  // ATM-001-SEC-104 organization security policies (writes real organizations,
-  // users, a paid plan and its subscription as disposable fixtures, and reads the
-  // persisted rows back to assert the database effect of every decision; it
-  // deliberately creates no capability grant, because migration 022 makes a grant
-  // undeletable and the suite must clean up after itself).
+  // ATM-001-SEC-104 organization security policies, extended by
+  // ATM-001-SEC-104-R2 (writes real organizations, users, paid plans and their
+  // subscriptions, and reads the persisted rows back to assert the database
+  // effect of every decision). R2 additionally needs ONE real explicit capability
+  // grant, because finding F3 is about an administrator that holds an unrelated
+  // grant; migration 022 makes a grant undeletable, so that fixture is created
+  // idempotently ONCE outside the per-run prefix (`sec104-f3-*` users in the
+  // 'ATM-001-SEC-104-R2 F3 Tenant' organization, plus its plan and subscription)
+  // and is reused rather than recreated on every run. That bounded, documented
+  // residue is the only fixture the suite cannot remove.
   'organization-security-policies.test.js',
   'step6-access-control.test.js',
   'step6-coverage-e2e.test.js',

@@ -162,6 +162,48 @@ const LEGACY_COMPATIBILITY_BUNDLES = Object.freeze({
   ])
 });
 
+/**
+ * Tenant-administrator compatibility preservation (ATM-001-SEC-104-R2 F3).
+ *
+ * The database records the tenant administrator as `users.role = 'admin'` with
+ * `users.is_organization_admin = true` — the same flag the application already
+ * uses to recognise an organization administrator
+ * (src/middleware/tenant.js, src/routes/user.routes.js,
+ * views/mobile/admin/users.ejs), and the flag that organization creation and the
+ * public self-service signup set on the first administrator of a tenant.
+ *
+ * ATM-003-R1 §4 defines the **Tenant Administrator** launch profile as exactly
+ * `org.user_admin` + `org.config_admin`, "required to operate at all". The
+ * `admin` legacy bundle above already confers both on every un-granted
+ * administrator, so this profile is not new authority.
+ *
+ * The preservation exists because the resolver's mode rule discards the legacy
+ * bundle entirely once a principal holds any explicit grant. For an ordinary
+ * administrator that narrowing is intended; for the tenant administrator it
+ * silently removed the ability to administer the principal's own tenant as soon
+ * as an unrelated grant was issued — a regression against pre-capability
+ * behaviour (any administrator could edit its own organization profile). A
+ * tenant administrator therefore keeps the R1 Tenant Administrator profile in
+ * BOTH resolution modes.
+ *
+ * This is a compatibility key, not an authority of its own:
+ *   * holding `is_organization_admin` grants NOTHING by itself — the principal
+ *     must also hold `role = 'admin'`;
+ *   * the preserved set is exactly the legacy `admin` bundle's
+ *     organization-administration entries, so no capability is preserved that an
+ *     un-granted administrator did not already hold;
+ *   * it is TENANT-scoped authority only. `platform.admin`,
+ *     `knowledge.taxonomy_admin` and `integration.service` stay unreachable, and
+ *     tenant scope is still enforced separately by the routes'
+ *     `requireOwnOrganization` predicate / tenant-exact writes.
+ */
+const TENANT_ADMINISTRATOR_ROLE = 'admin';
+
+const TENANT_ADMINISTRATOR_PROFILE = Object.freeze([
+  CAPABILITIES.ORG_USER_ADMIN,
+  CAPABILITIES.ORG_CONFIG_ADMIN
+]);
+
 const isGrantable = (capability) => V1_HUMAN_GRANTABLE.includes(capability);
 
 module.exports = {
@@ -170,5 +212,7 @@ module.exports = {
   NON_HUMAN_GRANTABLE,
   RESOLUTION_MODES,
   LEGACY_COMPATIBILITY_BUNDLES,
+  TENANT_ADMINISTRATOR_ROLE,
+  TENANT_ADMINISTRATOR_PROFILE,
   isGrantable
 };

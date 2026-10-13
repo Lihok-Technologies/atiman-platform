@@ -82,10 +82,13 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   // may not destroy working provenance evidence as a cascade side effect, so
   // authorization covers the operation's effect and not merely its route.
   'tests/knowledge-evidence-deletion-integrity.test.js',
-  // ATM-001-SEC-104: the five OWNER-approved V1 organization security policies —
-  // creation restricted to platform.admin, org.config_admin + strict tenant scope
-  // for profile updates, subscription/capacity fields unreachable by a tenant
-  // administrator, tenant isolation for reading/listing/statistics/logo, and
+  // ATM-001-SEC-104 / ATM-001-SEC-104-R2: the five OWNER-approved V1 organization
+  // security policies — administrative organization creation restricted to
+  // platform.admin (the approved self-service POST /api/auth/organization-signup
+  // is preserved), org.config_admin + strict tenant scope for profile updates,
+  // subscription/capacity fields unreachable by a tenant administrator (extended
+  // to the whole /api/subscriptions capability), tenant isolation for
+  // reading/listing/statistics/logo including a body-addressed foreign tenant, and
   // fail-closed denial of direct organization deletion.
   'tests/organization-security-policies.test.js'
 ];

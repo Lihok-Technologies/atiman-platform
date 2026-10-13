@@ -5,7 +5,15 @@
  */
 
 const subscriptionService = require('../services/subscription.service');
-const pool = require('../config/database');
+// ATM-001-SEC-104-R2 F1: this was `const pool = require('../config/database')`,
+// i.e. the MODULE, so `pool.execute(...)` was `undefined` and threw. In
+// updateOrganizationSubscription that throw happened AFTER changePlan() and
+// setExtraUsers() had already committed, so a real cross-tenant write was
+// reported as HTTP 500 — an error that concealed a persisted mutation. The
+// route now also requires platform.admin, so the defect is not reachable from
+// HTTP by a human principal either way; it is fixed so the failure mode cannot
+// outlive the guard.
+const { pool } = require('../config/database');
 
 class SubscriptionController {
   /**

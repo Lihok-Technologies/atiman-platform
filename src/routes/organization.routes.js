@@ -19,12 +19,32 @@
  * Two authorities are used, both already in the approved ATM-003 vocabulary
  * (src/config/capabilities.js): `org.config_admin` is TENANT-scoped and
  * `platform.admin` is PLATFORM-scoped. No capability was invented and no role
- * was made human-grantable. Because `platform.admin` is deliberately NOT
- * human-grantable in V1 (NON_HUMAN_GRANTABLE in src/config/capabilities.js and
- * the CHECK constraint in database/postgresql/022_capability_grant_foundation.sql),
- * organization creation, cross-tenant listing and subscription change are
- * FAIL-CLOSED for every human principal. That is the intended outcome: V1 admits
- * no human principal for a platform-scoped act.
+ * was made human-grantable.
+ *
+ * ── What "fail-closed" does and does not mean here (F2 claim correction) ─────
+ *
+ * `platform.admin` is deliberately NOT human-grantable in V1
+ * (NON_HUMAN_GRANTABLE in src/config/capabilities.js and the CHECK constraint in
+ * database/postgresql/022_capability_grant_foundation.sql). Every route above
+ * that requires it is therefore unreachable by a human principal: the
+ * platform-scoped acts — administrative provisioning through THIS endpoint,
+ * cross-tenant listing, and subscription/capacity change — have no admitted human
+ * actor in V1. That is the intended outcome of policies 1 and 3.
+ *
+ * It is NOT true that "all human organization creation is prohibited in V1", and
+ * an earlier version of this comment said exactly that. Tenant self-registration
+ * exists, is approved, and is deliberately separate:
+ *
+ *   POST /api/auth/organization-signup  (src/routes/auth.routes.js)
+ *
+ * is the pre-authentication self-service tenant-registration endpoint reached by
+ * views/signup.ejs. It creates an organization, its first administrator
+ * (`role = 'admin'`, `is_organization_admin = true`) and a default Free
+ * subscription, and it neither requires nor should require `platform.admin`.
+ * Policy 1 restricts the ADMINISTRATIVE provisioning endpoint — POST
+ * /api/organizations, which mints a tenant under a caller-supplied plan, capacity
+ * and administrator password — not self-service registration. Only that narrower
+ * statement is supported by the code.
  */
 
 const express = require('express');
@@ -66,12 +86,17 @@ router.get('/', requireCapability('platform.admin'), organizationController.getA
  * @desc    Create new organization and its first administrator
  * @access  Private (platform.admin)
  *
- * Policy 1 (restrict organization creation to platform.admin). The legacy
- * `requireAdmin` guard admitted `supervisor` as well as `admin`
+ * Policy 1 (restrict ADMINISTRATIVE organization creation to platform.admin).
+ * The legacy `requireAdmin` guard admitted `supervisor` as well as `admin`
  * (src/middleware/auth.js:62-70), and the controller then minted a first user
  * with role 'admin' and is_organization_admin true under a caller-supplied
  * password — tenant provisioning performed by a tenant principal. Provisioning
  * is a platform-scoped act, so it now requires the platform-scoped capability.
+ *
+ * This is not a prohibition on tenant self-registration: the approved
+ * self-service endpoint POST /api/auth/organization-signup (see the header) is a
+ * different act, on a different route, and remains available to anonymous
+ * signup.
  */
 router.post('/', requireCapability('platform.admin'), organizationController.create);
 
@@ -194,11 +219,16 @@ router.delete('/:id', denyOrganizationDeletion);
  * @access  Private (org.config_admin)
  *
  * Policy 4 (tenant isolation, logo management) and policy 2 (logo_url is an
- * organization profile field). The controller writes req.user.organization_id
- * and accepts no identifier, so the write is already tenant-exact; the
- * `org.config_admin` requirement is what the route was missing — it had no role
- * gate at all, so any authenticated operator could rewrite the organization
- * logo. The paid-plan check is unchanged.
+ * organization profile field). The `org.config_admin` requirement is what the
+ * route was missing — it had no role gate at all, so any authenticated operator
+ * could rewrite the organization logo. The paid-plan check is unchanged.
+ *
+ * There is no `:id` on this route, so tenant scope is enforced in the handler:
+ * the write target is `req.user.organization_id`, and a body that addresses a
+ * DIFFERENT organization is refused with 403 rather than ignored
+ * (ATM-001-SEC-104-R2 F4). The suite's cross-tenant logo case exists precisely so
+ * that making this handler honour `req.body.organization_id` — which would be a
+ * full cross-tenant logo write — cannot pass unnoticed.
  */
 router.post('/logo', resolveOrganization, requireCapability('org.config_admin'), organizationController.uploadLogo);
 

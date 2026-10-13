@@ -36,6 +36,43 @@ const TENANT_EDITABLE_ORGANIZATION_FIELDS = Object.freeze([
 ]);
 
 /**
+ * All the allowlisted columns are character columns, so every one of them must
+ * be submitted as a string.
+ *
+ * ATM-001-SEC-104-R2 residual correction. Two defects made this necessary:
+ *
+ *   * a `null` for a NOT NULL allowlisted column (`organization_name`) reached
+ *     the database and surfaced as an unhandled HTTP 500 carrying the raw
+ *     PostgreSQL constraint message — a validation failure reported as a server
+ *     error, and a schema disclosure. (For a nullable column the same `null`
+ *     silently cleared the field, so "does null mean clear or rejected?" also had
+ *     two answers.)
+ *   * an array, object, number or boolean was coerced by the database into a
+ *     string (`{"nested":true}`, `{"a","b"}`, `12345`, `true`), so a client could
+ *     store a value of the wrong type in a profile column. Values are
+ *     parameterised, so this was type confusion and never injection — but it is
+ *     still a field the caller was never authorised to shape that way.
+ *
+ * A non-string is now refused with a 400 before any UPDATE is attempted. An
+ * EMPTY STRING remains available as the way to clear a nullable field: it is a
+ * string, and the data layer normalises it to SQL NULL exactly as before. Only
+ * `organization_name` rejects the empty string, because that column is NOT NULL
+ * and an empty value could only reproduce the 500 above.
+ */
+const validateOrganizationProfileFieldTypes = (permitted) => {
+  for (const field of Object.keys(permitted)) {
+    const value = permitted[field];
+    if (typeof value !== 'string') {
+      return field;
+    }
+    if (field === 'organization_name' && value.trim() === '') {
+      return field;
+    }
+  }
+  return null;
+};
+
+/**
  * Partition a request body into the fields a tenant principal may change and
  * the fields it may not.
  *
@@ -284,6 +321,9 @@ const create = async (req, res, next) => {
  * than partially applied: silently dropping a subscription or capacity field
  * would let a caller believe a change it is not authorised to make had been
  * considered, and the refusal is what makes the field-level denial observable.
+ *
+ * An allowlisted field whose value is not a string is refused with 400 before any
+ * UPDATE runs (see `validateOrganizationProfileFieldTypes`).
  */
 const update = async (req, res, next) => {
   try {
@@ -304,6 +344,16 @@ const update = async (req, res, next) => {
         success: false,
         code: 'ORGANIZATION_UPDATE_NO_FIELDS',
         message: 'No editable organization profile fields were provided'
+      });
+    }
+
+    const invalidField = validateOrganizationProfileFieldTypes(permitted);
+
+    if (invalidField) {
+      return res.status(400).json({
+        success: false,
+        code: 'ORGANIZATION_UPDATE_FIELD_TYPE_INVALID',
+        message: `The value of ${invalidField} must be a string`
       });
     }
 
@@ -435,11 +485,35 @@ const getUsageStats = async (req, res, next) => {
 /**
  * Upload organization logo
  * Only for paid plans
+ *
+ * ATM-001-SEC-104-R2 F4 — the tenant is the AUTHENTICATED PRINCIPAL, never the
+ * request body. `req.user.organization_id` is the only address this write can
+ * take, and a body that names a different organization is refused outright
+ * (403) rather than silently redirected. Refusing — rather than ignoring — is
+ * what makes the tenant boundary observable: if this handler ever honoured
+ * `req.body.organization_id`, the same request would write a FOREIGN tenant's
+ * logo, and the suite's cross-tenant logo case fails when that mutation is made.
+ *
+ * Authority for the act is the route's `requireCapability('org.config_admin')`;
+ * this handler only decides which tenant may be written and what value.
  */
 const uploadLogo = async (req, res, next) => {
   try {
     const organizationId = req.user.organization_id;
-    
+
+    const addressedOrganizationId = req.body?.organization_id;
+
+    if (addressedOrganizationId !== undefined
+        && addressedOrganizationId !== null
+        && String(addressedOrganizationId) !== ''
+        && String(addressedOrganizationId) !== String(organizationId)) {
+      return res.status(403).json({
+        success: false,
+        code: 'ORGANIZATION_LOGO_TENANT_MISMATCH',
+        message: 'Access denied'
+      });
+    }
+
     // Check if paid plan
     const billingInfo = await subscriptionService.getBillingInfo(organizationId);
     const planCode = billingInfo?.plan?.code || 'free';
