@@ -81,7 +81,23 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   // ATM-001-KF-06: knowledge evidence deletion integrity — a definition deletion
   // may not destroy working provenance evidence as a cascade side effect, so
   // authorization covers the operation's effect and not merely its route.
-  'tests/knowledge-evidence-deletion-integrity.test.js'
+  'tests/knowledge-evidence-deletion-integrity.test.js',
+  // ATM-001-SEC-104 / ATM-001-SEC-104-R2: the five OWNER-approved V1 organization
+  // security policies — administrative organization creation restricted to
+  // platform.admin (the approved self-service POST /api/auth/organization-signup
+  // is preserved), org.config_admin + strict tenant scope for profile updates,
+  // subscription/capacity fields unreachable by a tenant administrator (extended
+  // to the whole /api/subscriptions capability), tenant isolation for
+  // reading/listing/statistics/logo including a body-addressed foreign tenant, and
+  // fail-closed denial of direct organization deletion.
+  'tests/organization-security-policies.test.js',
+  // ATM-001-SEC-104-R3: live disposable-PostgreSQL evidence for the approved
+  // self-service POST /api/auth/organization-signup — HTTP result, committed
+  // organization / administrator / subscription row counts, transaction
+  // behaviour, orphan-record behaviour and the security boundary. Pins defect
+  // D-1 (the endpoint commits an orphan organization and answers HTTP 500); the
+  // intended contract is carried as a `todo` test, never as a silent repair.
+  'tests/organization-signup.integration.test.js'
 ];
 
 /**

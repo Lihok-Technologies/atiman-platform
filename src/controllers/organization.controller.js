@@ -8,6 +8,98 @@ const { hashPassword } = require('../utils/helpers');
 const subscriptionService = require('../services/subscription.service');
 
 /**
+ * The organization-profile fields a tenant-scoped principal may change.
+ *
+ * ATM-001-SEC-104 policy 3. This is an explicit ALLOWLIST, replacing the raw
+ * `{ ...req.body }` spread and its five-key denylist. Everything not listed is
+ * unrepresentable in the UPDATE statement, so these can never be reached by a
+ * tenant administrator through this route:
+ *
+ *   subscription_plan, subscription_status, subscription_id — subscription
+ *   max_users, max_facilities, max_equipment              — capacity
+ *   id                                                    — the primary key
+ *   created_at, updated_at                                — server-owned
+ *
+ * The list is exactly the non-subscription, non-capacity profile columns of
+ * `organizations` (database/postgresql/001_core.sql). It preserves the
+ * legitimate self-service profile edit already performed by
+ * views/mobile/admin/organization.ejs (organization_name, industry,
+ * billing_email, phone).
+ */
+const TENANT_EDITABLE_ORGANIZATION_FIELDS = Object.freeze([
+  'organization_name',
+  'industry',
+  'billing_email',
+  'billing_address',
+  'phone',
+  'logo_url'
+]);
+
+/**
+ * All the allowlisted columns are character columns, so every one of them must
+ * be submitted as a string.
+ *
+ * ATM-001-SEC-104-R2 residual correction. Two defects made this necessary:
+ *
+ *   * a `null` for a NOT NULL allowlisted column (`organization_name`) reached
+ *     the database and surfaced as an unhandled HTTP 500 carrying the raw
+ *     PostgreSQL constraint message — a validation failure reported as a server
+ *     error, and a schema disclosure. (For a nullable column the same `null`
+ *     silently cleared the field, so "does null mean clear or rejected?" also had
+ *     two answers.)
+ *   * an array, object, number or boolean was coerced by the database into a
+ *     string (`{"nested":true}`, `{"a","b"}`, `12345`, `true`), so a client could
+ *     store a value of the wrong type in a profile column. Values are
+ *     parameterised, so this was type confusion and never injection — but it is
+ *     still a field the caller was never authorised to shape that way.
+ *
+ * A non-string is now refused with a 400 before any UPDATE is attempted. An
+ * EMPTY STRING remains available as the way to clear a nullable field: it is a
+ * string, and the data layer normalises it to SQL NULL exactly as before. Only
+ * `organization_name` rejects the empty string, because that column is NOT NULL
+ * and an empty value could only reproduce the 500 above.
+ */
+const validateOrganizationProfileFieldTypes = (permitted) => {
+  for (const field of Object.keys(permitted)) {
+    const value = permitted[field];
+    if (typeof value !== 'string') {
+      return field;
+    }
+    if (field === 'organization_name' && value.trim() === '') {
+      return field;
+    }
+  }
+  return null;
+};
+
+/**
+ * Partition a request body into the fields a tenant principal may change and
+ * the fields it may not.
+ *
+ * `Object.prototype.hasOwnProperty` is used deliberately: an inherited or
+ * prototype-polluted key is not a submitted field, and only own properties are
+ * considered.
+ */
+const partitionOrganizationProfileFields = (body) => {
+  const permitted = {};
+  const refused = [];
+
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return { permitted, refused };
+  }
+
+  for (const key of Object.keys(body)) {
+    if (TENANT_EDITABLE_ORGANIZATION_FIELDS.includes(key)) {
+      permitted[key] = body[key];
+    } else {
+      refused.push(key);
+    }
+  }
+
+  return { permitted, refused };
+};
+
+/**
  * Get all organizations (system admin only)
  */
 const getAll = async (req, res, next) => {
@@ -54,23 +146,18 @@ const getPublicOrganizations = async (req, res, next) => {
 
 /**
  * Get organization by ID
- * Users can only view their own organization
- * System admins can view any organization
+ * Users can only view their own organization.
+ *
+ * Tenant scope is enforced by `requireOwnOrganization` in the route chain,
+ * before this controller runs (ATM-001-SEC-104 policy 4). The former
+ * `parseInt(id) !== userOrgId && userRole !== 'admin'` check is deliberately
+ * gone: its `userRole !== 'admin'` disjunct was a full cross-tenant read
+ * bypass, and duplicating a weaker check here would leave that defect latent.
  */
 const getById = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const userOrgId = req.user.organization_id;
-    const userRole = req.user.role;
-    
-    // Only allow viewing own organization unless system admin
-    if (parseInt(id) !== userOrgId && userRole !== 'admin') {
-      return res.status(403).json({
-        success: false,
-        message: 'Access denied'
-      });
-    }
-    
+
     const organization = await Organization.findByIdWithStats(id);
     
     if (!organization) {
@@ -224,36 +311,53 @@ const create = async (req, res, next) => {
 
 /**
  * Update organization
- * Organization admins can update their own organization
- * System admins can update any organization
+ *
+ * Authority: `requireOwnOrganization` + `requireCapability('org.config_admin')`
+ * in the route chain (ATM-001-SEC-104 policies 2 and 3). This controller only
+ * decides which profile fields the request may carry.
+ *
+ * The body is partitioned against `TENANT_EDITABLE_ORGANIZATION_FIELDS`. A
+ * request that asks for any field outside the allowlist is refused whole rather
+ * than partially applied: silently dropping a subscription or capacity field
+ * would let a caller believe a change it is not authorised to make had been
+ * considered, and the refusal is what makes the field-level denial observable.
+ *
+ * An allowlisted field whose value is not a string is refused with 400 before any
+ * UPDATE runs (see `validateOrganizationProfileFieldTypes`).
  */
 const update = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const userOrgId = req.user.organization_id;
-    const userRole = req.user.role;
-    const isOrgAdmin = req.user.is_organization_admin;
-    
-    // Only allow updating own organization unless system admin
-    if (parseInt(id) !== userOrgId && userRole !== 'admin') {
-      return res.status(403).json({
+
+    const { permitted, refused } = partitionOrganizationProfileFields(req.body);
+
+    if (refused.length > 0) {
+      return res.status(400).json({
         success: false,
-        message: 'Access denied'
+        code: 'ORGANIZATION_UPDATE_FIELD_NOT_PERMITTED',
+        message: `These organization fields cannot be changed through this endpoint: ${refused.join(', ')}`
       });
     }
-    
-    // Organization admins cannot change subscription plan/status
-    // Only system admins can change billing-related fields
-    const updateData = { ...req.body };
-    if (userRole !== 'admin') {
-      delete updateData.subscription_plan;
-      delete updateData.subscription_status;
-      delete updateData.max_users;
-      delete updateData.max_facilities;
-      delete updateData.max_equipment;
+
+    if (Object.keys(permitted).length === 0) {
+      return res.status(400).json({
+        success: false,
+        code: 'ORGANIZATION_UPDATE_NO_FIELDS',
+        message: 'No editable organization profile fields were provided'
+      });
     }
-    
-    const organization = await Organization.update(id, updateData);
+
+    const invalidField = validateOrganizationProfileFieldTypes(permitted);
+
+    if (invalidField) {
+      return res.status(400).json({
+        success: false,
+        code: 'ORGANIZATION_UPDATE_FIELD_TYPE_INVALID',
+        message: `The value of ${invalidField} must be a string`
+      });
+    }
+
+    const organization = await Organization.update(id, permitted);
     
     res.json({
       success: true,
@@ -320,21 +424,15 @@ const remove = async (req, res, next) => {
 
 /**
  * Get organization usage stats
+ *
+ * Tenant scope is enforced by `requireOwnOrganization` in the route chain,
+ * before this controller runs (ATM-001-SEC-104 policy 4). The former
+ * `userRole !== 'admin'` disjunct was a full cross-tenant statistics bypass.
  */
 const getUsageStats = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const userOrgId = req.user.organization_id;
-    const userRole = req.user.role;
-    
-    // Only allow viewing own organization unless system admin
-    if (parseInt(id) !== userOrgId && userRole !== 'admin') {
-      return res.status(403).json({
-        success: false,
-        message: 'Access denied'
-      });
-    }
-    
+
     const stats = await Organization.getUsageStats(id);
     
     if (!stats) {
@@ -387,11 +485,35 @@ const getUsageStats = async (req, res, next) => {
 /**
  * Upload organization logo
  * Only for paid plans
+ *
+ * ATM-001-SEC-104-R2 F4 — the tenant is the AUTHENTICATED PRINCIPAL, never the
+ * request body. `req.user.organization_id` is the only address this write can
+ * take, and a body that names a different organization is refused outright
+ * (403) rather than silently redirected. Refusing — rather than ignoring — is
+ * what makes the tenant boundary observable: if this handler ever honoured
+ * `req.body.organization_id`, the same request would write a FOREIGN tenant's
+ * logo, and the suite's cross-tenant logo case fails when that mutation is made.
+ *
+ * Authority for the act is the route's `requireCapability('org.config_admin')`;
+ * this handler only decides which tenant may be written and what value.
  */
 const uploadLogo = async (req, res, next) => {
   try {
     const organizationId = req.user.organization_id;
-    
+
+    const addressedOrganizationId = req.body?.organization_id;
+
+    if (addressedOrganizationId !== undefined
+        && addressedOrganizationId !== null
+        && String(addressedOrganizationId) !== ''
+        && String(addressedOrganizationId) !== String(organizationId)) {
+      return res.status(403).json({
+        success: false,
+        code: 'ORGANIZATION_LOGO_TENANT_MISMATCH',
+        message: 'Access denied'
+      });
+    }
+
     // Check if paid plan
     const billingInfo = await subscriptionService.getBillingInfo(organizationId);
     const planCode = billingInfo?.plan?.code || 'free';
@@ -447,5 +569,8 @@ module.exports = {
   updateSubscription,
   remove,
   getUsageStats,
-  uploadLogo
+  uploadLogo,
+  // Exposed for the ATM-001-SEC-104 suite: the allowlist is the authority for
+  // field-level authorization, so it must be assertable directly.
+  TENANT_EDITABLE_ORGANIZATION_FIELDS
 };

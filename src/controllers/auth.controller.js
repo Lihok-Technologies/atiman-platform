@@ -392,8 +392,21 @@ const changePassword = async (req, res, next) => {
 
 /**
  * Public organization signup
- * Creates a new organization with the first user as admin
- * Assigns a default Free subscription plan
+ *
+ * INTENDED contract: create a new organization with the first user as
+ * `role = 'admin'` / `is_organization_admin = true`, and assign a default Free
+ * subscription.
+ *
+ * OBSERVED contract at this head (ATM-001-SEC-104-R3; verified live in
+ * tests/organization-signup.integration.test.js): HTTP 500
+ * `Cannot read properties of null (reading 'id')`, with ONE organization row
+ * committed and ZERO users and ZERO subscriptions. Defect D-1 — `BaseModel.create`
+ * reads `result.insertId`, which the PostgreSQL adapter never populates, so
+ * `Organization.create` returns null after its INSERT has committed and the
+ * handler throws on `organization.id` below. The failure is NOT rolled back.
+ * This is pinned, not repaired: the fix belongs to the shared `BaseModel.create`
+ * write path and is escalated to the OWNER. See the header of
+ * src/routes/organization.routes.js.
  */
 const organizationSignup = async (req, res, next) => {
   try {

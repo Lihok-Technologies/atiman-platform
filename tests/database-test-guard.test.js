@@ -84,6 +84,24 @@ const DB_MUTATING_SUITES = [
   // steps, sources, versions, working evidence, a global source fixture and
   // out-of-band published versions).
   'knowledge-evidence-deletion-integrity.test.js',
+  // ATM-001-SEC-104 organization security policies, extended by
+  // ATM-001-SEC-104-R2 (writes real organizations, users, paid plans and their
+  // subscriptions, and reads the persisted rows back to assert the database
+  // effect of every decision). R2 additionally needs ONE real explicit capability
+  // grant, because finding F3 is about an administrator that holds an unrelated
+  // grant; migration 022 makes a grant undeletable, so that fixture is created
+  // idempotently ONCE outside the per-run prefix (`sec104-f3-*` users in the
+  // 'ATM-001-SEC-104-R2 F3 Tenant' organization, plus its plan and subscription)
+  // and is reused rather than recreated on every run. That bounded, documented
+  // residue is the only fixture the suite cannot remove.
+  'organization-security-policies.test.js',
+  // ATM-001-SEC-104-R3: live disposable-PostgreSQL evidence for the approved
+  // self-service POST /api/auth/organization-signup (writes real organizations
+  // and reads the committed row counts back; pins defect D-1). Residue: none —
+  // every row it creates is an orphan with no dependants and is removed by its
+  // per-run prefix, and the `free` plan fixture is created only when absent and
+  // removed again only when this run created it.
+  'organization-signup.integration.test.js',
   'step6-access-control.test.js',
   'step6-coverage-e2e.test.js',
   'step6-performance.test.js',
@@ -121,7 +139,13 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'report-capture.test.js',
   'knowledge-accession-authority.test.js',
   'provenance-write-scope.test.js',
-  'knowledge-evidence-deletion-integrity.test.js'
+  'knowledge-evidence-deletion-integrity.test.js',
+  // ATM-001-SEC-104: the five OWNER-approved V1 organization security policies
+  // (creation, profile update, subscription/capacity, tenant isolation, deletion).
+  'organization-security-policies.test.js',
+  // ATM-001-SEC-104-R3: live signup evidence on disposable PostgreSQL (the
+  // endpoint had only static file-content assertions before this suite).
+  'organization-signup.integration.test.js'
 ];
 
 const REPO_ROOT = path.resolve(__dirname, '..');

@@ -77,6 +77,44 @@ const requireOrganizationAdmin = (req, res, next) => {
 };
 
 /**
+ * Require that the `:id` route parameter is the caller's own organization.
+ *
+ * ATM-001-SEC-104 policy 4 (strict tenant scope). The caller's tenant — taken
+ * from `req.user.organization_id`, never from a client-supplied value — is the
+ * only organization a tenant-scoped principal may address. A role is not
+ * authority: there is deliberately no `admin` exemption, because the previous
+ * `userRole !== 'admin'` disjunct in the organization controllers was a full
+ * cross-tenant bypass.
+ *
+ * The predicate is a pure comparison and runs BEFORE any controller or model
+ * call, so a foreign identifier can neither be read nor modified. It is also
+ * independent of whether the identifier exists: a foreign id and an absent id
+ * are refused identically (403), so the response cannot disclose what exists.
+ */
+const requireOwnOrganization = (req, res, next) => {
+  if (!req.user) {
+    return res.status(401).json({
+      success: false,
+      message: 'Authentication required'
+    });
+  }
+
+  const ownOrganizationId = Number(req.user.organization_id);
+  const requestedOrganizationId = Number(req.params.id);
+
+  if (!Number.isInteger(ownOrganizationId)
+      || !Number.isInteger(requestedOrganizationId)
+      || requestedOrganizationId !== ownOrganizationId) {
+    return res.status(403).json({
+      success: false,
+      message: 'Access denied'
+    });
+  }
+
+  next();
+};
+
+/**
  * Optional tenant resolution
  * Sets organization context if available but doesn't require it
  */
@@ -148,6 +186,7 @@ const checkOrganizationLimit = (resourceType) => {
 module.exports = {
   resolveOrganization,
   requireOrganizationAdmin,
+  requireOwnOrganization,
   optionalOrganization,
   checkOrganizationLimit
 };
