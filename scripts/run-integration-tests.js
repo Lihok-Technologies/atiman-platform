@@ -128,7 +128,15 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   // MISSION D-1: onboarding atomicity — organization signup and invitation
   // acceptance commit their whole write set or none of it, an unobservable INSERT
   // fails loudly, and a returned `SELECT *` row never discloses a credential.
-  'tests/onboarding-atomicity.test.js'
+  'tests/onboarding-atomicity.test.js',
+  // ATM-001-SEC-106 blocker B-1: capability-grant authority. Resolves real
+  // grants for the tenant-administrator principal shape, drives the real
+  // org.user_admin-gated invitation routes and the org.config_admin
+  // organization routes, and pins the OWNER policy that
+  // `is_organization_admin` plus an UNRELATED explicit grant confers nothing.
+  // Fixture residue is bounded to one stable, idempotent set (migration 022
+  // makes a grant undeletable); see the suite header.
+  'tests/atm-001-sec-106-b1-grant-authority.test.js'
 ];
 
 /**

@@ -48,7 +48,7 @@
  * Where a claim is about what is ABSENT (non-disclosure), the assertion is made
  * against the whole serialised response body, never a hand-picked field list.
  *
- * ── Capability-grant fixtures (R2 finding F3) ────────────────────────────────
+ * ── Capability-grant fixtures (R2 finding F3, CORRECTED by MISSION #106/B-1) ──
  *
  * F3 requires an administrator that holds an UNRELATED explicit grant, and
  * migration 022 makes a grant a permanent record (DELETE raises by trigger), so
@@ -59,6 +59,16 @@
  * the suite reuses the same rows, so the residue is bounded to that one set and
  * is documented in tests/database-test-guard.test.js. Every OTHER fixture in this
  * file is per-run and removed by `cleanupFixture()`.
+ *
+ * MISSION #106 (blocker B-1) CORRECTED the F3 expectation. #104-R2 added the
+ * ATM-003-R1 §4 Tenant Administrator profile to that principal shape in both
+ * modes; that inference was never approved (ATM-003-R3 §6 declares it carries no
+ * authority of its own) and the OWNER policy for #106 forbids it. Section I now
+ * asserts the FAIL-CLOSED behaviour — the granted administrator holds exactly its
+ * grant and is refused — while the same shape with NO grant (legacy mode) keeps
+ * full tenant administration as the positive control. The static function
+ * `withTenantAdministratorProfile` is gone; see
+ * docs/review-evidence/ATM-001-SEC-106-B1-RECONCILIATION.md.
  *
  * Database-mutating suite: gated on isIntegrationTest(), the same predicate
  * src/config/database.js uses to select test-database credentials, so it can
@@ -1420,37 +1430,55 @@ describe('ATM-001-SEC-104 V1 organization security policies', { skip: DB_TEST_SK
   });
 
   // ------------------------------------------------------------------
-  // I. F3 — the tenant administrator with an UNRELATED explicit grant
+  // I. F3 — CORRECTED by MISSION #106 (blocker B-1): the tenant-administrator
+  //    flag PLUS an unrelated explicit grant confers NOTHING
   //
-  // The mode rule discards the legacy bundle once any explicit grant exists. For
-  // the tenant administrator (role admin AND is_organization_admin) that removed
-  // the ability to administer its own tenant: baseline answered 200 and wrote the
-  // row, the #104 candidate answered 403. These cases pin the correction in both
-  // directions — with the unrelated grant, and without any grant (C1/C5/E7).
+  // The mode rule discards the legacy bundle once any explicit grant exists. The
+  // #104-R2 candidate answered that by ADDING the ATM-003-R1 §4 Tenant
+  // Administrator profile to any principal with `role='admin'` AND
+  // `is_organization_admin=true`, in BOTH modes. That inference was never
+  // approved: ATM-003-R3 §6 records it as "RECORDED, awaiting OWNER acknowledgment.
+  // This section carries no authority of its own", and the OWNER policy recorded
+  // for #106 forbids it — "`is_organization_admin` + an unrelated explicit grant
+  // must NOT by itself confer `org.user_admin`. Do not infer user-admin from
+  // arbitrary grants."
+  //
+  // These cases assert the CORRECTED behaviour in BOTH directions: the granted
+  // administrator holds EXACTLY its grant and is refused, while the same
+  // administrator shape with NO grant (LEGACY_COMPATIBILITY mode) keeps full
+  // tenant administration. Every refusal is paired with a database-effect
+  // assertion, because a status code alone is not evidence of a missing write.
   // ------------------------------------------------------------------
 
-  describe('I. F3: tenant administrator with unrelated explicit grants', () => {
-    it('I1. resolves the R1 Tenant Administrator profile for the granted administrator, and nothing else', async () => {
+  describe('I. F3 (corrected by #106/B-1): flag + unrelated grant confers nothing', () => {
+    it('I1. resolves EXACTLY the explicit grant for the flagged administrator, and no R1 profile', async () => {
+      // Fixture integrity FIRST: the negative assertions below are only meaningful
+      // if the row really is the tenant-administrator shape.
+      const shape = await rows(
+        'SELECT role, is_organization_admin FROM users WHERE id = $1', [F3_USER_GRANTED]);
+      assert.strictEqual(shape[0].role, 'admin', 'the fixture must hold role admin');
+      assert.strictEqual(shape[0].is_organization_admin, true, 'the fixture must hold the flag');
+
       const resolved = await resolveCapabilities({ id: F3_USER_GRANTED });
 
       assert.strictEqual(resolved.mode, RESOLUTION_MODES.EXPLICIT_GRANTS,
         'the fixture holds a real active grant, so it must resolve in explicit mode');
-      for (const capability of TENANT_ADMINISTRATOR_PROFILE) {
-        assert.ok(resolved.capabilities.has(capability),
-          `the tenant administrator must keep ${capability} despite the unrelated grant`);
-      }
       assert.ok(resolved.capabilities.has(F3_UNRELATED_CAPABILITY), 'the grant itself must still apply');
-      assert.deepStrictEqual([...resolved.capabilities].sort(),
-        [F3_UNRELATED_CAPABILITY, ...TENANT_ADMINISTRATOR_PROFILE].sort(),
-        'exactly the explicit grant plus the R1 Tenant Administrator profile — no union of the rest');
+      assert.deepStrictEqual([...resolved.capabilities].sort(), [F3_UNRELATED_CAPABILITY],
+        'the resolved set must be EXACTLY the active explicit grants (#106/B-1)');
+
+      for (const capability of TENANT_ADMINISTRATOR_PROFILE) {
+        assert.ok(!resolved.capabilities.has(capability),
+          `an unrelated grant must NOT confer ${capability} (#106/B-1)`);
+      }
       assert.ok(!resolved.capabilities.has('knowledge.publish'),
-        'the rest of the legacy admin bundle must NOT be restored');
+        'the rest of the legacy admin bundle must NOT be restored either');
       assert.ok(!resolved.capabilities.has('platform.admin'));
       assert.ok(!resolved.capabilities.has('inspection.execute'));
 
       assert.deepStrictEqual([...TENANT_ADMINISTRATOR_PROFILE].sort(),
         [CAPABILITIES.ORG_USER_ADMIN, CAPABILITIES.ORG_CONFIG_ADMIN].sort(),
-        'the preserved profile must be exactly the R1 Tenant Administrator profile');
+        'the profile the fixture must NOT receive is exactly the ATM-003-R1 §4 profile');
     });
 
     it('I2. keeps the flag from being an authority of its own', async () => {
@@ -1471,53 +1499,78 @@ describe('ATM-001-SEC-104 V1 organization security policies', { skip: DB_TEST_SK
         'an un-granted administrator still resolves to the exact legacy bundle');
       assert.ok(plainAdmin.capabilities.has('org.config_admin'),
         'the without-grant administrator is the paired control: it already holds org.config_admin');
+      assert.ok(plainAdmin.capabilities.has('org.user_admin'),
+        'legacy parity is UNCHANGED by #106/B-1: the admin bundle still carries the R1 profile');
     });
 
-    it('I3. admits the granted tenant administrator to its OWN organization profile and persists it', async () => {
+    it('I3. REFUSES the granted flagged administrator its own organization profile, and writes nothing', async () => {
       const before = await orgRow(F3_ORG);
-      const marker = `${TAG} F3 grant-address`;
+      const marker = `${TAG} F3 granted-address`;
 
-      const res = await put(`/api/organizations/${F3_ORG}`, { billing_address: marker },
+      const refused = await put(`/api/organizations/${F3_ORG}`, { billing_address: marker },
         { userId: F3_USER_GRANTED });
 
-      assert.strictEqual(res.status, 200,
-        `the tenant administrator must not lose org.config_admin to an unrelated grant: ${res.text}`);
-
+      assert.strictEqual(refused.status, 403,
+        `#106/B-1: an unrelated grant must not confer org.config_admin: ${refused.text}`);
+      assert.strictEqual(refused.json.code, undefined,
+        'the refusal is the capability guard, not a controller validation error');
       const after = await orgRow(F3_ORG);
-      assert.strictEqual(after.billing_address, marker, 'database effect: the allowed field was written');
+      assert.strictEqual(after.billing_address, before.billing_address,
+        'database effect: the refused profile update wrote NOTHING');
       assert.strictEqual(after.organization_name, before.organization_name, 'the fixture identity is stable');
       assert.strictEqual(after.subscription_plan, before.subscription_plan, 'subscription plan untouched');
       assert.strictEqual(after.max_users, before.max_users, 'capacity untouched');
+
+      // POSITIVE CONTROL — the route, the guard and the persisted write are
+      // UNCHANGED for a principal the resolver legitimately gives the profile to:
+      // the same administrator shape holding NO grant (LEGACY_COMPATIBILITY mode).
+      const allowed = await put(`/api/organizations/${F3_ORG}`, { billing_address: marker },
+        { userId: F3_USER_PLAIN });
+      assert.strictEqual(allowed.status, 200,
+        `the legacy administrator path must be untouched by #106/B-1: ${allowed.text}`);
+      assert.strictEqual((await orgRow(F3_ORG)).billing_address, marker,
+        'database effect: the legacy administrator write IS persisted');
     });
 
-    it('I4. admits the granted tenant administrator to the logo route for its own tenant', async () => {
+    it('I4. REFUSES the granted flagged administrator the logo route and writes nothing', async () => {
+      const before = await orgRow(F3_ORG);
       const beforeB = await orgSnapshot(ORG_B);
-      const res = await post('/api/organizations/logo',
+
+      const refused = await post('/api/organizations/logo',
         { logo: 'data:image/png;base64,F3-GRANTED' }, { userId: F3_USER_GRANTED });
 
-      assert.strictEqual(res.status, 200,
-        `the granted tenant administrator must still manage its own logo: ${res.text}`);
-      assert.strictEqual((await orgRow(F3_ORG)).logo_url, 'data:image/png;base64,F3-GRANTED',
-        'database effect: the own tenant logo is persisted');
+      assert.strictEqual(refused.status, 403,
+        `#106/B-1: an unrelated grant must not confer org.config_admin: ${refused.text}`);
+      assert.strictEqual((await orgRow(F3_ORG)).logo_url, before.logo_url,
+        'database effect: the refused logo write is absent');
+      assert.strictEqual(await orgSnapshot(ORG_B), beforeB, 'database effect: an unrelated tenant is untouched');
+
+      // POSITIVE CONTROL — the logo route still works for the legacy administrator.
+      const allowed = await post('/api/organizations/logo',
+        { logo: 'data:image/png;base64,F3-LEGACY' }, { userId: F3_USER_PLAIN });
+      assert.strictEqual(allowed.status, 200,
+        `the legacy administrator logo path must be untouched: ${allowed.text}`);
+      assert.strictEqual((await orgRow(F3_ORG)).logo_url, 'data:image/png;base64,F3-LEGACY',
+        'database effect: the legacy administrator logo IS persisted');
       assert.strictEqual(await orgSnapshot(ORG_B), beforeB, 'database effect: an unrelated tenant is untouched');
     });
 
-    it('I5. does not let the preservation widen into tenant scope, subscription or capacity', async () => {
+    it('I5. does not let the refusal widen into tenant scope, subscription or capacity', async () => {
       const beforeOrg = await orgSnapshot(ORG_A);
       const beforeSub = await subscriptionSnapshot(F3_ORG);
 
-      // Tenant scope still applies: the preserved capability is tenant-scoped
-      // authority, not a licence to address another tenant.
+      // Tenant scope still applies: the principal holds no tenant-administration
+      // capability at all here, and a foreign tenant is refused in any case.
       const foreign = await put(`/api/organizations/${ORG_A}`, { industry: 'nuclear' },
         { userId: F3_USER_GRANTED });
       assert.strictEqual(foreign.status, 403, 'a foreign tenant must still be refused');
       assert.strictEqual(await orgSnapshot(ORG_A), beforeOrg, 'database effect: no foreign write');
 
-      // Policy 3 still applies: the preserved capability is not subscription authority.
+      // Policy 3 still applies: subscription/capacity is platform-scoped.
       const subscription = await put(`/api/organizations/${F3_ORG}/subscription`,
         { subscription_plan: 'enterprise', max_users: 9999 }, { userId: F3_USER_GRANTED });
       assert.strictEqual(subscription.status, 403,
-        'the preserved tenant-administration profile must not reach subscription fields');
+        'the refusal must not reach subscription fields either');
       assert.match(subscription.json.message, /platform\.admin/);
       assert.strictEqual(await subscriptionSnapshot(F3_ORG), beforeSub,
         'database effect: the subscription row is byte-identical');
