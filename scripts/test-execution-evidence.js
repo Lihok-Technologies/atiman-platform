@@ -88,7 +88,9 @@ const QUIET = flag('--quiet');
 const CONCURRENCY = Math.max(1, Number.parseInt(opt('--concurrency', '1'), 10) || 1);
 const SUITES = argv.reduce((acc, a, i) => (a === '--suite' ? acc.concat(argv[i + 1]) : acc), []);
 
-if (!MODE && SUITES.length === 0) {
+// Usage errors belong to the CLI. Guarding on require.main keeps the CLI contract
+// identical while allowing the pure functions below to be imported by tests.
+if (require.main === module && !MODE && SUITES.length === 0) {
   console.error('usage: node scripts/test-execution-evidence.js --mode <unit|integration> [--suite <path>]');
   process.exit(2);
 }
@@ -184,13 +186,53 @@ function parseJunit(xml, suitePath) {
   // enumerated count is reconciled against the runner's own evidence. The
   // surplus cases are artefacts and are always counted as passed, so the
   // pass/fail split is rebalanced from `executed` downwards.
+  //
+  // WP3-11 (fail-closed): absence of either counter is NOT "no ceiling". The
+  // runner's counters are the only independent evidence that a case really ran,
+  // so a report that omits them cannot be reconciled at all and must fail
+  // closed. Without this, a container <testcase> alone is counted as EXECUTED
+  // and the suite passes while executing nothing — the exact M-2 failure this
+  // reconciliation exists to catch.
   const reported = runnerExecutedCount(xml);
-  if (reported !== null && executed > reported) {
+  const countersMissing = reported === null;
+  if (!countersMissing && executed > reported) {
     executed = reported;
     if (passed > executed - failed) passed = Math.max(0, executed - failed);
   }
 
-  return { executed, passed, failed, skipped, cancelled };
+  return { executed, passed, failed, skipped, cancelled, countersMissing };
+}
+
+/**
+ * The single decision that makes this contract fail closed.
+ *
+ * A suite is in violation when it executed nothing, OR when the runner's counters
+ * are absent so execution cannot be reconciled at all. Exported so the decision
+ * itself can be tested directly — a test that re-implements this predicate would
+ * assert its own copy rather than the behaviour that actually gates CI.
+ */
+function isExecutionViolation(row) {
+  return (row.executed === 0 || row.countersMissing === true) && !row.exempt;
+}
+
+/**
+ * The exported aggregation: rows -> { violations, exitCode, ok }.
+ *
+ * The violation decision lives HERE, not at a call site, so there is no single
+ * assignment that can be reverted or neutered while leaving the tests green.
+ * Text pins on a call site are an unbounded obligation — an independent reviewer
+ * defeated them with five one-line edits (`r.exempt = r.exempt || r.countersMissing`,
+ * `violations.length = 0`, `r['violation'] = false`, and others). Testing this
+ * function behaviourally is the closure.
+ */
+function summarise(rows) {
+  for (const row of rows) row.violation = isExecutionViolation(row);
+  const violations = rows.filter((row) => row.violation);
+  return {
+    violations,
+    exitCode: violations.length === 0 ? 0 : 1,
+    ok: violations.length === 0
+  };
 }
 
 /**
@@ -269,7 +311,6 @@ const rows = [];
     r.discovered = discovered.includes(path.basename(r.suite));
     r.registered = contracted.includes(path.basename(r.suite));
     r.exempt = exempt.includes(path.basename(r.suite));
-    r.violation = r.executed === 0 && !r.exempt;
     rows.push(r);
   }
 }
@@ -288,15 +329,17 @@ lines.push('  only definitions are unreachable, reports EXECUTED 0.');
 lines.push('');
 lines.push('  SUITE                                        DISC REG  EXEC  PASS  FAIL  SKIP  CANC  VERDICT');
 lines.push('  -------------------------------------------- ---- --- ----- ----- ----- ----- ----- --------------------');
+const { violations, exitCode, ok } = summarise(rows);
+
 for (const r of rows) {
   const verdict = r.exempt ? 'EXEMPT (legacy)'
-    : r.violation ? '*** ZERO EXECUTED ***' : 'executed';
+    : r.countersMissing ? '*** NO RUNNER COUNTERS ***'
+      : r.violation ? '*** ZERO EXECUTED ***' : 'executed';
   lines.push(`  ${path.basename(r.suite).padEnd(44)} ${r.discovered ? ' Y ' : ' - '} ${r.registered ? ' Y ' : ' - '} `
     + `${String(r.executed).padStart(5)} ${String(r.passed).padStart(5)} ${String(r.failed).padStart(5)} `
     + `${String(r.skipped).padStart(5)} ${String(r.cancelled).padStart(5)}  ${verdict}`);
 }
 
-const violations = rows.filter((r) => r.violation);
 const totals = rows.reduce((a, r) => ({
   executed: a.executed + r.executed, passed: a.passed + r.passed, failed: a.failed + r.failed,
   skipped: a.skipped + r.skipped, cancelled: a.cancelled + r.cancelled
@@ -328,17 +371,24 @@ const record = {
   node: process.version,
   rows, totals, violations: violations.map((v) => v.suite),
   exemptSuites: exempt,
-  ok: violations.length === 0
+  ok
 };
 if (JSON_OUT) fs.writeFileSync(JSON_OUT, JSON.stringify(record, null, 2));
 
 if (!QUIET) console.log(lines.join('\n'));
 else if (violations.length) console.log(lines.slice(-3 - violations.length).join('\n'));
 
-process.exit(violations.length === 0 ? 0 : 1);
+process.exit(exitCode);
 }
 
-main().catch((e) => {
-  console.error('test-execution-evidence failed:', e && e.stack ? e.stack : e);
-  process.exit(2);
-});
+// Run only when invoked as a script. This keeps the CLI behaviour identical while
+// exposing the two pure functions so the absent-counter case can be tested with a
+// counter-less JUnit document — something the real reporter cannot produce.
+if (require.main === module) {
+  main().catch((e) => {
+    console.error('test-execution-evidence failed:', e && e.stack ? e.stack : e);
+    process.exit(2);
+  });
+}
+
+module.exports = { runnerExecutedCount, parseJunit, isExecutionViolation, summarise };

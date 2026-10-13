@@ -31,9 +31,11 @@ jobs:
     name: Disposable PostgreSQL integration
     runs-on: ubuntu-latest
     # Raised from 15 to 30 minutes to accommodate the runtime execution-evidence
-    # pass below, which executes the database-gated suites a second time so that
-    # actual execution is OBSERVED rather than inferred from registration.
-    timeout-minutes: 30
+    # pass below; raised again to 45 by WP3-11 because that pass now runs serially
+    # (an estimated ~15 minutes, never measured) on top of the sanctioned runner.
+    # VUDA-2 condition 3: the serial estimate is unquantified, so the budget rather
+    # than the safety property is what absorbs the uncertainty.
+    timeout-minutes: 45
 
     services:
       postgres:
@@ -117,8 +119,22 @@ jobs:
       #
       # It runs under the same disposable-database gate as the sanctioned runner,
       # so the database-safety controls are unchanged.
-      # Executed with bounded concurrency (4) because the gated suites take
-      # ~15 minutes serially; this matches the parallel execution model the
-      # sanctioned runner above already uses.
+      #
+      # WP3-11 — SERIAL, not concurrency 4. This pass spawns ONE `node --test` per
+      # suite in alphabetical order with an unconstrained cursor pool, so the
+      # shared-database migration-DDL suites and the row-locking suites
+      # co-schedule and can reproduce the ATM-001 F-3 40P01 lock inversion.
+      #
+      # NOTE ON THE PREMISE: at this revision the sanctioned runner above is NOT
+      # partition-isolated — PR #98 introduces that isolation and is not part of
+      # this stack. This step therefore removes the overlap on its own by not
+      # running suites concurrently. Once #98 lands, the better fix is to apply
+      # the same partition here (DDL class serial, remainder concurrent) and
+      # restore throughput.
+      #
+      # TIMEOUT: the job limit is 45 minutes and the serial evidence pass is
+      # ESTIMATED at ~15 minutes (never measured). If that estimate is wrong the
+      # job will time out — a visible, fail-closed failure — and the remedy is to
+      # raise timeout-minutes further or adopt the partition above.
       - name: Verify runtime execution evidence (database-gated suites)
-        run: node scripts/test-execution-evidence.js --mode integration --concurrency 4
+        run: node scripts/test-execution-evidence.js --mode integration --concurrency 1

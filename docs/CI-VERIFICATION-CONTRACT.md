@@ -133,6 +133,18 @@ against them: `pass + fail` is the number of cases that actually ran to a conclu
 > omitted from the report (measured: `tests=3`, `pass=3`, and only the two leaf `<testcase>` elements
 > are emitted), so the JUnit `tests` counter alone is not a safe bound in the other direction.
 
+> **Absent counters FAIL CLOSED (WP3-11).** A report that omits `<!-- pass N -->` or
+> `<!-- fail N -->` cannot be reconciled at all, so the suite is a **violation** — not an
+> unverifiable pass. The counters are the only independent evidence that a case really ran; treating
+> their absence as "no ceiling" would let a reporter-emitted container `<testcase>` be counted as
+> `EXECUTED`, which is exactly the M-2 failure this reconciliation exists to catch. `isExecutionViolation`
+> in `scripts/test-execution-evidence.js` is the single decision point, and
+> `tests/ci-failclosed-counter.test.js` exercises it directly with a counter-less document (the real
+> reporter cannot emit one). On the Node versions measured (22.23.2, 22.23.3, 26.8.2) the counter
+> block is always emitted on normal completion, so this branch is a latent-format guard rather than
+> an expected path; `node-version` is pinned only to a major, so a reporter format change would now
+> fail loudly instead of silently disabling the ceiling.
+
 This also reconciles the two totals: the runner's `# tests` for the contracted integration suites
 (915) exceeds the evidence pass total because the difference is the parent/suite entries the reporter
 does not emit, not unexecuted tests.
