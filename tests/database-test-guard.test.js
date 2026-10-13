@@ -84,6 +84,12 @@ const DB_MUTATING_SUITES = [
   // steps, sources, versions, working evidence, a global source fixture and
   // out-of-band published versions).
   'knowledge-evidence-deletion-integrity.test.js',
+  // ATM-001-SEC-104 organization security policies (writes real organizations,
+  // users, a paid plan and its subscription as disposable fixtures, and reads the
+  // persisted rows back to assert the database effect of every decision; it
+  // deliberately creates no capability grant, because migration 022 makes a grant
+  // undeletable and the suite must clean up after itself).
+  'organization-security-policies.test.js',
   'step6-access-control.test.js',
   'step6-coverage-e2e.test.js',
   'step6-performance.test.js',
@@ -121,7 +127,10 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'report-capture.test.js',
   'knowledge-accession-authority.test.js',
   'provenance-write-scope.test.js',
-  'knowledge-evidence-deletion-integrity.test.js'
+  'knowledge-evidence-deletion-integrity.test.js',
+  // ATM-001-SEC-104: the five OWNER-approved V1 organization security policies
+  // (creation, profile update, subscription/capacity, tenant isolation, deletion).
+  'organization-security-policies.test.js'
 ];
 
 const REPO_ROOT = path.resolve(__dirname, '..');
