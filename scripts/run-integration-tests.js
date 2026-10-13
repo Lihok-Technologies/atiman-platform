@@ -136,7 +136,11 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   // `is_organization_admin` plus an UNRELATED explicit grant confers nothing.
   // Fixture residue is bounded to one stable, idempotent set (migration 022
   // makes a grant undeletable); see the suite header.
-  'tests/atm-001-sec-106-b1-grant-authority.test.js'
+  'tests/atm-001-sec-106-b1-grant-authority.test.js',
+  // ATM-001-SEC-B3B: sensitive-data disclosure (Issue #105) — no credential may
+  // leave a user-record response, at any nesting depth, for a foreign tenant, the
+  // caller's own tenant, an absent identifier or a malformed one.
+  'tests/user-credential-disclosure.test.js'
 ];
 
 /**

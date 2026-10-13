@@ -137,6 +137,11 @@ const DB_MUTATING_SUITES = [
   // users in the 'ATM-001-SEC-106-B1 Tenant' organization) reused on every
   // run; the transition case adds one REVOKED grant row per run by design.
   'atm-001-sec-106-b1-grant-authority.test.js',
+  // ATM-001-SEC-B3B sensitive-data disclosure (Issue #105): creates its own
+  // two-tenant fixture - organizations, a facility and users carrying real
+  // bcrypt hashes - in the disposable test database and drives the real app
+  // over HTTP.
+  'user-credential-disclosure.test.js',
   'step6-access-control.test.js',
   'step6-coverage-e2e.test.js',
   'step6-performance.test.js',
@@ -190,7 +195,9 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'onboarding-atomicity.test.js',
   // ATM-001-SEC-106 blocker B-1 capability-grant authority (real grants, real
   // org.user_admin/org.config_admin route effects).
-  'atm-001-sec-106-b1-grant-authority.test.js'
+  'atm-001-sec-106-b1-grant-authority.test.js',
+  // ATM-001-SEC-B3B sensitive-data disclosure (Issue #105).
+  'user-credential-disclosure.test.js'
 ];
 
 const REPO_ROOT = path.resolve(__dirname, '..');
