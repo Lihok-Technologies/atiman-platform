@@ -109,6 +109,23 @@ const DB_MUTATING_SUITES = [
   // users, so it is database-mutating and must be gated on isIntegrationTest()
   // exactly like the suites above.
   'user-authorization-reconciliation.test.js',
+  // ATM-001-SEC-00E invitation role-assignment authority (writes real
+  // organizations, facilities, subscriptions, users, invitations and an
+  // accepted account; neutralizes the D-2 seat defect in-process only).
+  'invitation-role-authority.test.js',
+  // ATM-001-SEC-00G invitation-list authorization and token protection (writes
+  // real organizations, facilities, subscriptions, users, capability grants and
+  // invitations across three tenants).
+  'invitation-list-authorization.test.js',
+  // ATM-001-SEC-00H resend authorization and lifecycle (writes real
+  // organizations, subscriptions, users, capability grants and invitations,
+  // and issues replacement invitations).
+  'invitation-resend-authorization.test.js',
+  // MISSION 3 ATM-001-SEC-93 invitation security residuals A-D (writes real
+  // organizations, facilities, subscriptions, users and invitations across two
+  // tenants, and consumes invitations through the public acceptance path; it
+  // creates no capability grant, so it leaves no undeletable residue).
+  'invitation-lifecycle-residuals.test.js',
   'step6-access-control.test.js',
   'step6-coverage-e2e.test.js',
   'step6-performance.test.js',
@@ -153,7 +170,11 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   // ATM-001-SEC-104-R3: live signup evidence on disposable PostgreSQL (the
   // endpoint had only static file-content assertions before this suite).
   'organization-signup.integration.test.js',
-  'user-authorization-reconciliation.test.js'
+  'user-authorization-reconciliation.test.js',
+  'invitation-role-authority.test.js',
+  'invitation-list-authorization.test.js',
+  'invitation-resend-authorization.test.js',
+  'invitation-lifecycle-residuals.test.js'
 ];
 
 const REPO_ROOT = path.resolve(__dirname, '..');
