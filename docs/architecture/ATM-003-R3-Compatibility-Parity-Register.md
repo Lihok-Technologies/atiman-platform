@@ -186,3 +186,53 @@ asserts an approval, and no source is reclassified by it.
 - It does not generalise: no other principal shape, role or bundle gains any
   union between modes. The exception is enumerated for one shape only, and a
   capability added to the vocabulary later is still not silently preserved.
+
+---
+
+## 7. Recorded escalation: the subscription `status` scope question (ATM-001-SEC-104-R2 F1)
+
+**Status: RECORDED AND ESCALATED to the OWNER. This section carries no authority
+of its own, changes no rule, adds no option, and does not assert that the
+conflict it records is resolved.**
+
+R2 (F1) pinned subscription `status` as platform-scoped provisioning for the
+**direct administrative write only** — `PUT /api/subscriptions/admin/organizations/:id`,
+guarded by `requireCapability('platform.admin')`
+(`src/routes/subscription.routes.js:246` at the R3 documentation head
+`ce9947ba7ded4018792d2a3896c7bb81989320a9`, tree
+`962f12051393c5a1448d8a02b2c536e190c2c2b5`), whose controller writes `status` at
+`src/controllers/subscription.controller.js:349-355`. That scope statement does
+not extend to subscription `status` transitions generally.
+
+The sanctioned, tenant-scoped, admin-only paid path already performs the same
+write. Verified link by link at that head:
+
+- `POST /api/payments/checkout` — `src/routes/payment.routes.js:13-17`,
+  `requirePermission('SUBSCRIPTION', 'UPDATE')`, which is `admin: 'all'`,
+  `supervisor: 'none'`, `operator: 'none'` (`src/config/permissions.js:116`).
+- the signature-validated webhook `POST /api/payments/webhook`
+  (`src/routes/payment.routes.js:31-34`) is public by design and authenticated by
+  the Stripe signature rather than by a permission; it calls
+  `paymentService.handleWebhook` (`src/services/payment.service.js:254`), which
+  dispatches `checkout.session.completed` to `handleCheckoutCompleted`
+  (`:288-301`) → `handleSubscriptionUpgrade` (`:306-311`) →
+  `subscriptionService.changePlan()`.
+- `changePlan()` executes `SET status = 'active'` at
+  `src/services/subscription.service.js:281`, whatever the target plan; the same
+  write is reached from `customer.subscription.deleted` through
+  `handleSubscriptionCancelled` (`src/services/payment.service.js:400-405`).
+
+ATM-001-SEC-104-R3 in addition admitted a tenant-scoped administrator write of
+that same column, through `POST /api/subscriptions/reactivate`
+(`requirePermission('SUBSCRIPTION', 'UPDATE')`). The two positions — the direct
+administrative write treated as platform-scoped, and the tenant-scoped
+reactivation write — are **left in conflict on purpose and are NOT reconciled
+here**.
+
+**The OWNER must adjudicate this conflict.** The full record — the
+"UNRESOLVED GOVERNANCE POINT, ESCALATED — NOT SILENTLY RECONCILED" paragraph,
+including the three OWNER options and its self-correction clause — is the route
+header of `src/routes/subscription.routes.js` at the head above. Before this
+section that record appeared nowhere else in the repository, which is why it is
+mirrored here for an OWNER reading the register. This section adds no policy and
+no new option.

@@ -80,7 +80,7 @@
  * THE RECORD THE OWNER ADJUDICATES ON MUST INCLUDE THE SANCTIONED PAID PATH.
  * R2 (F1)'s "status is platform-scoped" holds only for the DIRECT
  * administrative write — `PUT /api/subscriptions/admin/organizations/:id`
- * (`requireCapability('platform.admin')`, this file :215), whose controller
+ * (`requireCapability('platform.admin')`, this file :246), whose controller
  * writes `status` at src/controllers/subscription.controller.js:349-355 — and
  * NOT for status transitions generally, because the sanctioned, tenant-scoped,
  * admin-only paid path ALREADY performs them. Without that fact the OWNER would
