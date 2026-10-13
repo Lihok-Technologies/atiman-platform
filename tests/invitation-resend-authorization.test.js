@@ -28,9 +28,13 @@
  *     concurrent resends of the same invitation can each issue a replacement.
  *     No transaction or locking architecture is introduced here (mission section 10).
  *   - The response still returns the replacement invitation object. That is left
- *     unchanged deliberately: it mirrors `POST /api/invitations`, the approved
- *     delivery moment, and no unauthorized caller reaches it. The credential-
- *     delivery question for the post-D-1 state is ESCALATED, not decided.
+ *     unchanged deliberately: it mirrors `POST /api/invitations`, the intended
+ *     delivery point, and no unauthorized caller reaches it. ATM-001-SEC-93-D
+ *     (c2): under the UNREPAIRED D-1 the response is HTTP 500 and carries NO
+ *     token, and resend calls no delivery service, so this response delivers
+ *     nothing today. The credential-delivery question for the post-D-1 state is
+ *     ESCALATED, not decided; this correction does not claim resend can deliver
+ *     a link for an existing pending invitation.
  *
  * NEGATIVE CONTROL: sections A and B assert what the pre-fix code violates. Run
  * unchanged against the unfixed baseline f156aa4, a supervisor and a plain

@@ -10,6 +10,41 @@ const emailService = require('../services/email.service');
 const { roleIssuanceAuthority } = require('../middleware/rbac');
 
 /**
+ * Largest value the `invitations.id` column can hold.
+ *
+ * ATM-001-SEC-93-D. `invitations.id` is a PostgreSQL `integer` (int4), so the
+ * widest identifier it can name is 2^31 - 1. A digit-only identifier ABOVE that
+ * bound passes a bare `/^\d+$/` shape check, but PostgreSQL refuses the
+ * comparison when the tenant-scoped lookup binds it and answers with a raw
+ * driver message:
+ *
+ *   value "99999999999" is out of range for type integer
+ *
+ * Reproduced on 203b36a against the disposable cluster: both
+ * `DELETE /api/invitations/99999999999` and
+ * `POST /api/invitations/99999999999/resend` returned HTTP 500 carrying exactly
+ * that text (and `2147483648` behaved identically). A shape guard that does not
+ * bound the type it feeds is not a guard; the identifier must be refused before
+ * it reaches the database, exactly as a non-numeric one already is.
+ */
+const MAX_INVITATION_ID = 2147483647;
+
+/**
+ * An identifier that can name an invitation row.
+ *
+ * An ALLOW-list: digits only AND within the int4 bound. Applied identically by
+ * the two invitation-id handlers (`cancel` and `resend`) so neither route can
+ * reach the lookup with a value the column cannot represent. A value refused
+ * here is answered with the SAME non-disclosing 404 those handlers already give
+ * a missing invitation, so "malformed", "too large" and "does not exist" are
+ * indistinguishable to the caller and no driver text is disclosed.
+ */
+const isInvitationId = (value) => {
+  const text = String(value);
+  return /^\d+$/.test(text) && Number(text) <= MAX_INVITATION_ID;
+};
+
+/**
  * Project an invitation row for the administration LISTING.
  *
  * ATM-001-SEC-00G. The listing previously spread the raw database row into the
@@ -20,9 +55,31 @@ const { roleIssuanceAuthority } = require('../middleware/rbac');
  * delivery channel, and must not be a credential channel.
  *
  * The `token` is therefore dropped here. Every other field is preserved, because
- * the administration view needs them. Creating an invitation still returns the
- * new token and link (that is the delivery moment) - only the LISTING is
- * sanitized, and that route is separately restricted to `org.user_admin`.
+ * the administration view needs them. The listing is deliberately NOT a
+ * delivery channel, and that route is separately restricted to `org.user_admin`.
+ *
+ * ATM-001-SEC-93-D (c2): WHAT THIS DOES AND DOES NOT RESTORE. The remaining
+ * delivery paths are `POST /api/invitations` (create) and
+ * `POST /api/invitations/:id/resend`, which are the only responses that carry a
+ * token. Under the UNREPAIRED pre-existing defect D-1 (`BaseModel.create` never
+ * reads the INSERT's generated id, so `Invitation.createInvitation` throws at
+ * `result.id`), BOTH of those responses are HTTP 500 with no token and no
+ * delivered email:
+ *
+ *   - create commits the invitation row, then throws at
+ *     `Invitation.createInvitation` BEFORE `emailService.sendInvitation` is
+ *     called, so no token is returned and no email is sent;
+ *   - resend commits the replacement row, then throws at the same call; the
+ *     resend handler never calls `emailService.sendInvitation` at all, so it
+ *     would deliver nothing even on success.
+ *
+ * The listing is token-free, so there is currently NO path by which an
+ * administrator can obtain a link for an EXISTING pending invitation. This
+ * correction does NOT repair D-1 and does NOT restore that delivery path; the
+ * token-free listing is a credential-disclosure control, not a delivery
+ * channel, and it must not become one again to work around D-1. See condition
+ * c2 / section G of tests/invitation-lifecycle-residuals.test.js for the
+ * recorded escalation.
  */
 const toInvitationListingView = (invitation) => {
   // eslint-disable-next-line no-unused-vars
@@ -164,6 +221,17 @@ class InvitationController {
       }
 
       // Create invitation
+      //
+      // ATM-001-SEC-93-D (c2). Under the UNREPAIRED defect D-1 this call throws
+      // AFTER the INSERT has committed, because `BaseModel.create` never reads
+      // the generated id and `createInvitation` dereferences `result.id`. The
+      // row is therefore persisted with a live token while the response is a
+      // 500 that carries no token, and the throw happens BEFORE the
+      // `emailService.sendInvitation` call below — so no email is sent either.
+      // This handler is NOT repaired here: the instance-only RETURNING fix would
+      // leave the public accept path on `User.create` (BaseModel.create on
+      // `users`) still failing, so it would not close the gap and must not be
+      // claimed to. Recorded, not repaired.
       const invitation = await Invitation.createInvitation({
         organization_id: organizationId,
         email: email.toLowerCase(),
@@ -226,14 +294,18 @@ class InvitationController {
         });
       }
 
-      // ATM-001-SEC-93-A2. The identical shape guard the resend handler already
-      // applies. Without it a non-numeric id reaches the tenant-scoped lookup and
-      // PostgreSQL refuses the comparison itself, so the handler answered 500
-      // carrying a raw driver message ("invalid input syntax for type integer:
-      // \"abc\"") — reproduced against the disposable cluster. A malformed
-      // identifier cannot name an invitation and must be indistinguishable from
-      // one that does not exist, exactly as resend already answers it.
-      if (!/^\d+$/.test(String(invitationId))) {
+      // ATM-001-SEC-93-A2 / SEC-93-D. The same shape guard the resend handler
+      // applies, now bounded by the int4 range the `invitations.id` column can
+      // represent. Without the shape check a non-numeric id reached the
+      // tenant-scoped lookup and PostgreSQL refused the comparison itself, so the
+      // handler answered 500 carrying a raw driver message ("invalid input syntax
+      // for type integer: \"abc\"") — reproduced against the disposable cluster.
+      // Without the BOUND an all-digit id above 2^31 - 1 did the same
+      // ("value \"99999999999\" is out of range for type integer"). A malformed
+      // or unrepresentable identifier cannot name an invitation and must be
+      // indistinguishable from one that does not exist, exactly as resend
+      // already answers it.
+      if (!isInvitationId(invitationId)) {
         return res.status(404).json({
           success: false,
           message: 'Invitation not found'
@@ -485,11 +557,15 @@ class InvitationController {
         });
       }
 
-      // An identifier that cannot be an invitation id is refused before it
-      // reaches the database, so a malformed id cannot disclose driver or
-      // schema detail through an error, and cannot be distinguished from an
-      // invitation that does not exist.
-      if (!/^\d+$/.test(String(invitationId))) {
+      // ATM-001-SEC-93-D. An identifier that cannot name an invitation — not
+      // digits only, or beyond the int4 range `invitations.id` can hold — is
+      // refused before it reaches the database, so it cannot disclose driver or
+      // schema detail through an error, cannot reach PostgreSQL with a value it
+      // would refuse as "out of range for type integer", and cannot be
+      // distinguished from an invitation that does not exist. Reproduced on
+      // 203b36a: `/resend` with `99999999999` returned HTTP 500 carrying the raw
+      // driver text before this bound was added.
+      if (!isInvitationId(invitationId)) {
         return res.status(404).json({
           success: false,
           message: 'Invitation not found'
@@ -550,6 +626,16 @@ class InvitationController {
       }
 
       // Re-issue with the STORED role and a new token.
+      //
+      // ATM-001-SEC-93-D (c2). The replacement row commits, but under the
+      // UNREPAIRED defect D-1 `createInvitation` then throws at `result.id`, so:
+      // this response never carries the replacement token, `Invitation.cancel`
+      // below is never reached (the original stays pending — two live tokens),
+      // and resend calls no delivery service at all, so nothing is emailed even
+      // on success. There is therefore no working delivery path for an existing
+      // pending invitation. Recorded and escalated; D-1 is NOT repaired here,
+      // because an invitation-only RETURNING fix would still leave
+      // `POST /api/invitations/accept` failing on `User.create`.
       const newInvitation = await Invitation.createInvitation({
         organization_id: organizationId,
         email: invitation.email,

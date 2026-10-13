@@ -173,9 +173,21 @@ function renderInvitations(invitations) {
   // channel. The button therefore rendered `?token=undefined`, and it kept a
   // credential dependency on the listing that would have silently restored the
   // disclosure if anyone "fixed" it by putting the token back into the listing.
-  // A token is read only where it is DELIVERED — the create and resend responses
-  // (see handleInvite and resendInvitation below). An existing pending row has
-  // no readable credential, so the row offers Resend and Cancel only.
+  // A token would be read only from the create and resend responses (see
+  // handleInvite and resendInvitation below). An existing pending row has no
+  // readable credential, so the row offers Resend and Cancel only.
+  //
+  // ATM-001-SEC-93-D (c2) — THE CLAIM THIS COMMENT USED TO MAKE WAS WRONG. It
+  // said a token "is read where it is DELIVERED — the create and resend
+  // responses", which implied a working replacement delivery path. Under the
+  // UNREPAIRED defect D-1 both of those responses are HTTP 500 carrying no
+  // token (`Invitation.createInvitation` throws at `result.id`), and resend
+  // sends no email at all. So there is currently NO way for an administrator to
+  // deliver a link for an EXISTING pending invitation: the listing is
+  // token-free by design and the two token-bearing responses are dead. That gap
+  // is recorded and escalated (condition c2 / section G of
+  // tests/invitation-lifecycle-residuals.test.js), NOT worked around by
+  // re-exposing the listing token.
   container.innerHTML = invitations.map(inv => {
     const statusStyle = statusColors[inv.status] || statusColors['pending'];
     const isPending = inv.status === 'pending';
@@ -302,10 +314,17 @@ async function resendInvitation(id) {
     if (data.success) {
       showToast('Invitation resent!', 'success');
       loadInvitations();
-      // ATM-001-SEC-93-C: resend RE-ISSUES, so its response is the delivery
-      // moment for the replacement credential — the same role the create
-      // response plays. This is the only way an administrator can read the
-      // replacement link; the listing deliberately carries no token.
+      // ATM-001-SEC-93-C: resend RE-ISSUES, so its response is the credential's
+      // intended delivery point — the same role the create response plays.
+      //
+      // ATM-001-SEC-93-D (c2): this branch is UNREACHABLE while the pre-existing
+      // defect D-1 is unrepaired. Resend answers HTTP 500 (`data.success` is
+      // false and there is no `data.data.invitation.token`), because
+      // `Invitation.createInvitation` throws at `result.id` after the
+      // replacement row commits. This affordance is retained so the delivery
+      // path is correct the moment D-1 is repaired — it is NOT evidence that a
+      // link can be delivered today. An existing pending invitation therefore
+      // has no obtainable link.
       if (data.data?.invitation?.token) {
         showLinkModal(data.data.invitation.token);
       }

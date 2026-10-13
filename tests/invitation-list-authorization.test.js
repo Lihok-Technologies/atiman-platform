@@ -580,11 +580,13 @@ describe('ATM-001-SEC-00G GET /api/invitations authorization and token protectio
       // The listing is token-free — this is the security property, and it holds
       // in every tree this suite runs against. The consumer that used to depend
       // on the token ("Copy Link" reading `inv.token`) was closed by MISSION 3
-      // (ATM-001-SEC-93-C): the view now reads a credential only from the
-      // delivery moment, and the unconditional assertion that keeps it that way
-      // lives in tests/invitation-lifecycle-residuals.test.js (test C5). Nothing
-      // here is relaxed; the consumer-state assertion simply moved to the suite
-      // that owns the correction, so this one cannot report a stale breakage.
+      // (ATM-001-SEC-93-C): the view now reads a credential, if at all, only from
+      // the create/resend response, and the unconditional assertion that keeps it
+      // that way lives in tests/invitation-lifecycle-residuals.test.js (tests C5
+      // and C6). ATM-001-SEC-93-D (c2) records that under the unrepaired D-1 BOTH
+      // of those responses are dead, so no link can be delivered for an existing
+      // pending invitation; the listing must NOT be re-exposed to work around
+      // that. Nothing here is relaxed.
       assert.strictEqual(pending.token, undefined,
         'the listing must not expose a usable enrollment credential');
     });

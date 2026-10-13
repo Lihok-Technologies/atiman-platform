@@ -46,6 +46,28 @@
  *      single-use acceptance no longer DEPENDS on D-1.
  *
  * ---------------------------------------------------------------------------
+ * ATM-001-SEC-93-D — the three VUDA conditions (c1)/(c2)/(c3) on 203b36a
+ * ---------------------------------------------------------------------------
+ *   (c1) BOUND THE INT4 RANGE. The `/^\d+$/` guard on DELETE and resend did not
+ *        bound the type it feeds. Reproduced: `99999999999` (digit-only, > 2^31-1)
+ *        made BOTH routes answer HTTP 500 with the raw PostgreSQL text
+ *        `value "99999999999" is out of range for type integer`. Both handlers now
+ *        use one bounded guard (`isInvitationId`) and answer the existing
+ *        non-disclosing 404. Tests A9/A10/A11; A11 is the source pin.
+ *   (c2) CORRECT THE DELIVERY CLAIM. The claim "the token is still deliverable at
+ *        create/resend" was false: under the unrepaired D-1 both responses are
+ *        500 with no token, and resend sends no email, so there is NO way to
+ *        deliver a link for an EXISTING pending invitation. The claim is corrected
+ *        in the controller and the view; test C6 pins the correction and its
+ *        database effect; G4 records the gap as an escalation. D-1 is NOT
+ *        repaired, and an invitation-only RETURNING fix is NOT implemented or
+ *        claimed to close anything.
+ *   (c3) OWNER ADJUDICATIONS. Section G records E1 and E3/E4 as OPEN OWNER
+ *        escalations (with the required acknowledgement that an invitation-only
+ *        D-1 repair does not fix the accept path), and records E2 as RESOLVED
+ *        from approved sources rather than an open escalation.
+ *
+ * ---------------------------------------------------------------------------
  * THE D-2 SEAT MASK, NEUTRALIZED IN THIS PROCESS ONLY
  * ---------------------------------------------------------------------------
  * `subscriptionService.getSeatUsage` selects the alias `activeBillableUsers`;
@@ -438,12 +460,14 @@ describe('MISSION 3 ATM-001-SEC-93 invitation security residuals A-D', { skip: D
         `a non-numeric id cannot name an invitation; got ${response.status} ${response.text}`);
       assert.ok(!/invalid input syntax|pg_|relation "|syntax for type/i.test(response.text),
         'the refusal must carry no database or driver detail');
-      // The same shape guard the resend route already applies.
+      // The same shape guard the resend route already applies, now the shared
+      // bounded helper (ATM-001-SEC-93-D: digits only AND within int4) so a value
+      // past 2^31 - 1 cannot reach the database either — see A9/A11.
       const controller = controllerSource();
       const cancelHandler = controller.slice(controller.indexOf('async cancel(req, res, next)'));
       assert.match(cancelHandler.slice(0, cancelHandler.indexOf('async validate')),
-        /if \(!\/\^\\d\+\$\/\.test\(String\(invitationId\)\)\)/,
-        'cancellation must reject a non-numeric id before it reaches the database');
+        /if \(!isInvitationId\(invitationId\)\) \{/,
+        'cancellation must reject a malformed or unrepresentable id before it reaches the database');
     });
 
     it('A7. cancellation only applies to a pending invitation, and it does not resurrect one', async () => {
@@ -482,6 +506,104 @@ describe('MISSION 3 ATM-001-SEC-93 invitation security residuals A-D', { skip: D
       }
       assert.strictEqual(await subscriptionService.canAddUser(ORG_A), false,
         'D-2 is in force; the seat gate, not this route, is what refuses most requests');
+    });
+
+    // -----------------------------------------------------------------
+    // A9–A11. ATM-001-SEC-93-D / VUDA condition (c1): the shape guard must
+    // bound the int4 range the `invitations.id` column can hold.
+    //
+    // REPRODUCED on 203b36a / tree 24b33b6 against the disposable cluster:
+    //   DELETE /api/invitations/99999999999        -> HTTP 500
+    //     {"success":false,"message":"value \"99999999999\" is out of range for type integer"}
+    //   POST   /api/invitations/99999999999/resend -> HTTP 500 (identical body)
+    //   2147483648 (2^31) behaved identically on both routes.
+    // `99999999999` is digit-only, so it passed the bare `/^\d+$/` shape guard
+    // and reached PostgreSQL, which refused the int4 comparison and whose raw
+    // message reached the client. The bound makes both routes answer the same
+    // non-disclosing 404 a missing invitation gets.
+    // -----------------------------------------------------------------
+    for (const [label, routeKey, callRoute] of [
+      ['DELETE /api/invitations/:id', 'A9_DELETE', (id) => cancelAs('ADMIN_A', id)],
+      ['POST /api/invitations/:id/resend', 'A9_RESEND', (id) => resendAs('ADMIN_A', id)]
+    ]) {
+      it(`A9. ${label} refuses an int4-overflowing id with the non-disclosing 404, and persists nothing`, async () => {
+        const rawDetail = /out of range|type integer|invalid input syntax|pgerror|severity|value "/i;
+        const ids = ['2147483648', '99999999999', '9'.repeat(40)];
+        for (const [i, id] of ids.entries()) {
+          // DATABASE-EFFECT anchors, scoped to rows THIS test owns. A whole-table
+          // snapshot is not isolation-safe: the invitation suites run as parallel
+          // processes against the same disposable database, so an unrelated suite
+          // can insert at any moment. The anchor proves the refused request did
+          // not create, cancel, reissue or otherwise touch anything.
+          const anchor = await makeInvitation(`${routeKey}_${i}`, {
+            organizationId: ORG_A, role: 'operator', invitedBy: U.ADMIN_A });
+          const userMarker = `sec93-a9-${routeKey.toLowerCase()}-${i}-${tag()}`;
+          const project = (row) => ({ id: Number(row.id), status: row.status, token: row.token });
+          const readAnchor = () => withConn((conn) => conn.query(
+            `SELECT id, status, token FROM invitations WHERE email = ?`, [anchor.email]))
+            .then((rows) => { assert.strictEqual(rows.length, 1, 'the anchor row must exist'); return project(rows[0]); });
+          const before = await readAnchor();
+          const beforeUsers = await withConn((conn) => conn.query(
+            `SELECT id FROM users WHERE username = ?`, [userMarker]));
+          assert.strictEqual(beforeUsers.length, 0);
+
+          const response = await callRoute(id);
+
+          assert.strictEqual(response.status, 404,
+            `${label} with id ${id} must be a 404, not a 500 carrying driver text; `
+            + `got ${response.status} ${response.text}`);
+          assert.ok(!rawDetail.test(response.text),
+            `THE PROPERTY: no raw PostgreSQL text may reach the client for id ${id}; got ${response.text}`);
+          assert.ok(!HEX64.test(response.text), 'no credential may appear in the refusal');
+
+          // A failed HTTP request is not proof the DB was unchanged.
+          assert.deepStrictEqual(await readAnchor(), before,
+            'no invitation row may be created, cancelled or reissued by a refused id');
+          const afterUsers = await withConn((conn) => conn.query(
+            `SELECT id FROM users WHERE username = ?`, [userMarker]));
+          assert.strictEqual(afterUsers.length, 0,
+            'no account may be created by a refused id');
+        }
+      });
+    }
+
+    it('A10. the resend overflow route issues no replacement token and leaves the target live', async () => {
+      // A directly targeted over-determination of A9's resend arm: a real pending
+      // invitation exists, and the overflow id names nothing. The original must
+      // stay BIT-IDENTICAL (a refused resend must not retire or reissue it).
+      const inv = await makeInvitation('A10_OVERFLOW', { organizationId: ORG_A, role: 'operator', invitedBy: U.ADMIN_A });
+      const before = await invitationRow(inv.id);
+      const response = await resendAs('ADMIN_A', '99999999999');
+      assert.strictEqual(response.status, 404);
+      assert.deepStrictEqual(await invitationRow(inv.id), before,
+        'a refused resend must leave the existing invitation byte-identical');
+      const rows = await withConn((conn) => conn.query(
+        `SELECT id, status FROM invitations WHERE email = ? ORDER BY id`, [inv.email]));
+      assert.strictEqual(rows.length, 1, 'no replacement may be inserted for an unusable id');
+      assert.strictEqual(rows[0].status, 'pending');
+    });
+
+    it('A11. the int4 bound is pinned in source and used by BOTH id handlers', () => {
+      // Source pin so a future removal of the bound cannot pass unnoticed even
+      // if a status-code assertion were masked. Fails on 203b36a, whose handlers
+      // bound nothing.
+      const controller = controllerSource();
+      assert.match(controller, /MAX_INVITATION_ID\s*=\s*2147483647/,
+        'the bound must be the exact int4 maximum');
+      assert.match(controller,
+        /const isInvitationId = \(value\) => \{[\s\S]*?\/\^\\d\+\$\/\.test\(text\)[\s\S]*?Number\(text\) <= MAX_INVITATION_ID/,
+        'the guard must be digits-only AND bounded by MAX_INVITATION_ID');
+      const cancelArm = controller.slice(controller.indexOf('async cancel(req, res, next)'));
+      assert.match(cancelArm.slice(0, cancelArm.indexOf('async validate')),
+        /if \(!isInvitationId\(invitationId\)\) \{/,
+        'DELETE /:id must use the bounded guard');
+      const resendArm = controller.slice(controller.indexOf('async resend(req, res, next)'));
+      const resendGuard = resendArm.slice(0, resendArm.indexOf('Invitation.findAll'));
+      assert.match(resendGuard, /if \(!isInvitationId\(invitationId\)\) \{/,
+        'POST /:id/resend must use the SAME bounded guard');
+      // The bound is the column's type, not an arbitrary business cap.
+      assert.match(controller, /invitations\.id` (?:is a PostgreSQL )?`integer`|PostgreSQL `integer` \(int4\)/,
+        'the bound must be justified by the column type');
     });
   });
 
@@ -771,9 +893,46 @@ describe('MISSION 3 ATM-001-SEC-93 invitation security residuals A-D', { skip: D
       assert.ok(!/\$\{inv\.token\}/.test(view),
         'the view must not interpolate a listing token (it rendered ?token=undefined and encoded the dependency)');
       assert.match(view, /data\.data\?\.invitation\?\.token/,
-        'the view must read a credential only from the delivery moment (create/resend response)');
+        'the view reads a credential, if at all, only from the create/resend response — never from the listing');
       assert.match(view, /copyInvitationLink|showLinkModal/,
-        'the delivery-moment link affordance itself is preserved');
+        'the link affordance itself is preserved (retained for the post-D-1 state)');
+    });
+
+    it('C6. (c2) the corrected claim: create/resend are DEAD under D-1 and no link can be delivered today', async () => {
+      // NEGATIVE CONTROL for condition c2. On 203b36a the code comment claimed a
+      // token "is read where it is DELIVERED — the create and resend responses",
+      // i.e. a working replacement path. It is not working: D-1 makes BOTH
+      // responses 500 with no token. This test fails on that candidate because
+      // the corrected wording is absent, and it re-asserts the DATABASE EFFECT
+      // that makes the old claim false.
+      const view = fs.readFileSync(
+        path.join(REPO_ROOT, 'views', 'mobile', 'admin', 'invitations.ejs'), 'utf8');
+      const controller = controllerSource();
+      const flatController = controller.replace(/^\s*[*/]+/gm, ' ').replace(/\s+/g, ' ');
+      assert.match(view, /NO way for an administrator to[\s\S]{0,20}deliver a link for an EXISTING pending invitation/,
+        'the view comment must state that no link can be delivered for an existing pending invitation');
+      assert.match(flatController, /does NOT repair D-1 and does NOT restore that delivery path/,
+        'the controller must state what this correction does NOT restore');
+      assert.match(flatController, /BEFORE `emailService\.sendInvitation` is called/,
+        'the controller must record that create throws BEFORE the email is sent');
+
+      // The DATABASE EFFECT behind the corrected claim: create persists a token
+      // yet delivers nothing.
+      const email = `sec93-c6-${tag()}@test.local`;
+      delivered = [];
+      const create = await withSeatMaskNeutralized(() =>
+        call('POST', '/api/invitations', { as: 'ADMIN_A', body: { email, role: 'operator' } }));
+      assert.strictEqual(create.status, 500, 'D-1: create cannot serialise');
+      const rows = await withConn((conn) => conn.query(
+        `SELECT id, token, status FROM invitations WHERE email = ?`, [email]));
+      assert.strictEqual(rows.length, 1, 'the row IS persisted');
+      assert.match(String(rows[0].token), HEX64, 'with a live token');
+      assert.ok(!create.text.includes(String(rows[0].token)),
+        'which the caller NEVER receives — the create response carries no token');
+      assert.strictEqual(delivered.length, 0,
+        'and no email is sent, because the throw precedes sendInvitation');
+      // An existing pending invitation therefore has no obtainable link: the
+      // listing is token-free (C5) and neither token-bearing response works.
     });
   });
 
@@ -916,6 +1075,91 @@ describe('MISSION 3 ATM-001-SEC-93 invitation security residuals A-D', { skip: D
   });
 
   // =====================================================================
+  // G. OWNER escalations (recorded, NOT decided) — VUDA condition (c3)
+  // =====================================================================
+  //
+  // Condition (c3) requires the OWNER to adjudicate E1 and the E3/E4 scope, and
+  // requires any E3 acceptance to acknowledge that an invitation-only D-1 repair
+  // does NOT fix the accept path. It also corrects the escalation list: E2 is
+  // RESOLVABLE from approved sources and must NOT remain an open escalation.
+  // Nothing here decides an OWNER question; it records the questions exactly so
+  // that a later reader cannot mistake an open question for a closed one.
+  describe('G. OWNER escalations (recorded, not decided)', () => {
+    it('G1. (c3/E1) OPEN OWNER escalation: legacy pending ADMINISTRATOR invitations', () => {
+      // E1 is an OWNER question. Some existing tenants hold pending invitations
+      // whose stored role is `admin`, issued before the current role-issuance
+      // authority existed. Whether those may still be accepted, must be
+      // re-validated against the issuing principal's current authority, or must
+      // be retired changes WHO MAY ENROLL — a product-policy decision this
+      // mission deliberately does not take. Re-validation at acceptance time is
+      // NOT added here; it is also recorded by
+      // tests/invitation-role-authority.test.js test 28.
+      const controller = controllerSource();
+      assert.match(controller, /it is recorded as a residual by[\s\S]{0,80}test 28/,
+        'E1 must be recorded as an escalation/residual in the accept handler');
+      const acceptArm = controller.slice(
+        controller.indexOf('async accept(req, res, next)'), controller.indexOf('async resend(req, res, next)'));
+      assert.ok(!/roleIssuanceAuthority/.test(acceptArm),
+        'E1 is NOT decided: acceptance applies no issuing-principal re-authorization');
+    });
+
+    it('G2. (c3/E2) RESOLVED from approved sources — NOT an open escalation', () => {
+      // E2 ("must a separate authority exist to cancel a HIGHER-ROLE invitation?")
+      // is resolvable from approved sources, so it must not be left open:
+      //   - cancellation confers NO enrolment and NO role: it forecloses an
+      //     enrollment that already exists, and the only thing it writes is
+      //     `status = 'cancelled'`;
+      //   - ATM-003-R1 section 3.3 grants "Manage users, invitations, roles" at
+      //     Tenant scope to the Tenant Administrator profile, which covers
+      //     cancelling any invitation in the tenant;
+      //   - `roleIssuanceAuthority` answers "may this principal ISSUE this role",
+      //     which correctly applies to RE-ISSUE (resend), not to cancel.
+      const routes = routesSource();
+      assert.match(routes,
+        /router\.delete\('\/:id', requireCapability\('org\.user_admin'\), invitationController\.cancel\)/,
+        'E2 resolution: cancellation carries the invitation-management authority, not role issuance');
+      const controller = controllerSource();
+      const cancelArm = controller.slice(controller.indexOf('async cancel(req, res, next)'));
+      const cancelBody = cancelArm.slice(0, cancelArm.indexOf('async validate'));
+      assert.ok(!/roleIssuanceAuthority/.test(cancelBody),
+        'E2 resolution: cancel must NOT apply role-issuance authority — it issues no role');
+      const resendArm = controller.slice(controller.indexOf('async resend(req, res, next)'));
+      assert.match(resendArm, /roleIssuanceAuthority\(req\.user, invitation\.role\)/,
+        'role-issuance authority belongs to re-issue (resend), which DOES grant the stored role');
+    });
+
+    it('G3. (c3/E3-E4) OPEN OWNER escalation, with the accept-path acknowledgement it MUST carry', () => {
+      // E3/E4 are scope questions for the OWNER. Any E3 acceptance must
+      // acknowledge: an invitation-only D-1 repair (for example giving
+      // `Invitation.createInvitation` a RETURNING id) does NOT fix the accept
+      // path. `POST /api/invitations/accept` creates the account through
+      // `User.create` -> `BaseModel.create` on the `users` table, which still
+      // never reads the generated id, so acceptance still throws and still
+      // returns 500 after the account row commits. The invitation-side repair is
+      // NOT implemented here and is NOT claimed to close anything.
+      const base = fs.readFileSync(path.join(REPO_ROOT, 'src', 'models', 'base.model.js'), 'utf8');
+      assert.match(base, /INSERT INTO \$\{this\.tableName\}/,
+        'the shared write path is unchanged: BaseModel.create still has no RETURNING');
+      const controller = controllerSource();
+      assert.match(controller, /throw happens BEFORE the[\s\S]{0,120}emailService\.sendInvitation/,
+        'create still throws at Invitation.createInvitation before delivery');
+      assert.ok(controller.includes('const user = await User.create({'),
+        'accept still goes through User.create, so an invitation-only repair cannot fix the accept path');
+    });
+
+    it('G4. (c2) OPEN OWNER escalation: no delivery path for an EXISTING pending invitation', () => {
+      // The gap condition (c2) describes is recorded as an escalation, NOT
+      // repaired and NOT worked around by re-exposing the listing token.
+      assert.match(controllerSource(),
+        /no path by which an\s+\*?\s*administrator can obtain a link for an EXISTING pending invitation/i,
+        'the delivery gap must be recorded in the controller');
+      const view = fs.readFileSync(path.join(REPO_ROOT, 'views', 'mobile', 'admin', 'invitations.ejs'), 'utf8');
+      assert.ok(!/\$\{inv\.token\}/.test(view),
+        'the listing token must NOT be re-exposed as a workaround for the dead delivery path');
+    });
+  });
+
+  // =====================================================================
   // F. Negative-control index
   // =====================================================================
   describe('F. negative-control index (each guard has a test that fails without it)', () => {
@@ -925,8 +1169,10 @@ describe('MISSION 3 ATM-001-SEC-93 invitation security residuals A-D', { skip: D
       const index = {
         "route guard requireCapability('org.user_admin') on DELETE /:id":
           'A1 (supervisor refused), A2 (operator refused), 0a (exact guard pinned)',
-        'controller /^\\d+$/ shape guard in cancel':
+        'controller /^\\d+$/ shape guard in cancel and resend':
           'A6 (malformed id is a 404 and carries no driver detail)',
+        'int4 bound (MAX_INVITATION_ID) on the id shape guard, both routes':
+          'A9 (overflow id is a 404 with no driver text and no DB effect), A10 (no replacement token), A11 (bound pinned in source, used by both handlers)',
         'Invitation.claimForAcceptance conditional UPDATE':
           'B2 (atomic claim), B5 (single use), B9 (concurrent double-accept), B10 (single statement)',
         'claim placed BEFORE User.create in accept':
@@ -936,9 +1182,11 @@ describe('MISSION 3 ATM-001-SEC-93 invitation security residuals A-D', { skip: D
         'toAcceptedUserView allow-list projection in accept':
           'C2 (a row containing password_hash is not echoed), C1 (no credential path in listings)',
         'view no longer interpolating a listing token':
-          'C5 (no ${inv.token} in the administration view)'
+          'C5 (no ${inv.token} in the administration view)',
+        'corrected delivery claim (create/resend are dead under D-1)':
+          'C6 (the claim and the database effect it describes), G4 (recorded as an open escalation)'
       };
-      assert.strictEqual(Object.keys(index).length, 7);
+      assert.strictEqual(Object.keys(index).length, 9);
     });
   });
 });
