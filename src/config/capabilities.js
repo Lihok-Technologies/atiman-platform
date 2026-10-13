@@ -163,44 +163,42 @@ const LEGACY_COMPATIBILITY_BUNDLES = Object.freeze({
 });
 
 /**
- * Tenant-administrator compatibility preservation (ATM-001-SEC-104-R2 F3).
+ * The ATM-003-R1 §4 "Tenant Administrator" capability profile.
  *
- * The database records the tenant administrator as `users.role = 'admin'` with
- * `users.is_organization_admin = true` — the same flag the application already
- * uses to recognise an organization administrator
- * (src/middleware/tenant.js, src/routes/user.routes.js,
- * views/mobile/admin/users.ejs), and the flag that the administrative
- * organization-creation path sets on a tenant's first administrator. The public
- * self-service signup is INTENDED to set it too, but at this head it creates no
- * user at all (defect D-1: HTTP 500 after committing an orphan organization —
- * see src/routes/organization.routes.js and
- * tests/organization-signup.integration.test.js), so this comment does not claim
- * that it does.
+ * ATM-003-R1 §4 defines this launch profile as exactly `org.user_admin` +
+ * `org.config_admin` ("Tenancy administration is required to operate at all").
+ * §4 states profiles are "capability bundles, not job titles, and not database
+ * rows", and §8 states the record "does not implement permissions ... or define a
+ * grant schema". The profile is therefore a DESCRIPTION of an approved profile —
+ * never an inference rule, and never a database-row predicate.
  *
- * ATM-003-R1 §4 defines the **Tenant Administrator** launch profile as exactly
- * `org.user_admin` + `org.config_admin`, "required to operate at all". The
- * `admin` legacy bundle above already confers both on every un-granted
- * administrator, so this profile is not new authority.
+ * MISSION #106 (blocker B-1) — THE INFERENCE IS REMOVED. Until that mission the
+ * resolver ADDED this profile to any principal the database recorded as
+ * `role = 'admin'` AND `is_organization_admin = true`, in BOTH resolution modes
+ * (ATM-001-SEC-104-R2 finding F3, recorded in
+ * docs/architecture/ATM-003-R3-Compatibility-Parity-Register.md §6 as
+ * "RECORDED, awaiting OWNER acknowledgment ... carries no authority of its own").
  *
- * The preservation exists because the resolver's mode rule discards the legacy
- * bundle entirely once a principal holds any explicit grant. For an ordinary
- * administrator that narrowing is intended; for the tenant administrator it
- * silently removed the ability to administer the principal's own tenant as soon
- * as an unrelated grant was issued — a regression against pre-capability
- * behaviour (any administrator could edit its own organization profile). A
- * tenant administrator therefore keeps the R1 Tenant Administrator profile in
- * BOTH resolution modes.
+ * The OWNER policy recorded for #106 is: "`is_organization_admin` + an unrelated
+ * explicit grant must NOT by itself confer `org.user_admin`. Do not infer
+ * user-admin from arbitrary grants." Accordingly
+ * src/services/capability.service.js no longer reads `is_organization_admin` and
+ * adds nothing in EXPLICIT_GRANTS mode: there, the resolved set is exactly the
+ * active explicit grants.
  *
- * This is a compatibility key, not an authority of its own:
- *   * holding `is_organization_admin` grants NOTHING by itself — the principal
- *     must also hold `role = 'admin'`;
- *   * the preserved set is exactly the legacy `admin` bundle's
- *     organization-administration entries, so no capability is preserved that an
- *     un-granted administrator did not already hold;
- *   * it is TENANT-scoped authority only. `platform.admin`,
- *     `knowledge.taxonomy_admin` and `integration.service` stay unreachable, and
- *     tenant scope is still enforced separately by the routes'
- *     `requireOwnOrganization` predicate / tenant-exact writes.
+ * Where the profile IS conferred, unchanged:
+ *   * LEGACY_COMPATIBILITY mode — the `admin` bundle below already enumerates
+ *     both entries for an administrator holding NO active grant (parity,
+ *     ATM-003-R3); and
+ *   * an explicit `org.user_admin` / `org.config_admin` grant.
+ *
+ * These constants are retained as the approved profile's NAME so tests and
+ * future code can refer to it. No production module may derive the profile from
+ * `users.role` or `users.is_organization_admin`. There is no union, no
+ * per-capability fallback, `platform.admin` / `knowledge.taxonomy_admin` /
+ * `integration.service` stay unreachable, and no capability is added by this
+ * change.
+ * See docs/review-evidence/ATM-001-SEC-106-B1-RECONCILIATION.md.
  */
 const TENANT_ADMINISTRATOR_ROLE = 'admin';
 

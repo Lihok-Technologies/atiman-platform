@@ -130,6 +130,13 @@ const DB_MUTATING_SUITES = [
   // subscriptions and invitations; proves rollback, single use and credential
   // non-disclosure against disposable PostgreSQL).
   'onboarding-atomicity.test.js',
+  // ATM-001-SEC-106 blocker B-1 capability-grant authority (issues real
+  // explicit grants and reads the persisted effect of the real
+  // org.user_admin/org.config_admin routes). Migration 022 makes a grant
+  // undeletable, so its fixture is ONE stable, idempotent set (`sec106-b1-*`
+  // users in the 'ATM-001-SEC-106-B1 Tenant' organization) reused on every
+  // run; the transition case adds one REVOKED grant row per run by design.
+  'atm-001-sec-106-b1-grant-authority.test.js',
   'step6-access-control.test.js',
   'step6-coverage-e2e.test.js',
   'step6-performance.test.js',
@@ -180,7 +187,10 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'invitation-resend-authorization.test.js',
   'invitation-lifecycle-residuals.test.js',
   // MISSION D-1 onboarding atomicity.
-  'onboarding-atomicity.test.js'
+  'onboarding-atomicity.test.js',
+  // ATM-001-SEC-106 blocker B-1 capability-grant authority (real grants, real
+  // org.user_admin/org.config_admin route effects).
+  'atm-001-sec-106-b1-grant-authority.test.js'
 ];
 
 const REPO_ROOT = path.resolve(__dirname, '..');
