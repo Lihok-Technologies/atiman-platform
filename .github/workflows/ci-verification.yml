@@ -78,11 +78,16 @@ jobs:
   #   * the EXPECTED suite identities are derived by scripts/ci-execution-oracle.js
   #     from the filesystem (tests/*.test.js), from the integration registration
   #     ledger and from a hardcoded documented legacy list — never from analyse();
-  #   * the EXPECTED commands are read verbatim from these workflow files;
-  #   * what actually EXECUTED is observed through the oracle's own reporter,
-  #     injected via NODE_OPTIONS, writing to an append-only journal in a per-run
-  #     directory the verifier never writes to — not from the verifier's stdout,
-  #     JSON record or JUnit documents;
+  #   * the EXPECTED commands are read verbatim from these workflow files, so a
+  #     step that is deleted or rewritten fails the oracle's C0 check;
+  #   * what actually EXECUTED is MEASURED: the oracle runs every expected suite
+  #     itself, with the Node test runner's TAP reporter writing into a directory it
+  #     owns, and requires the verifier's printed per-suite counts to equal that
+  #     measurement. Which suite runners the CI command STARTED, and which were
+  #     reaped, is recorded by a --require preload (scripts/lib/ci-oracle-probe.cjs)
+  #     in an append-only journal the verifier never writes to. Neither the
+  #     verifier's stdout, its JSON record nor its JUnit documents are accepted as
+  #     evidence of what ran;
   #   * the CI environment is reproduced (CI=true, GITHUB_ACTIONS=true, no database
   #     gate, no test-only markers), and the selection must be unchanged when every
   #     test-only env marker is set, which closes the marker-conditional escape.
@@ -90,11 +95,12 @@ jobs:
   # It deliberately re-runs `npm test` and the unit evidence command under
   # observation, so it is a second, independent execution of the same commands
   # rather than a review of their logs. Measured budget (Node 22.23.2, one
-  # developer machine): ~13 minutes; the job limit is set well above that and the
+  # developer machine): ~6 minutes; the job limit is set well above that and the
   # oracle applies its own per-command timeout, so a hang fails visibly.
   #
   # No repository secrets and no production credentials are referenced. The
-  # observation channel is inert in any process that is not the Node test runner.
+  # observation channel is a preload that records pid/ppid/argv/exit only; it
+  # writes nothing to stdout and changes no runner output.
   independent-execution-oracle:
     name: Independent execution oracle (unit)
     runs-on: ubuntu-latest
