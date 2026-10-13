@@ -126,6 +126,10 @@ const DB_MUTATING_SUITES = [
   // tenants, and consumes invitations through the public acceptance path; it
   // creates no capability grant, so it leaves no undeletable residue).
   'invitation-lifecycle-residuals.test.js',
+  // MISSION D-1 onboarding atomicity (creates real tenants, administrators,
+  // subscriptions and invitations; proves rollback, single use and credential
+  // non-disclosure against disposable PostgreSQL).
+  'onboarding-atomicity.test.js',
   'step6-access-control.test.js',
   'step6-coverage-e2e.test.js',
   'step6-performance.test.js',
@@ -174,7 +178,9 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'invitation-role-authority.test.js',
   'invitation-list-authorization.test.js',
   'invitation-resend-authorization.test.js',
-  'invitation-lifecycle-residuals.test.js'
+  'invitation-lifecycle-residuals.test.js',
+  // MISSION D-1 onboarding atomicity.
+  'onboarding-atomicity.test.js'
 ];
 
 const REPO_ROOT = path.resolve(__dirname, '..');

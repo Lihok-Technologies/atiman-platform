@@ -4,6 +4,7 @@
  */
 
 const { Invitation, User, Organization, OrganizationSubscription } = require('../models');
+const { pool } = require('../config/database');
 const { hashPassword } = require('../utils/helpers');
 const subscriptionService = require('../services/subscription.service');
 const emailService = require('../services/email.service');
@@ -395,14 +396,39 @@ class InvitationController {
    *     never confer organization-administrator authority.
    *
    * The body is read for `token`, `username`, `password`, `full_name` and
-   * `phone` only. Verified against the running server: a public acceptance that
-   * posts `role: 'admin'`, `is_organization_admin: true` and a foreign
-   * `organization_id` against an operator invitation still creates an operator
-   * account in the inviting tenant with `is_organization_admin = false`.
+   * `phone` only.
    *
-   * Single use is decided by `Invitation.claimForAcceptance`, an atomic
-   * conditional write, BEFORE the account is created. The read `findByToken`
-   * performs is an eligibility check, not the decision.
+   * ATM-001-SEC-93-B2 (PRESERVED, B3-D condition 1). `users.email` carries a
+   * global UNIQUE constraint (`uq_users_email`), so an already-registered
+   * invitee address is refused with a 409 BEFORE the claim. Without it the
+   * conflict surfaced as HTTP 500 carrying the raw `uq_users_email` driver
+   * text, and a public caller could burn a live invitation by asking a
+   * duplicate address to accept it.
+   *
+   * DEFECT D-1 (REPAIRED at the class level in src/models/base.model.js). At the
+   * pinned head this handler created the account row (which COMMITTED) and then
+   * threw on `user.id`, because `User.create` returned null: `BaseModel.create`
+   * issued its INSERT without `RETURNING id` under the PostgreSQL adapter. The
+   * invitation was therefore NEVER retired and stayed `pending` and reusable,
+   * so the single-use control the invitation is supposed to carry was defeated.
+   *
+   * ATOMICITY (ATM-001-SEC-D1). The eligibility re-read under lock, the single
+   * retirement, the account INSERT and the seat recalculation run in ONE
+   * transaction, so a failure in any step commits neither a half-created
+   * account, nor a consumed-but-unusable invitation, nor a stale seat count.
+   *
+   * SINGLE RETIREMENT MECHANISM (ATM-001-SEC-B3D condition 1). Exactly ONE
+   * mechanism retires the invitation: `Invitation.claimForAcceptance`, the
+   * conditional `UPDATE ... WHERE status = 'pending' AND expires_at > NOW()`
+   * from ATM-001-SEC-93-B, executed here INSIDE the transaction so that it is
+   * both single-use and rollback-safe. `Invitation.accept` is ATTRIBUTION ONLY
+   * (it records `accepted_by_user_id` and cannot move the row back to
+   * `pending`), and `Invitation.findByTokenForUpdate` is an eligibility read
+   * that takes the row lock - it does not itself retire anything. Both
+   * independently-verified controls are retained and neither is duplicated: a
+   * textual merge that also kept D-1's status transition in `accept()` would
+   * have shipped TWO retirement mechanisms, and taking either side wholesale
+   * would have lost one control.
    *
    * Re-validation of the ISSUING principal's current authority at acceptance time
    * is deliberately NOT added: it is a product-policy question about invitations
@@ -428,7 +454,7 @@ class InvitationController {
         });
       }
 
-      // Find invitation
+      // Eligibility read (no lock): a refusal here must persist nothing.
       const invitation = await Invitation.findByToken(token);
 
       if (!invitation) {
@@ -478,51 +504,82 @@ class InvitationController {
       // Hash password
       const passwordHash = await hashPassword(password);
 
-      // SINGLE-USE CLAIM. Every refusal above runs first, so a refusal persists
-      // nothing and leaves the invitation pending and usable. This is the point
-      // of no return: from here the invitation is consumed exactly once, even if
-      // two acceptances arrive concurrently, even if it is revoked between the
-      // eligibility read and this write, and even if the account creation below
-      // fails (which it does today: see D-1).
-      const claimed = await Invitation.claimForAcceptance(invitation.id);
-      if (!claimed) {
-        return res.status(409).json({
-          success: false,
-          message: 'This invitation is no longer available',
-          code: 'INVITATION_NOT_AVAILABLE'
-        });
+      // ---------------------------------------------------------------------
+      // ATOMIC ONBOARDING + ONE RETIREMENT MECHANISM (B3-D condition 1)
+      // ---------------------------------------------------------------------
+      // Everything from the row lock onwards commits together or not at all.
+      // The lock serializes concurrent acceptances; the claim is the SINGLE
+      // retirement; the account INSERT and the seat recalculation join them in
+      // the same transaction so no partial onboarding can be committed.
+      const conn = await pool.getConnection();
+      let accepted;
+      try {
+        // ELIGIBILITY RE-READ UNDER LOCK (ATM-001-SEC-D1, retained). This is not
+        // the retirement decision: a concurrent acceptance blocks here and, once
+        // the first commits, this statement re-evaluates its `status = 'pending'`
+        // predicate against the committed row and matches nothing.
+        const locked = await Invitation.findByTokenForUpdate(token, conn);
+        if (!locked) {
+          await conn.rollback();
+          return res.status(409).json({
+            success: false,
+            message: 'This invitation is no longer available',
+            code: 'INVITATION_NOT_AVAILABLE'
+          });
+        }
+
+        // THE SINGLE RETIREMENT (ATM-001-SEC-93-B). One conditional write, run
+        // inside this transaction: exactly one caller can observe
+        // `affectedRows === 1`, and a rollback below returns the row to
+        // `pending` rather than leaving it consumed-and-unusable. Every refusal
+        // above this line runs before the claim, so a refusal persists nothing.
+        const claimed = await Invitation.claimForAcceptance(locked.id, conn);
+        if (!claimed) {
+          await conn.rollback();
+          return res.status(409).json({
+            success: false,
+            message: 'This invitation is no longer available',
+            code: 'INVITATION_NOT_AVAILABLE'
+          });
+        }
+
+        // Create user. Tenant and role come from the locked persisted row and
+        // never from the request body.
+        const user = await User.create({
+          username,
+          email: locked.email,
+          password_hash: passwordHash,
+          full_name,
+          phone,
+          role: locked.role,
+          organization_id: locked.organization_id,
+          is_active: true,
+          status: 'active',
+          is_billable: true
+        }, conn);
+
+        // ATTRIBUTION ONLY (ATM-001-SEC-93-B). The status transition already
+        // happened in the claim, so this only records WHO accepted and cannot
+        // re-open the row. It is deliberately NOT a second retirement mechanism.
+        await Invitation.accept(locked.id, user.id, conn);
+
+        // Seat usage joins the same transaction, so no seat count is committed
+        // for an acceptance that rolls back.
+        await subscriptionService.recalculateSeats(locked.organization_id, conn);
+
+        await conn.commit();
+        accepted = { user, organizationId: locked.organization_id };
+      } catch (error) {
+        await conn.rollback();
+        throw error;
+      } finally {
+        conn.release();
       }
-
-      // Create user
-      const user = await User.create({
-        username,
-        email: invitation.email,
-        password_hash: passwordHash,
-        full_name,
-        phone,
-        role: invitation.role,
-        organization_id: invitation.organization_id,
-        is_active: true,
-        status: 'active',
-        is_billable: true
-      });
-
-      // Attribute the acceptance. The status transition already happened in the
-      // claim, so this only records WHO accepted and cannot re-open the row.
-      // PRE-EXISTING DEFECT D-1, deliberately not repaired here: `User.create`
-      // issues its INSERT without RETURNING, so it returns null and this line
-      // throws AFTER the account row has committed. The account exists, the
-      // invitation is retired (the claim committed) and `accepted_by_user_id`
-      // stays NULL. Single use no longer depends on that defect.
-      await Invitation.accept(invitation.id, user.id);
-
-      // Update seat usage
-      await subscriptionService.recalculateSeats(invitation.organization_id);
 
       res.json({
         success: true,
         message: 'Invitation accepted! Account created successfully.',
-        data: { user: toAcceptedUserView(user) }
+        data: { user: toAcceptedUserView(accepted.user) }
       });
     } catch (error) {
       next(error);
@@ -625,26 +682,43 @@ class InvitationController {
         });
       }
 
-      // Re-issue with the STORED role and a new token.
+      // DEFECT D-1 (REPAIRED) + ATOMICITY (ATM-001-SEC-D1). At the pinned head
+      // `Invitation.createInvitation` threw on `result.id` after its INSERT had
+      // committed, so the replacement was persisted and the `Invitation.cancel`
+      // below never ran: a resend left TWO live pending invitations for the same
+      // address (same role, so no privilege delta, but two usable enrollment
+      // credentials where the operator asked for one). `BaseModel.create` is
+      // repaired at the class level, and the issue-then-retire pair runs in ONE
+      // transaction so a failure in either half cannot leave a replacement
+      // without retiring its predecessor - nor retire the predecessor without
+      // leaving a usable replacement.
       //
-      // ATM-001-SEC-93-D (c2). The replacement row commits, but under the
-      // UNREPAIRED defect D-1 `createInvitation` then throws at `result.id`, so:
-      // this response never carries the replacement token, `Invitation.cancel`
-      // below is never reached (the original stays pending — two live tokens),
-      // and resend calls no delivery service at all, so nothing is emailed even
-      // on success. There is therefore no working delivery path for an existing
-      // pending invitation. Recorded and escalated; D-1 is NOT repaired here,
-      // because an invitation-only RETURNING fix would still leave
-      // `POST /api/invitations/accept` failing on `User.create`.
-      const newInvitation = await Invitation.createInvitation({
-        organization_id: organizationId,
-        email: invitation.email,
-        role: invitation.role,
-        invited_by: req.user.id
-      });
+      // RELEASE BLOCKER (ATM-001-SEC-B3D condition 4): this transactional form is
+      // the correct one, but the D-1 suite carries NO failure-injection case for
+      // it. Mutation M8 (make this resend non-transactional) therefore escapes
+      // the suite and yields two live pending tokens. That missing detector is
+      // carried as an explicit release blocker and is NOT authored here.
+      const conn = await pool.getConnection();
+      let newInvitation;
+      try {
+        // Re-issue with the STORED role and a new token.
+        newInvitation = await Invitation.createInvitation({
+          organization_id: organizationId,
+          email: invitation.email,
+          role: invitation.role,
+          invited_by: req.user.id
+        }, conn);
 
-      // Retire the invitation being replaced, once its replacement exists.
-      await Invitation.cancel(invitationId);
+        // Retire the invitation being replaced, in the same transaction.
+        await Invitation.cancel(invitationId, conn);
+
+        await conn.commit();
+      } catch (error) {
+        await conn.rollback();
+        throw error;
+      } finally {
+        conn.release();
+      }
 
       res.json({
         success: true,

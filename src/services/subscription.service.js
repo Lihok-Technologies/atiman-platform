@@ -6,6 +6,16 @@
 
 const { pool } = require('../config/database');
 
+/**
+ * The pg adapter returns the mysql2-style `[rows, fields]` tuple from
+ * `pool.execute()` but already-unwrapped rows from a transaction connection
+ * (`getConnection()` in src/config/database.js). Normalise both to plain rows so
+ * a method can run on either executor without changing its call sites.
+ */
+const unwrapRows = (result) => (
+  Array.isArray(result) && result.length === 2 && Array.isArray(result[0]) ? result[0] : result
+);
+
 class SubscriptionService {
   /**
    * Get billing information for an organization
@@ -203,31 +213,37 @@ class SubscriptionService {
   /**
    * Recalculate and update seat usage
    * @param {number} organizationId
+   * @param {Object} [conn] Optional transaction connection from
+   *   `pool.getConnection()`. When supplied the whole recalculation takes part in
+   *   the caller's transaction, so a seat count can never be committed for a
+   *   tenant whose onboarding subsequently rolls back.
    */
-  async recalculateSeats(organizationId) {
-    const [result] = await pool.execute(
+  async recalculateSeats(organizationId, conn = null) {
+    const executor = conn || pool;
+
+    const resultRows = unwrapRows(await executor.execute(
       `SELECT COUNT(*) as count 
        FROM users 
        WHERE organization_id = ? 
        AND is_billable = TRUE 
        AND status IN ('active', 'invited')`,
       [organizationId]
-    );
+    ));
     
-    const seatsUsed = result[0].count;
+    const seatsUsed = resultRows[0].count;
     
     // Get total allowed
-    const [subRows] = await pool.execute(
+    const subRows = unwrapRows(await executor.execute(
       `SELECT included_users, extra_users FROM organization_subscriptions WHERE organization_id = ?`,
       [organizationId]
-    );
+    ));
     
     if (!subRows[0]) return;
     
     const totalAllowed = subRows[0].included_users + (subRows[0].extra_users || 0);
     const seatsAvailable = Math.max(0, totalAllowed - seatsUsed);
     
-    await pool.execute(
+    await executor.execute(
       `UPDATE organization_subscriptions 
        SET seats_used = ?, seats_available = ?, updated_at = NOW()
        WHERE organization_id = ?`,

@@ -221,6 +221,10 @@ router.post('/', requirePermission('USERS', 'CREATE'), canCreateUser, validateAv
     res.status(201).json({
       success: true,
       message: 'User created successfully',
+      // `User.create` is `BaseModel.create`, which reads the committed row back
+      // with `SELECT *`. `BaseModel.create` withholds `password_hash`
+      // (PROTECTED_CREATE_COLUMNS in src/models/base.model.js) and this
+      // projection is the second, independent layer at the response boundary.
       data: { user: sanitizeUser(user) }
     });
   } catch (error) {
@@ -437,6 +441,13 @@ router.put('/:id', requirePermission('USERS', 'UPDATE'), canUpdateUser, authoriz
     res.json({
       success: true,
       message: 'User updated successfully',
+      // PRE-EXISTING credential leak, closed here. `User.update` is
+      // `BaseModel.update`, which reads the row back with `SELECT *`; when the
+      // request carries a new password (`updateData.password_hash`) the response
+      // therefore returned the freshly written bcrypt hash. This is not a D-1
+      // consequence (update never depended on `insertId`), but it is a live
+      // `password_hash` disclosure on an authenticated route and the mission
+      // requires that a returned `SELECT *` row never expose one.
       data: { user: sanitizeUser(user) }
     });
   } catch (error) {

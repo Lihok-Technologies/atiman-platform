@@ -121,7 +121,11 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   // row), credential redaction on every read path and in the administration view,
   // and the D-1/D-2 sequencing dependencies (asserted, not repaired).
   'tests/invitation-lifecycle-residuals.test.js',
-  'tests/knowledge-evidence-deletion-integrity.test.js'
+  'tests/knowledge-evidence-deletion-integrity.test.js',
+  // MISSION D-1: onboarding atomicity — organization signup and invitation
+  // acceptance commit their whole write set or none of it, an unobservable INSERT
+  // fails loudly, and a returned `SELECT *` row never discloses a credential.
+  'tests/onboarding-atomicity.test.js'
 ];
 
 /**

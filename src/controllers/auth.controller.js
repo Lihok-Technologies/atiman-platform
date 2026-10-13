@@ -5,6 +5,7 @@
 
 const jwt = require('jsonwebtoken');
 const authConfig = require('../config/auth');
+const { pool } = require('../config/database');
 const { User, Organization, OrganizationSubscription } = require('../models');
 const subscriptionService = require('../services/subscription.service');
 const { hashPassword, comparePassword, sanitizeUser } = require('../utils/helpers');
@@ -393,20 +394,39 @@ const changePassword = async (req, res, next) => {
 /**
  * Public organization signup
  *
- * INTENDED contract: create a new organization with the first user as
- * `role = 'admin'` / `is_organization_admin = true`, and assign a default Free
- * subscription.
+ * INTENDED contract (ATM-001-SEC-104-R3): create a new organization with the
+ * first user as `role = 'admin'` / `is_organization_admin = true`, and assign a
+ * default Free subscription, in ONE transaction.
  *
- * OBSERVED contract at this head (ATM-001-SEC-104-R3; verified live in
- * tests/organization-signup.integration.test.js): HTTP 500
- * `Cannot read properties of null (reading 'id')`, with ONE organization row
- * committed and ZERO users and ZERO subscriptions. Defect D-1 — `BaseModel.create`
- * reads `result.insertId`, which the PostgreSQL adapter never populates, so
- * `Organization.create` returns null after its INSERT has committed and the
- * handler throws on `organization.id` below. The failure is NOT rolled back.
- * This is pinned, not repaired: the fix belongs to the shared `BaseModel.create`
- * write path and is escalated to the OWNER. See the header of
- * src/routes/organization.routes.js.
+ * DEFECT D-1 (repaired). At the pinned head this endpoint answered HTTP 500
+ * `Cannot read properties of null (reading 'id')` while leaving exactly ONE
+ * organization row COMMITTED with ZERO users and ZERO subscriptions: the INSERT
+ * was never rolled back and the orphan permanently blocked re-registration of the
+ * same name (409), because direct organization deletion is fail-closed
+ * (ATM-001-SEC-00C). The immediate cause was `BaseModel.create` returning null
+ * (no `RETURNING id` under the PostgreSQL adapter); it is repaired at the class
+ * level in src/models/base.model.js.
+ *
+ * Repairing that alone is NOT sufficient for atomicity: the writes below are
+ * independent statements, so a failure in the administrator INSERT or the
+ * subscription INSERT would still leave a half-created tenant committed. The
+ * write sequence therefore runs on ONE transaction connection and commits only
+ * after every write has succeeded, so "an organization exists" and "its first
+ * administrator exists" can no longer diverge.
+ *
+ * Scope is deliberately preserved:
+ *   - the endpoint stays MOUNTED and ANONYMOUS (approved self-service onboarding);
+ *   - the first principal is still `role = 'admin'`, `is_organization_admin = true`
+ *     (authorized role issuance is unchanged - see TH-OWNER-ISSUE 5: WHO becomes
+ *     the first administrator and by what credential ceremony is an OPEN product
+ *     policy question, escalated, not decided here);
+ *   - every pre-write uniqueness refusal keeps its existing status and wording, so
+ *     non-disclosure is unchanged and a duplicate name is still a 409 rather than
+ *     a database constraint (whether it SHOULD be a 409, a UNIQUE constraint or an
+ *     idempotent success is an OPEN product policy question, escalated);
+ *   - if no active `free` plan exists the handler still succeeds without a
+ *     subscription, exactly as before (inventing a plan requirement would be a
+ *     product decision).
  */
 const organizationSignup = async (req, res, next) => {
   try {
@@ -496,51 +516,71 @@ const organizationSignup = async (req, res, next) => {
       });
     }
 
-    // Create organization
-    const organization = await Organization.create({
-      organization_name,
-      industry: industry || 'other',
-      billing_email: email || null
-    });
-
-    // Hash password
+    // Hash password and resolve the plan BEFORE opening the transaction: bcrypt is
+    // CPU work and the plan lookup is a read, so neither belongs inside the write
+    // window.
     const passwordHash = await hashPassword(password);
-
-    // Create admin user for the organization
-    const admin = await User.create({
-      username,
-      email,
-      password_hash: passwordHash,
-      full_name,
-      phone,
-      role: 'admin',
-      organization_id: organization.id,
-      is_organization_admin: true,
-      is_active: true,
-      status: 'active',
-      is_billable: true
-    });
 
     // Get the Free plan
     const freePlan = await subscriptionService.getPlanByCode('free');
-    
-    if (freePlan) {
-      // Create subscription for the organization
-      await OrganizationSubscription.createForOrganization(
-        organization.id,
-        freePlan.id,
-        {
-          status: 'active',
-          billing_cycle: 'monthly',
-          current_period_start: new Date(),
-          current_period_end: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) // 30 days from now
-        }
-      );
-      
-      // Update organization with subscription reference
-      await Organization.update(organization.id, {
-        subscription_id: (await OrganizationSubscription.findByOrganization(organization.id))?.id
-      });
+
+    // Obligations are collected and EVERY write is performed on one transaction
+    // connection. `getConnection()` issues BEGIN (src/config/database.js), so a
+    // failure anywhere below rolls the organization back with the rest and no
+    // orphan tenant can survive a failed signup.
+    const conn = await pool.getConnection();
+    let organization;
+    let admin;
+    try {
+      const createdOrganization = await Organization.create({
+        organization_name,
+        industry: industry || 'other',
+        billing_email: email || null
+      }, conn);
+      organization = createdOrganization;
+
+      // Create admin user for the organization
+      admin = await User.create({
+        username,
+        email,
+        password_hash: passwordHash,
+        full_name,
+        phone,
+        role: 'admin',
+        organization_id: organization.id,
+        is_organization_admin: true,
+        is_active: true,
+        status: 'active',
+        is_billable: true
+      }, conn);
+
+      if (freePlan) {
+        // Create subscription for the organization. `createForOrganization`
+        // records the organizations.subscription_id reference itself.
+        await OrganizationSubscription.createForOrganization(
+          organization.id,
+          freePlan.id,
+          {
+            status: 'active',
+            billing_cycle: 'monthly',
+            current_period_start: new Date(),
+            current_period_end: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) // 30 days from now
+          },
+          conn
+        );
+
+        // Update organization with subscription reference
+        await Organization.update(organization.id, {
+          subscription_id: (await OrganizationSubscription.findByOrganization(organization.id, conn))?.id
+        }, conn);
+      }
+
+      await conn.commit();
+    } catch (error) {
+      await conn.rollback();
+      throw error;
+    } finally {
+      conn.release();
     }
 
     // Get fresh user data with organization info for token
