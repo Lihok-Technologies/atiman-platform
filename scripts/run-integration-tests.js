@@ -81,7 +81,12 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   // ATM-001-KF-06: knowledge evidence deletion integrity — a definition deletion
   // may not destroy working provenance evidence as a cascade side effect, so
   // authorization covers the operation's effect and not merely its route.
-  'tests/knowledge-evidence-deletion-integrity.test.js'
+  'tests/knowledge-evidence-deletion-integrity.test.js',
+  // ATM-001-SEC-LEGACY-01-R3: the reconciled single-user authorization lane —
+  // GET / PUT / DELETE /api/users/:id tenant, ownership and facility scope, the
+  // approved USERS.ASSIGN_FACILITY policy, and the reactivation/seat branch. The
+  // three prior remediations (R1/PR #85, R2, 00B/PR #87) are one contract here.
+  'tests/user-authorization-reconciliation.test.js'
 ];
 
 /**

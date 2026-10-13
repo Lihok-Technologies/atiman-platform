@@ -367,6 +367,26 @@ class UserModel extends BaseModel {
   }
 
   /**
+   * Delete a user only within the given organization (ATM-001-SEC-00B).
+   *
+   * The tenant predicate is part of the destructive statement rather than only
+   * of the authorization middleware that precedes it, so the *effect* of the
+   * delete cannot be widened by a later change to that middleware. This does not
+   * modify the inherited, tenant-agnostic `BaseModel.delete`.
+   *
+   * @param {number} id
+   * @param {number} organizationId
+   * @returns {Promise<boolean>} true only when a row of that tenant was removed
+   */
+  async deleteForOrganization(id, organizationId) {
+    const result = await this.query(
+      `DELETE FROM ${this.tableName} WHERE id = ? AND organization_id = ?`,
+      [id, organizationId]
+    );
+    return result.affectedRows > 0;
+  }
+
+  /**
    * Set user as organization admin
    * @param {number} userId
    * @param {boolean} isAdmin
