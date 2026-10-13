@@ -5,6 +5,27 @@
 
 const { pool } = require('../config/database');
 
+/**
+ * Columns that must never appear on the object `BaseModel.create()` returns.
+ *
+ * `create()` reads the committed row back with `SELECT *` (`findById`). For
+ * `users` that row carries `password_hash`, and several callers place a create()
+ * result straight into an HTTP response (`POST /api/invitations/accept`,
+ * `POST /api/users`). Redaction therefore belongs to the write accessor itself,
+ * applied by name at the class level, so a caller cannot leak a credential by
+ * forgetting to project the row.
+ *
+ * This is deliberately NOT applied to the read accessors (`findById`,
+ * `findByField`, `findAll`, `query`): `changePassword`
+ * (src/controllers/auth.controller.js) must read `user.password_hash` in order
+ * to compare the current password, and `login` reads it to verify a credential.
+ *
+ * `invitations.token` is intentionally absent: an invitation token is a value
+ * the creating administrator must receive in order to deliver the invitation, and
+ * only the administration LISTING withholds it (ATM-001-SEC-00G).
+ */
+const PROTECTED_CREATE_COLUMNS = Object.freeze(['password_hash']);
+
 class BaseModel {
   constructor(tableName) {
     this.tableName = tableName;
@@ -15,9 +36,13 @@ class BaseModel {
    * Execute a query
    * @param {string} sql
    * @param {Array} params
+   * @param {Object} [conn] Optional transaction connection from
+   *   `pool.getConnection()` / `getConnection()`. When supplied the statement runs
+   *   on that connection so it takes part in the caller's transaction; when
+   *   omitted it runs on the pool exactly as before.
    * @returns {Promise}
    */
-  async query(sql, params = []) {
+  async query(sql, params = [], conn = null) {
     // Ensure all params are valid - convert undefined to null, ensure numbers are actual numbers
     const validParams = params.map(p => {
       if (p === undefined) return null;
@@ -28,8 +53,12 @@ class BaseModel {
     
     console.log('[BASE MODEL] Params:', validParams);
     
-    // Phase 2: pg adapter returns normalized array directly (no destructuring [rows])
-    const results = await this.pool.execute(sql, validParams);
+    // Phase 2: pg adapter returns normalized array directly (no destructuring [rows]).
+    // A transaction connection already returns unwrapped rows; the pool returns the
+    // mysql2-style [rows, fields] tuple. Both shapes are handled below.
+    const results = conn
+      ? await conn.execute(sql, validParams)
+      : await this.pool.execute(sql, validParams);
 
     // The patched pool.execute returns a MySQL-style [rows, fields] tuple.
     // BaseModel consumers expect the plain rows array, so unwrap it here.
@@ -89,12 +118,14 @@ class BaseModel {
   /**
    * Find one record by ID
    * @param {number} id
+   * @param {Object} [conn] Optional transaction connection (see query()).
    * @returns {Promise<Object|null>}
    */
-  async findById(id) {
+  async findById(id, conn = null) {
     const res = await this.query(
       `SELECT * FROM ${this.tableName} WHERE id = ?`,
-      [id]
+      [id],
+      conn
     );
     const row = Array.isArray(res) ? res[0] : res;
     return row || null;
@@ -116,37 +147,77 @@ class BaseModel {
   }
 
   /**
-   * Create a new record
+   * Create a new record.
+   *
+   * DEFECT D-1 (repaired here). The INSERT previously carried no `RETURNING`
+   * clause and the generated key was read from `result.insertId`:
+   *
+   *     INSERT INTO t (...) VALUES (...)
+   *     const insertId = (result && result.insertId) || ...;
+   *     return this.findById(insertId);
+   *
+   * The runtime driver is PostgreSQL (`pg`, see src/config/database.js). A `pg`
+   * Result carries no `insertId`; `normalizeResult()` in
+   * src/config/database.js can only populate one from a row returned by the
+   * statement (`rows[0].id`). With no `RETURNING`, `rows` is empty, `insertId`
+   * stays null and `findById(null)` matches nothing - so `create()` returned
+   * `null` for EVERY caller while the INSERT had already committed on an
+   * autocommit pool connection. Callers then threw on `.id` AFTER a durable
+   * write, which is how `POST /api/auth/organization-signup` committed an orphan
+   * organization and answered HTTP 500.
+   *
+   * `RETURNING id` makes the write observable: either the INSERT reports the
+   * generated key, or this method throws instead of returning a value the caller
+   * must not treat as success. Every BaseModel table has an identity `id` column
+   * (database/postgresql/001_core.sql), so the clause is always satisfiable.
+   *
+   * Callers that require the INSERT and their follow-up writes to be atomic must
+   * pass a transaction connection (`conn`) and commit it themselves; see
+   * `organizationSignup` and `InvitationController.accept`.
+   *
    * @param {Object} data
-   * @returns {Promise<Object>}
+   * @param {Object} [conn] Optional transaction connection (see query()).
+   * @returns {Promise<Object>} the committed row, with PROTECTED_CREATE_COLUMNS removed
    */
-  async create(data) {
+  async create(data, conn = null) {
     const fields = Object.keys(data);
     const values = Object.values(data);
     const placeholders = fields.map(() => '?').join(', ');
 
-    const sql = `INSERT INTO ${this.tableName} (${fields.join(', ')}) VALUES (${placeholders})`;
-    const result = await this.query(sql, values);
+    const sql = `INSERT INTO ${this.tableName} (${fields.join(', ')}) VALUES (${placeholders}) RETURNING id`;
+    const result = await this.query(sql, values, conn);
 
-    const insertId = (result && result.insertId) || (Array.isArray(result) && result.insertId);
-    return this.findById(insertId);
+    const insertId = result && result.insertId;
+    if (insertId === null || insertId === undefined) {
+      throw new Error(
+        `INSERT INTO ${this.tableName} committed without reporting a generated id`
+      );
+    }
+
+    const row = await this.findById(insertId, conn);
+    if (!row) return row;
+
+    const projected = { ...row };
+    for (const column of PROTECTED_CREATE_COLUMNS) delete projected[column];
+    return projected;
   }
 
   /**
    * Update a record by ID
    * @param {number} id
    * @param {Object} data
+   * @param {Object} [conn] Optional transaction connection (see query()).
    * @returns {Promise<Object>}
    */
-  async update(id, data) {
+  async update(id, data, conn = null) {
     const fields = Object.keys(data);
     const values = Object.values(data);
     const setClause = fields.map(field => `${field} = ?`).join(', ');
 
     const sql = `UPDATE ${this.tableName} SET ${setClause} WHERE id = ?`;
-    await this.query(sql, [...values, id]);
+    await this.query(sql, [...values, id], conn);
 
-    return this.findById(id);
+    return this.findById(id, conn);
   }
 
   /**

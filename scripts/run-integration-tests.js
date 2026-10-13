@@ -81,7 +81,11 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   // ATM-001-KF-06: knowledge evidence deletion integrity — a definition deletion
   // may not destroy working provenance evidence as a cascade side effect, so
   // authorization covers the operation's effect and not merely its route.
-  'tests/knowledge-evidence-deletion-integrity.test.js'
+  'tests/knowledge-evidence-deletion-integrity.test.js',
+  // MISSION D-1: onboarding atomicity — organization signup and invitation
+  // acceptance commit their whole write set or none of it, an unobservable INSERT
+  // fails loudly, and a returned `SELECT *` row never discloses a credential.
+  'tests/onboarding-atomicity.test.js'
 ];
 
 /**

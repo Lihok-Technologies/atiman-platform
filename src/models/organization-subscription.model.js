@@ -12,14 +12,17 @@ class OrganizationSubscriptionModel extends BaseModel {
 
   /**
    * Get subscription by organization ID
+   * @param {number} organizationId
+   * @param {Object} [conn] Optional transaction connection (see BaseModel.query()).
    */
-  async findByOrganization(organizationId) {
+  async findByOrganization(organizationId, conn = null) {
     const [row] = await this.query(
       `SELECT os.*, sp.plan_code, sp.plan_name, sp.description, sp.features
        FROM ${this.tableName} os
        JOIN subscription_plans sp ON os.plan_id = sp.id
        WHERE os.organization_id = ?`,
-      [organizationId]
+      [organizationId],
+      conn
     );
     return row || null;
   }
@@ -167,11 +170,16 @@ class OrganizationSubscriptionModel extends BaseModel {
 
   /**
    * Create subscription for organization
+   * @param {number} organizationId
+   * @param {number} planId
+   * @param {Object} [options]
+   * @param {Object} [conn] Optional transaction connection (see BaseModel.query()).
    */
-  async createForOrganization(organizationId, planId, options = {}) {
+  async createForOrganization(organizationId, planId, options = {}, conn = null) {
     const plan = await this.query(
       'SELECT * FROM subscription_plans WHERE id = ?',
-      [planId]
+      [planId],
+      conn
     ).then(([p]) => p);
 
     if (!plan) throw new Error('Invalid plan');
@@ -192,12 +200,13 @@ class OrganizationSubscriptionModel extends BaseModel {
       seats_available: plan.included_users
     };
 
-    const result = await this.create(data);
+    const result = await this.create(data, conn);
     
     // Update organization with subscription reference
     await this.query(
       'UPDATE organizations SET subscription_id = ? WHERE id = ?',
-      [result.id, organizationId]
+      [result.id, organizationId],
+      conn
     );
 
     return result;

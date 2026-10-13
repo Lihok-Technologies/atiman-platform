@@ -21,9 +21,10 @@ class InvitationModel extends BaseModel {
   /**
    * Create a new invitation
    * @param {Object} data
+   * @param {Object} [conn] Optional transaction connection (see BaseModel.query()).
    * @returns {Promise<Object>}
    */
-  async createInvitation(data) {
+  async createInvitation(data, conn = null) {
     const token = this.generateToken();
     const expiresAt = new Date();
     expiresAt.setDate(expiresAt.getDate() + 7); // 7 days expiration
@@ -38,7 +39,7 @@ class InvitationModel extends BaseModel {
       expires_at: expiresAt
     };
 
-    const result = await this.create(invitationData);
+    const result = await this.create(invitationData, conn);
     return { ...invitationData, id: result.id };
   }
 
@@ -59,6 +60,41 @@ class InvitationModel extends BaseModel {
       WHERE i.token = ? AND i.status = 'pending' AND i.expires_at > NOW()
     `;
     const [row] = await this.query(sql, [token]);
+    return row || null;
+  }
+
+  /**
+   * Find a still-acceptable invitation by token and LOCK its row for the duration
+   * of the caller's transaction.
+   *
+   * `findByToken` is an eligibility READ: it establishes that an invitation was
+   * acceptable a moment ago. Two concurrent acceptances both pass it, and a token
+   * revoked between that read and the account INSERT still passed it. Single use
+   * is therefore decided by `FOR UPDATE` inside the transaction that performs the
+   * acceptance: the second caller blocks on the row lock, and once the first
+   * commits the retirement the blocked statement re-evaluates its predicate
+   * against the committed row and returns no row at all, so the token cannot be
+   * consumed twice.
+   *
+   * Must be called only with a transaction connection (see BaseModel.query()).
+   *
+   * @param {string} token
+   * @param {Object} conn Transaction connection.
+   * @returns {Promise<Object|null>}
+   */
+  async findByTokenForUpdate(token, conn) {
+    const sql = `
+      SELECT i.*,
+        o.organization_name,
+        u.full_name as invited_by_name,
+        u.email as invited_by_email
+      FROM ${this.tableName} i
+      JOIN organizations o ON i.organization_id = o.id
+      JOIN users u ON i.invited_by = u.id
+      WHERE i.token = ? AND i.status = 'pending' AND i.expires_at > NOW()
+      FOR UPDATE OF i
+    `;
+    const [row] = await this.query(sql, [token], conn);
     return row || null;
   }
 
@@ -110,23 +146,25 @@ class InvitationModel extends BaseModel {
    * Accept an invitation
    * @param {number} invitationId
    * @param {number} userId
+   * @param {Object} [conn] Optional transaction connection (see BaseModel.query()).
    */
-  async accept(invitationId, userId) {
+  async accept(invitationId, userId, conn = null) {
     return this.update(invitationId, {
       status: 'accepted',
       accepted_at: new Date(),
       accepted_by_user_id: userId
-    });
+    }, conn);
   }
 
   /**
    * Cancel an invitation
    * @param {number} invitationId
+   * @param {Object} [conn] Optional transaction connection (see BaseModel.query()).
    */
-  async cancel(invitationId) {
+  async cancel(invitationId, conn = null) {
     return this.update(invitationId, {
       status: 'cancelled'
-    });
+    }, conn);
   }
 
   /**
