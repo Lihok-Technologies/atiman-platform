@@ -773,53 +773,28 @@ const canViewUser = async (req, res, next) => {
 };
 
 /**
- * GET /api/users/:id - the R-1 own-record read carve-out.
+ * ATM-001-SEC-107-R1-CORRECTION - the R-1 own-record carve-out was REMOVED.
  *
- * OWNER-APPROVED R-1 POLICY: "an authenticated operator may read its OWN
- * sanitized user profile (HTTP 200) ... Viewing the own record must NOT confer
- * `USERS.VIEW`, `org.user_admin`, `org.config_admin` or any other elevated
- * capability. Other users and foreign-tenant records remain governed by existing
- * #102 authorization and tenant non-disclosure rules."
+ * Mission #107 / R-1 added `requireUsersViewUnlessOwnRecord` here: a route-local
+ * identity exemption that waived `USERS.VIEW` on `GET /api/users/:id` when the
+ * route parameter equalled the authenticated principal.
  *
- * The capability matrix is NOT changed. `USERS.VIEW` remains
- * `{ admin: 'all', supervisor: 'all', operator: 'none' }`, so `GET /api/users`
- * (the list) and every other route keep requiring the capability exactly as
- * before. What this guard adds is a route-local *identity* exemption for the one
- * record that is the caller itself:
+ * The OWNER has since ruled that approving an own-profile read did NOT authorize
+ * bypassing the administrative `USERS.VIEW` gate. The behaviour required is:
  *
- *   - the identity comes from the AUTHENTICATED PRINCIPAL (`req.user.id`, set by
- *     `authenticate` from the session) and is compared numerically to the route
- *     parameter. A body, query or header value is never consulted, so a caller
- *     cannot name itself as somebody else;
- *   - when - and only when - the parameter equals the principal, the USERS.VIEW
- *     requirement is waived and `canViewUser` runs next. `canViewUser` ALWAYS
- *     runs and re-resolves the record from the database through the shared
- *     `authorizeUserScope` core, so the record that is finally returned is the
- *     principal's own persisted row, not a row the parameter merely claims. The
- *     tenant boundary is therefore not bypassed: it is satisfied by identity
- *     equality, and it still applies to every non-self target;
- *   - for every other identifier - a same-tenant colleague, a foreign-tenant
- *     record, an absent record, or a malformed one - the approved
- *     `requirePermission` gate runs exactly as before and refuses an operator
- *     with the identical 403 for all of them. The exemption therefore does not
- *     become an existence oracle and does not widen USERS.VIEW.
+ *   - `GET /api/users/:id` is gated by `requirePermission('USERS','VIEW')` for
+ *     EVERY caller and EVERY identifier - an operator without `USERS.VIEW`
+ *     receives 403 even when the identifier is its own (the accepted #102
+ *     assertion). This route is an ADMINISTRATIVE user-read surface.
+ *   - The approved own-profile read is served by the authenticate-only
+ *     `GET /api/auth/profile`, which is an identity surface (ATM-003-R1 §7) and
+ *     needs no capability and no carve-out.
  *
- * It is deliberately attached only to `GET /api/users/:id`. The create, update,
- * delete, list and facility-listing routes are untouched.
- */
-const requireUsersViewUnlessOwnRecord = (req, res, next) => {
-  const targetUserId = parseUserIdParam(req.params.id);
-
-  if (targetUserId !== null
-      && req.user
-      && Number(req.user.id) === targetUserId) {
-    return next();
-  }
-
-  return requirePermission('USERS', 'VIEW')(req, res, next);
-};
-
-/**
+ * Consequently the capability matrix is untouched (`USERS.VIEW` remains
+ * `{ admin: 'all', supervisor: 'all', operator: 'none' }`), no capability is
+ * added, and no dead helper is left behind. The removal is recorded here rather
+ * than erased so a future reader can see what was tried and why it was reverted.
+ *//**
  * PUT /api/users/:id - the USERS.UPDATE tenant/facility/ownership boundary.
  * Thin wrapper: the rule lives in `authorizeUserScope`. The approved
  * USERS.ASSIGN_FACILITY policy on the same route is enforced separately by
@@ -1126,7 +1101,6 @@ module.exports = {
   roleIssuanceAuthority,
   canManageUser,
   canViewUser,
-  requireUsersViewUnlessOwnRecord,
   canUpdateUser,
   canDeleteUser,
   authorizeFacilityAssignment,

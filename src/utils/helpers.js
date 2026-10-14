@@ -170,6 +170,69 @@ const redactSensitiveFields = (value) => {
 const sanitizeUser = (user) => redactSensitiveFields(user);
 
 /**
+ * ATM-001-SEC-107-R1-CORRECTION - the served user-profile ALLOW-LIST.
+ *
+ * `sanitizeUser`/`redactSensitiveFields` are DENY-lists: they drop a field whose
+ * NAME matches a credential pattern and pass every other field through. A
+ * deny-list cannot by itself prove that a *handler projected a row*, because the
+ * router-level backstop (`src/middleware/sensitive-response.js`) applies the same
+ * deny-list to the whole response body. A handler that returns the raw
+ * `SELECT *` row behind that backstop and a handler that projects produce
+ * byte-identical output - the exact reason Arena mutation M1 stayed green.
+ *
+ * This constant is the complementary ALLOW-list: the exact, documented field set
+ * a served user profile may carry. A projection built from it is a strict subset
+ * of the raw row (internal provisioning/SSO/billing columns are deliberately not
+ * part of a profile), so "the handler projected" is observable in the response
+ * SHAPE and a raw-row bypass becomes detectable.
+ *
+ * Deliberately NOT served: `invited_by`, `invited_at` (invitation provenance),
+ * `is_billable` (billing internal), `is_sso_user`, `sso_provider`,
+ * `last_sso_login_at` (SSO internals). None is a credential; all are withheld as
+ * data minimisation, and none is required by a profile or user-detail consumer
+ * (the operator/facility listings keep their own unchanged projection).
+ *
+ * A field is emitted only when the source row actually carries it, so one list
+ * serves both `GET /api/users/:id` (base user columns) and
+ * `GET /api/auth/profile` (base columns plus the organization join).
+ */
+const USER_PROFILE_FIELDS = Object.freeze([
+  // identity and contact
+  'id', 'username', 'email', 'full_name', 'phone',
+  // placement
+  'role', 'facility_id', 'organization_id',
+  // lifecycle
+  'is_active', 'status', 'is_organization_admin',
+  'last_login', 'created_at', 'updated_at',
+  // present only on the `GET /api/auth/profile` organization join
+  'organization_name', 'subscription_plan', 'subscription_status'
+]);
+
+/**
+ * Project a user row onto the documented profile allow-list.
+ *
+ * Non-mutating; returns the input unchanged when it is not a plain object so a
+ * caller cannot turn a `null` (or an array) into a fabricated profile. The
+ * `isSensitiveField` guard means a credential can never be introduced by editing
+ * `USER_PROFILE_FIELDS`, so the allow-list cannot be "widened" into a leak.
+ *
+ * @param {Object} row
+ * @returns {Object}
+ */
+const projectUserProfile = (row) => {
+  if (row === null || typeof row !== 'object' || Array.isArray(row)) {
+    return row;
+  }
+  const projected = {};
+  for (const field of USER_PROFILE_FIELDS) {
+    if (isSensitiveField(field)) continue;
+    if (!Object.prototype.hasOwnProperty.call(row, field)) continue;
+    projected[field] = row[field];
+  }
+  return projected;
+};
+
+/**
  * Values that are credentials regardless of the column they are bound to.
  *
  * The name-based rule in `isSensitiveField` can only fire when the bound column
@@ -369,6 +432,8 @@ module.exports = {
   formatDateForMySQL,
   calculateNextDueDate,
   sanitizeUser,
+  projectUserProfile,
+  USER_PROFILE_FIELDS,
   redactSensitiveFields,
   isSensitiveField,
   looksLikeCredentialValue,

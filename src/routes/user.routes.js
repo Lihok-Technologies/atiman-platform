@@ -11,7 +11,6 @@ const {
   requirePermission,
   canCreateUser,
   canViewUser,
-  requireUsersViewUnlessOwnRecord,
   canUpdateUser,
   canDeleteUser,
   authorizeFacilityAssignment,
@@ -19,7 +18,8 @@ const {
 } = require('../middleware/rbac');
 const { validateAvailableSeats, validateReactivation, checkSeatUsage } = require('../middleware/seat-validation');
 const { getMyCapabilities } = require('../controllers/capability.controller');
-const { sanitizeUser, redactSensitiveFields } = require('../utils/helpers');
+const { sanitizeUser, projectUserProfile, redactSensitiveFields } = require('../utils/helpers');
+const { sensitiveResponseGuard } = require('../middleware/sensitive-response');
 
 /**
  * ATM-001-SEC-LEGACY-01-R1 defence in depth.
@@ -27,14 +27,12 @@ const { sanitizeUser, redactSensitiveFields } = require('../utils/helpers');
  * Every JSON response this router produces passes through `redactSensitiveFields`
  * before serialisation, so credential material cannot leave through a handler
  * that forgets to sanitise explicitly - including the JSON error paths. The
- * explicit `sanitizeUser(...)` calls below remain the primary, reviewable
- * protection; this guard is the backstop.
+ * explicit projections in the handlers below remain the primary, reviewable
+ * protection; this guard is the backstop. The guard now lives in
+ * `src/middleware/sensitive-response.js` so it can be independently tested and
+ * its installation here asserted.
  */
-router.use((req, res, next) => {
-  const sendJson = res.json.bind(res);
-  res.json = (body) => sendJson(redactSensitiveFields(body));
-  next();
-});
+router.use(sensitiveResponseGuard);
 
 router.use(authenticate);
 
@@ -135,21 +133,31 @@ router.get('/facility/operators', requireSupervisor, async (req, res, next) => {
  * `authorizeUserScope`). Every out-of-scope outcome is the same 404, and
  * credential material is redacted from the response.
  *
- * MISSION #107 / R-1 narrows one case of that contract: an authenticated
- * operator MAY read its OWN record (HTTP 200), because a principal reading its
- * own sanitized profile is not the "view users" authority that USERS.VIEW
- * governs. `requireUsersViewUnlessOwnRecord` performs the identity comparison
- * from the authenticated principal only and waives the capability requirement
- * for that single record; every other identifier still meets the unchanged
- * USERS.VIEW gate, and `canViewUser` still runs on every request. The operator
- * gains the ability to read its own sanitized row and nothing else - USERS.VIEW
- * stays 'none' for an operator, so the list route and all writes are unaffected.
+ * ATM-001-SEC-107-R1-CORRECTION - THE ADMINISTRATIVE GATE IS ABSOLUTE.
+ *
+ * Mission #107 / R-1 inserted a `requireUsersViewUnlessOwnRecord` carve-out here
+ * so that an operator could read its OWN record on this route. The OWNER has
+ * since ruled that the approval of an own-profile read did NOT authorize
+ * bypassing the administrative `USERS.VIEW` gate on `GET /api/users/:id`: an
+ * operator holds `USERS.VIEW: 'none'`, so this route refuses an operator for
+ * EVERY identifier, its own included. The carve-out has been REMOVED and this
+ * route is again gated by the unchanged capability check.
+ *
+ * The approved own-profile behaviour is served by the authenticate-only
+ * `GET /api/auth/profile` (`src/controllers/auth.controller.js` -> `getProfile`),
+ * which already existed and already resolves identity from `req.user.id`. That
+ * split follows ATM-003-R1 §7: Authentication owns identity, Authorization owns
+ * capability grants and tenant scope. No capability is added by either route.
+ *
+ * The handler projects the row onto the documented profile ALLOW-LIST
+ * (`projectUserProfile`), so the projection - not merely the router-level
+ * backstop - is observable in the response shape.
  */
-router.get('/:id', requireUsersViewUnlessOwnRecord, canViewUser, async (req, res, next) => {
+router.get('/:id', requirePermission('USERS', 'VIEW'), canViewUser, async (req, res, next) => {
   try {
     res.json({
       success: true,
-      data: { user: sanitizeUser(req.targetUser) }
+      data: { user: projectUserProfile(req.targetUser) }
     });
   } catch (error) {
     next(error);

@@ -15,6 +15,15 @@
  * deliberately not asserted here, so that this suite is a detector of the
  * credential leak rather than a second, competing authorization contract.
  *
+ * ATM-001-SEC-107-R1-CORRECTION refines that: with the #107 own-record carve-out
+ * removed, a refusal is a REFUSAL and is never accepted as sanitizer evidence.
+ * Cases that are denied before the projection runs assert their exact status and
+ * that no `data.user` projection was produced (`assertDeniedBeforeProjection`);
+ * sanitizer/projection evidence is carried ONLY by the cases that reach a real
+ * HTTP 200 (7b, 8, 9, 10). The two authorized 200 cases (7b, 8) assert the
+ * response shape EQUALS the documented allow-list, which is what makes a
+ * handler-level bypass detectable (Arena mutation M1).
+ *
  * Two "detector" properties are asserted first, so a green run cannot be
  * vacuous:
  *   - the fixture row genuinely carries a bcrypt hash in the database, and
@@ -105,6 +114,51 @@ let FIXTURE_HASH = null;
 
 let server = null;
 let port = null;
+
+/**
+ * ATM-001-SEC-107-R1-CORRECTION - the served-profile ALLOW-LIST, stated
+ * INDEPENDENTLY here (hard-coded, not imported from `src/`) so that editing the
+ * production constant cannot silently move this suite's expectation.
+ *
+ * Arena mutation M1 (handler returns the RAW row while the router backstop stays
+ * intact) is byte-identical to a correct projection under a DENY-list, because
+ * the backstop applies the identical redaction to the whole body. Asserting the
+ * response shape EQUALS this allow-list removes that blind spot: the raw row also
+ * carries the withheld internal columns below, so M1 turns these cases RED.
+ */
+const EXPECTED_PROFILE_FIELDS = [
+  'id', 'username', 'email', 'full_name', 'phone',
+  'role', 'facility_id', 'organization_id',
+  'is_active', 'status', 'is_organization_admin',
+  'last_login', 'created_at', 'updated_at'
+];
+
+/** `GET /api/auth/profile` additionally joins the caller's organization. */
+const EXPECTED_PROFILE_FIELDS_WITH_ORG = [
+  ...EXPECTED_PROFILE_FIELDS,
+  'organization_name', 'subscription_plan', 'subscription_status'
+];
+
+/** Internal columns a served profile must NOT carry (proved absent below). */
+const WITHHELD_INTERNAL_FIELDS = [
+  'invited_by', 'invited_at', 'is_billable',
+  'is_sso_user', 'sso_provider', 'last_sso_login_at'
+];
+
+/** The subset of `fields` actually present on `row` - a projection emits only those. */
+const presentFields = (row, fields) =>
+  fields.filter((field) => Object.prototype.hasOwnProperty.call(row, field));
+
+/** The raw row `getProfile` reads, so the expected shape is derived from real data. */
+const rawProfileRow = async (userId) => {
+  const rows = await withConn((conn) => conn.query(
+    `SELECT u.*, o.organization_name, o.subscription_plan, o.subscription_status
+     FROM users u
+     LEFT JOIN organizations o ON u.organization_id = o.id
+     WHERE u.id = $1`,
+    [userId]));
+  return rows[0];
+};
 
 // ---------------------------------------------------------------------------
 // Database helpers
@@ -385,95 +439,135 @@ describe('ATM-001-SEC-B3B user credential disclosure', { skip: DB_TEST_SKIP_REAS
   // ------------------------------------------------- C. own tenant
 
   describe('C. own-tenant reads disclose no credential and lose no legitimate field', () => {
-    it('7. an operator reading its own record (R-1: the sanitizing branch must actually run)', async () => {
-      // MISSION #107 / R-1 - the positive, NON-VACUOUS sanitizer witness.
+    it('7. an operator is REFUSED its own /api/users/:id - the administrative gate is absolute', async () => {
+      // ATM-001-SEC-107-R1-CORRECTION - THE OWNER'S RULING, IMPLEMENTED.
       //
-      // HISTORICAL CONTRADICTION, PRESERVED: as accepted, B3-B asserted 200 for
-      // this call while #102/R3 test 7 asserted 403 for the SAME call and named a
-      // different reason. The OWNER-approved R-1 policy adopts THIS assertion -
-      // an authenticated operator may read its own sanitized record - and #102's
-      // superseded 403 is recorded verbatim in its own case rather than deleted.
+      // HISTORICAL CONTRADICTION, PRESERVED. As originally accepted B3-B asserted
+      // 200 here while #102/R3 test 7 asserted 403 for the SAME call. Mission #107
+      // / R-1 resolved that toward B3-B by adding a
+      // `requireUsersViewUnlessOwnRecord` carve-out to the route and quoting:
       //
-      // A refusal is explicitly NOT accepted here: the call must reach the
-      // handler's projection and come back 200 with the positive field set
-      // intact, which "blocked before projection" can never produce.
+      //     const res = await get(`/api/users/${OP_A}`, OP_A);
+      //     assert.strictEqual(res.status, 200,
+      //       `R-1: the operator's own record must reach the projection: ${redacted(res.text)}`);
+      //     const user = JSON.parse(res.text).data.user;
+      //     assert.strictEqual(Number(user.id), OP_A);
+      //     assert.deepStrictEqual(Object.keys(user).sort(), expectedKeys.sort(),
+      //       'every non-sensitive column must survive; only credential fields may be removed');
+      //
+      // The OWNER has since ruled that approving an own-profile read did NOT
+      // authorize bypassing the administrative USERS.VIEW gate. `GET /api/users/:id`
+      // is an administrative user-read surface: an operator without USERS.VIEW is
+      // refused 403 for EVERY identifier, its own included. The approved
+      // own-profile read is served by the identity route `GET /api/auth/profile`
+      // (case 7b).
+      //
+      // This is a REFUSAL, so it carries no sanitizer evidence - a denied read
+      // cannot be credited to a projection, which is exactly what
+      // `assertDeniedBeforeProjection` enforces.
       const rowBefore = await User.findById(OP_A);
 
       const res = await get(`/api/users/${OP_A}`, OP_A);
-      assert.strictEqual(res.status, 200,
-        `R-1: the operator's own record must reach the projection: ${redacted(res.text)}`);
-      assertNoCredential(res.text, 'operator A -> self', [await storedHash(OP_A)]);
+      assertDeniedBeforeProjection(res, 403, 'operator A -> own id on /api/users/:id');
 
-      const user = JSON.parse(res.text).data.user;
-      assert.strictEqual(Number(user.id), OP_A);
-      assert.ok(String(user.username).startsWith(tag('op-a')));
-      assert.strictEqual(Number(user.organization_id), ORG_A);
-      assert.strictEqual(user.role, 'operator');
-      assert.ok(!('password_hash' in user));
+      // No existence oracle: the own, same-tenant-colleague and foreign
+      // identifiers answer identically, so the refusal cannot be mined for
+      // "does this id exist".
+      const colleague = await get(`/api/users/${OP_FAC_A}`, OP_A);
+      const foreign = await get(`/api/users/${TARGET_B}`, OP_A);
+      assertDeniedBeforeProjection(colleague, 403, 'operator A -> same-tenant colleague');
+      assertDeniedBeforeProjection(foreign, 403, 'operator A -> foreign-tenant user');
+      assert.strictEqual(res.text, colleague.text,
+        'the own-id denial must be byte-identical to the colleague denial - no existence oracle');
+      assert.strictEqual(res.text, foreign.text,
+        'the own-id denial must be byte-identical to the foreign denial - no existence oracle');
 
-      // The projection RAN and removed exactly the credential fields: every
-      // other persisted column survives. A blanket drop, an empty envelope, or a
-      // refusal all fail here.
-      const expectedKeys = Object.keys(rowBefore).filter((key) => !isSensitiveKey(key));
-      assert.ok(expectedKeys.length >= 5,
-        'the positive field set must be non-trivial for this to be real sanitizer evidence');
-      assert.deepStrictEqual(Object.keys(user).sort(), expectedKeys.sort(),
-        'every non-sensitive column must survive; only credential fields may be removed');
-
-      // Non-effect: a read must not alter the row it read.
+      // Non-effect: a refused read must not alter the row it named.
       const rowAfter = await User.findById(OP_A);
       assert.strictEqual(rowAfter.password_hash, rowBefore.password_hash,
-        'an own-record GET must not rotate or clear the stored credential');
+        'a refused own-record GET must not rotate or clear the stored credential');
     });
 
-    it('7b. the already-approved self-profile path also serves an operator (task-1 survey evidence)', async () => {
-      // The task-1 survey found an EXISTING, authenticate-only, self-scoped
-      // profile route - `GET /api/auth/profile` (src/routes/auth.routes.js:18 ->
-      // `authController.getProfile`), which resolves identity from `req.user.id`
-      // and applies `sanitizeUser`. It is exercised here so the survey claim is
-      // demonstrated rather than merely asserted in prose. It is NOT the route
-      // this mission changed; it is reported as the pre-existing own-profile
-      // path and it keeps working unchanged.
+    it('7b. the approved own-profile path serves the operator an EXACT allow-list projection', async () => {
+      // ATM-001-SEC-107-R1-CORRECTION: with the carve-out removed, THIS is the
+      // operator's own-profile surface - `GET /api/auth/profile`
+      // (src/routes/auth.routes.js -> `authController.getProfile`), an
+      // authenticate-only identity route (ATM-003-R1 §7) that resolves identity
+      // from `req.user.id` and requires no capability.
+      //
+      // It is also the strongest handler-level witness available. `auth.routes.js`
+      // installs NO router-level backstop, so the handler's projection is the ONLY
+      // protection on this path: a handler that returned the raw row would put
+      // `password_hash` on the wire here. The exact-shape assertion below further
+      // distinguishes "the handler projected" from "a backstop happened to
+      // redact".
+      const raw = await rawProfileRow(OP_A);
       const res = await get('/api/auth/profile', OP_A);
       assert.strictEqual(res.status, 200,
-        `the pre-existing self-profile path must serve an operator: ${redacted(res.text)}`);
+        `the approved own-profile path must serve an operator: ${redacted(res.text)}`);
       assertNoCredential(res.text, 'operator A -> /api/auth/profile', [await storedHash(OP_A)]);
 
       const user = JSON.parse(res.text).data.user;
       assert.strictEqual(Number(user.id), OP_A, 'the self-profile path must return the principal itself');
       assert.strictEqual(user.role, 'operator');
       assert.ok(!('password_hash' in user), 'the self-profile path must be sanitized');
+
+      // EXACT allow-list shape. Under a handler bypass (raw row) the response
+      // would additionally carry invited_by, invited_at, is_billable, is_sso_user,
+      // sso_provider and last_sso_login_at, so this fails and M1 is detected.
+      const expected = presentFields(raw, EXPECTED_PROFILE_FIELDS_WITH_ORG);
+      assert.ok(expected.length >= 15,
+        'the allow-list must be non-trivial for this to be real projection evidence');
+      assert.deepStrictEqual(Object.keys(user).sort(), expected.slice().sort(),
+        'the served profile must equal the documented allow-list EXACTLY');
+      for (const key of Object.keys(user)) {
+        assert.ok(!isSensitiveKey(key), `the projection must not carry a credential-named key: ${key}`);
+      }
+      for (const withheld of WITHHELD_INTERNAL_FIELDS) {
+        assert.ok(!(withheld in user), `internal column ${withheld} must not be served`);
+      }
     });
 
-    it('7c. a spoofed identity cannot retarget the own-record read', async () => {
-      // R-1 negatives: a client-supplied user id or organization - in the query
-      // string or in the request body - must never address another user. Identity
-      // is taken from the AUTHENTICATED PRINCIPAL only.
+    it('7c. identity comes from the authenticated principal, never from client input', async () => {
+      // ATM-001-SEC-107-R1-CORRECTION: `/api/users/:id` no longer carries an
+      // identity carve-out, so an operator is refused there whatever it claims.
+      // The spoofing surface is now the approved own-profile route, which
+      // addresses `req.user.id` only. A query or body value must never retarget a
+      // read on EITHER route.
       const rowBefore = await User.findById(OP_A);
 
       const viaQuery = await call('GET',
-        `/api/users/${OP_A}?id=${TARGET_B}&userId=${TARGET_B}&organization_id=${ORG_B}`,
+        `/api/auth/profile?id=${TARGET_B}&userId=${TARGET_B}&organization_id=${ORG_B}`,
         { userId: OP_A });
       assert.strictEqual(viaQuery.status, 200,
-        `a query-spoofed own-record read must still be the own record: ${redacted(viaQuery.text)}`);
+        `the own-profile read must ignore a query-supplied id: ${redacted(viaQuery.text)}`);
       assert.strictEqual(Number(JSON.parse(viaQuery.text).data.user.id), OP_A,
-        'a query-supplied id must not retarget the read');
+        'a query-supplied id must not retarget the own-profile read');
 
-      const viaBody = await call('GET', `/api/users/${OP_A}`, {
+      const viaBody = await call('GET', '/api/auth/profile', {
         userId: OP_A,
         body: { id: TARGET_B, userId: TARGET_B, organization_id: ORG_B, role: 'admin' }
       });
       assert.strictEqual(viaBody.status, 200,
-        `a body-spoofed own-record read must still be the own record: ${redacted(viaBody.text)}`);
+        `the own-profile read must ignore a body-supplied id: ${redacted(viaBody.text)}`);
       assert.strictEqual(Number(JSON.parse(viaBody.text).data.user.id), OP_A,
-        'a body-supplied id/org must not retarget the read');
+        'a body-supplied id/org must not retarget the own-profile read');
 
-      // Naming somebody else in the PATH is not an own-record read, and the
-      // unchanged capability gate still refuses it however the query is dressed.
+      // An authorized administrator is likewise not retargetable: the identifier
+      // served is the authenticated principal, not the query claim.
+      const adminSpoof = await call('GET',
+        `/api/users/${ADMIN_A}?id=${TARGET_B}&organization_id=${ORG_B}`, { userId: ADMIN_A });
+      assert.strictEqual(adminSpoof.status, 200,
+        `an administrative own read must succeed: ${redacted(adminSpoof.text)}`);
+      assert.strictEqual(Number(JSON.parse(adminSpoof.text).data.user.id), ADMIN_A,
+        'a query-supplied id must not retarget an administrative read');
+
+      // Naming somebody else in the PATH is not an own read, and the unchanged
+      // capability gate refuses an operator however the query is dressed.
       const foreignTarget = await call('GET',
         `/api/users/${TARGET_B}?id=${OP_A}&organization_id=${ORG_A}`, { userId: OP_A });
-      assert.strictEqual(foreignTarget.status, 403,
-        'a foreign path target must still be refused regardless of query claims');
+      assertDeniedBeforeProjection(foreignTarget, 403,
+        'operator A -> foreign path target with a spoofed query');
 
       assertNoCredential(viaQuery.text, 'query spoof', [await storedHash(TARGET_B)]);
       assertNoCredential(viaBody.text, 'body spoof', [await storedHash(TARGET_B)]);
@@ -484,16 +578,36 @@ describe('ATM-001-SEC-B3B user credential disclosure', { skip: DB_TEST_SKIP_REAS
         'a spoofed read must not alter the caller row');
     });
 
-    it('8. an administrator reading an own-tenant operator (exact redaction, not a blanket drop)', async () => {
+    it('8. an administrator reading an own-tenant operator gets the EXACT allow-list projection (M1 witness)', async () => {
       const res = await get(`/api/users/${OP_FAC_A}`, ADMIN_A);
       assert.strictEqual(res.status, 200, `own-tenant read must succeed: ${redacted(res.text)}`);
       assertNoCredential(res.text, 'admin A -> own-tenant operator', [await storedHash(OP_FAC_A)]);
 
       const user = JSON.parse(res.text).data.user;
       const before = await User.findById(OP_FAC_A);
-      const expectedKeys = Object.keys(before).filter((key) => key !== 'password_hash');
-      assert.deepStrictEqual(Object.keys(user).sort(), expectedKeys.sort(),
-        'every non-credential column must survive; only password_hash may be removed');
+      assert.strictEqual(Number(user.id), OP_FAC_A, 'the served record must be the requested user');
+      assert.strictEqual(user.role, 'operator', 'a legitimate field must survive');
+
+      // ATM-001-SEC-107-R1-CORRECTION - THE M1 WITNESS.
+      //
+      // The handler projects the documented allow-list, which is a STRICT SUBSET
+      // of the raw row. The superseded form of this case asserted that "every
+      // non-credential column must survive", which is byte-identical whether the
+      // handler projected or returned the raw row behind the router backstop
+      // (Arena mutation M1) - so it could not attribute protection to the
+      // handler. Asserting equality with the allow-list makes M1 RED, because the
+      // raw row also carries the withheld internal columns below.
+      const expected = presentFields(before, EXPECTED_PROFILE_FIELDS);
+      assert.ok(expected.length >= 12,
+        'the allow-list must be non-trivial for this to be real projection evidence');
+      assert.deepStrictEqual(Object.keys(user).sort(), expected.slice().sort(),
+        'the served user must equal the documented allow-list EXACTLY');
+      for (const key of Object.keys(user)) {
+        assert.ok(!isSensitiveKey(key), `the projection must not carry a credential-named key: ${key}`);
+      }
+      for (const withheld of WITHHELD_INTERNAL_FIELDS) {
+        assert.ok(!(withheld in user), `internal column ${withheld} must not be served`);
+      }
     });
 
     it('9. the user list carries no credential in any element', async () => {

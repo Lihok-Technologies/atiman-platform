@@ -8,7 +8,7 @@ const authConfig = require('../config/auth');
 const { pool } = require('../config/database');
 const { User, Organization, OrganizationSubscription } = require('../models');
 const subscriptionService = require('../services/subscription.service');
-const { hashPassword, comparePassword, sanitizeUser } = require('../utils/helpers');
+const { hashPassword, comparePassword, sanitizeUser, projectUserProfile } = require('../utils/helpers');
 
 /**
  * Generate JWT token
@@ -330,7 +330,13 @@ const getProfile = async (req, res, next) => {
     
     res.json({
       success: true,
-      data: { user: sanitizeUser(user) }
+      // ATM-001-SEC-107-R1-CORRECTION: this is the approved own-profile surface
+      // for an operator (an authenticated principal reading its own record). It
+      // is served by an ALLOW-LIST projection, not a deny-list, so this handler's
+      // projection is observable in the response shape and cannot be confused
+      // with the users router's backstop. Identity comes from `req.user.id`
+      // only; no client-supplied identifier is consulted.
+      data: { user: projectUserProfile(user) }
     });
   } catch (error) {
     next(error);
