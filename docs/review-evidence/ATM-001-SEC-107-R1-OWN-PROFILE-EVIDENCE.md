@@ -1,5 +1,25 @@
 # ATM-001-SEC-107 / R-1 — operator own-profile read (implementation evidence)
 
+> **SUPERSEDED IN PART — 2026-10-14, ATM-001-SEC-107-R1-CORRECTION.** An independent Arena
+> review-only pass returned **CONDITIONAL** on this tree (`f03a4f63b588b662ee4819820e40818d8dbe2a4a`
+> / tree `3afb7e2c4a346ddd3fc3cea6b2e0d483a0be0f3a`) with **four conditions**. The OWNER then
+> resolved the crux as Arena's alternative **(b)**: the approval of an own-profile read did **not**
+> authorize bypassing the administrative `USERS.VIEW` gate on `GET /api/users/:id`. The
+> `requireUsersViewUnlessOwnRecord` carve-out described below (§2) has been **REMOVED**.
+>
+> This document is retained unchanged as the historical record of what was implemented and why.
+> The corrected implementation, the four-condition disposition, the mutation evidence and the
+> full test matrix are in
+> [`ATM-001-SEC-107-R1-CORRECTION-EVIDENCE.md`](ATM-001-SEC-107-R1-CORRECTION-EVIDENCE.md).
+> Two claims **below** are corrected there and must not be relied on:
+> - **§5 "Non-vacuous sanitization coverage"** — overstated. Arena mutation M1 (handler returns the
+>   RAW row, router backstop intact) left cases 7, 7b, 7c, 8, 9, 10 **ALL GREEN**, because
+>   `sanitizeUser ≡ redactSensitiveFields` and the pre-existing backstop applied the identical
+>   function to the whole body. Those cases proved *no credential reached the wire*; they did **not**
+>   prove the handler projection executed. (Arena condition 2.)
+> - **§5's attribution of "case 13"** to `assertDeniedBeforeProjection` — wrong; case 13 is
+>   unchanged by that helper. (Arena condition 3.)
+>
 > Authored by the implementing agent. **This is not its own review.** No independent verdict
 > exists for this tree; an independent Arena review-only pass has been requested and has not
 > returned at the time of writing. Nothing here is self-approved.
