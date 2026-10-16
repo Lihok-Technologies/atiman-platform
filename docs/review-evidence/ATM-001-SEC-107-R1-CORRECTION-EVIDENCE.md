@@ -429,7 +429,7 @@ unchanged versus the tested base.
 
 ---
 
-## 12. Independent Arena review-only request (verdict: NOT REVIEWED)
+## 12. Independent Arena review-only request (Arena verdict not observed by the author)
 
 **Arena has not reviewed this tree.** The corrected commit `1190a007ffa52e1ce6b231b7ff1cc1d527fef05f`
 / tree `b5247cd3c9ee23682fee4cfbf16f7e805f96d17b` is offered for a **review-only** pass. Arena is
