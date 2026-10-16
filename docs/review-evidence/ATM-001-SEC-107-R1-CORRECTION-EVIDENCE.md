@@ -4,9 +4,13 @@
 > its own review and confers no approval. No `OWNER-RATIFIED:` line exists here and none may be
 > inferred. No merge to `main`, no deploy, no production database access.
 >
-> **ARENA VERDICT FOR THIS CORRECTED TREE: NOT REVIEWED.** The designated independent Arena
-> review-only pass has **not** reviewed the tree identified in §1. Nothing here may be read as an
-> independent PASS. The review request is in §12.
+> **ARENA VERDICT: NOT OBSERVED BY THE AUTHOR OF THIS DOCUMENT, AND NONE IS CLAIMED.** No Arena
+> verdict for the final-evidence tree is asserted anywhere in this file. Two **outstanding Arena
+> conditions** on this correction were **relayed verbatim in the final-evidence mission brief** and
+> are reproduced with their disposition in **§13**; the author did **not** directly observe the
+> Arena verdict artefact and states that plainly rather than inferring a verdict. Nothing here may
+> be read as an independent PASS or as self-approval. An independent Arena **re-review of both
+> conditions** is requested in §12.
 
 **Mission:** ATM-001-SEC-107-R1-CORRECTION-CLOSURE — close the four Arena conditions on Mission
 #107. **Issues:** #107 (parent #105, umbrella #97); the accepted #102 assertion is restored.
@@ -86,7 +90,7 @@ conditions. Each is mapped to its disposition and evidence.
 |---|---|---|---|
 | 1 | "Obtain explicit OWNER ratification of (a) on `/api/users/:id`, **or** rework to (b) (leave 403; `/api/auth/profile` sole path) and restore the #102 assertion — the implementer was not authorized to self-resolve this." | **CLOSED — option (b) implemented.** Carve-out removed; route re-gated by `requirePermission('USERS','VIEW')`; #102 case 7 restored to 403. | §4.1, §4.2; mutation **M4** (carve-out re-added) → 12 RED including #102 case 7 and B3-B case 7 |
 | 2 | "Correct the overstated sanitizer-coverage claim (M1 stays green via the pre-existing backstop)." | **CLOSED — corrected AND made non-vacuous.** Handler projection is now an explicit ALLOW-LIST; mutation **M1 is DETECTED**. | §5; mutation **M1** → RED (B3-B case 8) |
-| 3 | "Correct claim 5's case-13 attribution." | **CLOSED.** The #107 evidence doc carries a superseding banner explaining that case 13 was never converted by `assertDeniedBeforeProjection`; case 13 is a 404 absorber owned by the `ADMIN_A` caller. | `ATM-001-SEC-107-R1-OWN-PROFILE-EVIDENCE.md` banner; §5.4 |
+| 3 | "Correct claim 5's case-13 attribution." | **CLOSED — provenance restated (see §5.4 and §13.1).** The case-13 attribution appeared in **no repository document**: `git grep -n "case 13" f03a4f6 -- docs src tests` returns **no match**, and §5 of the #107 evidence doc lists only cases **3, 4, 5, 6, 12 and 12b**. It originated in the **unversioned mission/handoff prose** supplied by a parent agent, and is corrected here as prose — **no repository document is alleged to contain it**. Case 13 remains a 404 absorber using `ADMIN_A`, unchanged by R-1. | §5.4; §13.1 |
 | 4 | "Correct Correction B's scope framing; the two baseline flakes are not R-1's." | **CLOSED.** The "1012/1014" figure was **integration-scope**; this correction reports integration-scope and full-`npm-test`-scope numbers **separately** and labels them. The two baseline flakes (B3-B test 13 racy global `count(*)`; `onboarding-atomicity` D4 race) are **not R-1's** and are not claimed as fixed. | §6 (both scopes, per group) |
 
 ---
@@ -249,15 +253,44 @@ credential-leak assertion on that router — which is why its **function** is pi
 (case 3a/3b) and its **installation** is pinned in the real router stack (case 3a). This is stated
 plainly rather than papered over by a test that merely restates the source.
 
-### 5.4 Task 5 — case 13 attribution corrected
+### 5.4 Task 5 — case 13 attribution: corrected provenance (restated)
 
-The #107 evidence doc's §5 attributed "case 13" to `assertDeniedBeforeProjection`. That is wrong:
-case 13 (`an absent identifier answers 404 and creates no row`) uses `ADMIN_A`, is unchanged by R-1,
-and was never converted. The superseding banner in
-`ATM-001-SEC-107-R1-OWN-PROFILE-EVIDENCE.md` records the correction. The cases actually converted
-to `assertDeniedBeforeProjection` are **3, 4, 5, 6, 12, 12b** (operator/foreign/malformed denials),
-and the deny-only cases now assert an exact status **and** that no `data.user` projection was
-produced — so "blocked before projection" can never again be credited to the sanitizer.
+**Provenance, stated plainly (Arena condition 3).** The claim that "§5 attributed case 13 to
+`assertDeniedBeforeProjection`" was **not sourced from a repository document**. It came from
+**earlier mission/handoff prose** — text supplied to the implementing agent by a parent agent. That
+prose is a conversational artefact: it is **not repository content, is not version-controlled, and
+exists at no commit**, so it cannot be cited to a file, a line or a SHA.
+
+What the repository actually contains, verified on the reviewed artefact:
+
+```
+$ git grep -n "case 13" f03a4f63b588b662ee4819820e40818d8dbe2a4a -- docs src tests
+(no output; exit 1)
+
+$ git grep -in "case 13\|case-13\|case13" f03a4f63b588b662ee4819820e40818d8dbe2a4a
+(no output; exit 1)
+```
+
+The string "case 13" appears **nowhere** in `docs`, `src` or `tests` at `f03a4f6`, and nowhere else
+in that tree. §5 of `ATM-001-SEC-107-R1-OWN-PROFILE-EVIDENCE.md` at `f03a4f6` lists the converted
+cases as **"3, 4, 5, 6, 12 and 12b"**, and attributes **none** of them — and no case 13 — to
+`assertDeniedBeforeProjection`. Its only mention of that helper is the sentence "They are now
+asserted with `assertDeniedBeforeProjection`", whose subject is precisely that list of six.
+
+**This section therefore corrects the handoff prose, not a repository document.** No repository
+document is alleged to contain the case-13 attribution. The earlier wording that said the #107
+evidence doc's §5 made that attribution — and the superseding banner that echoed it — have been
+removed in the final-evidence closure commit. This is the §13.1 disposition of Arena condition 3.
+
+**Case 13's verified behaviour is untouched and was never in question.** Case 13 (an absent
+identifier answers 404 and creates no row) uses `ADMIN_A`, asserts **404**, is unchanged from the
+base `2cd999a`, and was **never converted** to `assertDeniedBeforeProjection`. Neither the test nor
+its assertion was altered by this closure (documentation-only diff — §13.3).
+
+The cases actually converted to `assertDeniedBeforeProjection` are **3, 4, 5, 6, 12 and 12b**
+(operator/foreign/malformed denials), and the deny-only cases now assert an exact status **and** that
+no `data.user` projection was produced — so "blocked before projection" can never again be credited
+to the sanitizer.
 
 ---
 
@@ -266,8 +299,10 @@ produced — so "blocked before projection" can never again be credited to the s
 Environment for every database-touching group: disposable PostgreSQL cluster at
 `/tmp/atiman104-pg`, **port 55435** (`nc -z 127.0.0.1 55435` → open; started with
 `pg_ctl -D /tmp/atiman104-pg -o "-p 55435 -c listen_addresses=127.0.0.1"`).
-`TEST_DB_HOST=127.0.0.1 TEST_DB_PORT=55435 TEST_DB_NAME=atiman_test TEST_DB_USER=agadmin
-TEST_DB_PASSWORD=atiman104-test-only`, `NODE_ENV=test`, `RUN_DB_TESTS=true`. The JWT secret was read
+`TEST_DB_HOST=127.0.0.1 TEST_DB_PORT=55435 TEST_DB_NAME=atiman_test TEST_DB_USER=agadmin`, and the
+**`TEST_DB_PASSWORD`** environment variable — **value not recorded in this document** (referenced by
+credential **name only**; see §13.2 for the exposure assessment and the escalation to the OWNER),
+with `NODE_ENV=test`, `RUN_DB_TESTS=true`. The JWT secret was read
 from `src/config/auth.js`; **`JWT_SECRET` was never set** (`unset JWT_SECRET` in every run).
 Node `v26.8.2`, npm `11.19.1`. **Port 5432 was never touched; no shared or production database was
 contacted.**
@@ -410,12 +445,182 @@ Scope of the requested review:
 3. **Condition 2 (the crux)** — independently reproduce **M1** (handler raw row, backstop intact)
    and confirm it is now **RED**, and reproduce **M2** (backstop uninstalled) and confirm **RED**.
    Attempt to defeat the allow-list projection; report any bypass.
-4. **Condition 3** — confirm case 13 is not attributed to `assertDeniedBeforeProjection`.
+4. **Condition 3 (provenance)** — confirm the case-13 attribution is sourced to the **unversioned
+   handoff prose**, not to a repository document: reproduce `git grep -n "case 13" f03a4f6 -- docs
+   src tests` (expect **no match**); confirm §5 at `f03a4f6` lists only cases **3, 4, 5, 6, 12 and
+   12b**; confirm that **no remaining text** in this branch's evidence attributes the case-13 claim
+   to a repository document; and confirm case 13 still uses `ADMIN_A`, asserts **404**, and is
+   unchanged from `2cd999a`.
 5. **Condition 4** — confirm the integration-scope vs `npm test`-scope figures are labelled.
-6. **Preserved controls** — cross-tenant 404/403 non-disclosure (no existence oracle), authorized
+6. **Credential hygiene** — confirm the disposable test-DB password literal is **absent** from every
+   file in this branch's `docs/review-evidence/` (a value-grep must return **zero** matches) and that
+   it is referenced by **name only**; and independently assess the §13.2 reuse/rotation question.
+7. **Preserved controls** — cross-tenant 404/403 non-disclosure (no existence oracle), authorized
    administrator own/same-tenant 200 + foreign 404 + list, and no new capability.
-7. **Residuals** — confirm the §9 blockers are still OPEN and that nothing was silently reconciled.
+8. **Residuals** — confirm the §9 blockers are still OPEN and that nothing was silently reconciled.
 
 **A review-only context must state its procedural (not organisational) independence and must not
 sign off merge, deploy, or OWNER approval. No independent PASS may be claimed until Arena has
 actually reviewed the exact tree above. This document claims none.**
+
+---
+
+## 13. Final-evidence closure — the two remaining Arena conditions (this commit)
+
+> **Reviewer findings are preserved verbatim. Nothing is deleted, reworded or softened.**
+> The two conditions below are reproduced **verbatim** exactly as relayed in the final-evidence
+> mission brief. **The author of this document did not directly observe the Arena verdict artefact**,
+> and records them as relayed rather than as an observed verdict. The **four** earlier conditions in
+> §3 are **preserved unchanged**; no text of theirs was removed.
+
+### 13.1 Arena outstanding condition 1 (original condition 3) — case-13 provenance
+
+> **Verbatim:** "The condition-3 banner/§5.4 must not assert a §5 case-13 attribution that is absent
+> from the reviewed tree — restate it as correcting the handoff prose, or cite where it appeared."
+
+**Disposition: CLOSED — restated as correcting the handoff prose. No repository citation is
+possible, because none exists.**
+
+**Verification performed (VERIFIED, reproduced by the author):**
+
+| Check | Command | Result |
+|---|---|---|
+| "case 13" in the reviewed artefact | `git grep -n "case 13" f03a4f6 -- docs src tests` | **no output, exit 1** |
+| variant spellings, whole artefact | `git grep -in "case 13\|case-13\|case13" f03a4f6` | **no output, exit 1** |
+| "case 13" in any commit message, all refs | `git log --all --format='%B' \| grep -i "case 13"` | **no match** |
+| §5's actual converted-case list at `f03a4f6` | `git show f03a4f6:docs/review-evidence/ATM-001-SEC-107-R1-OWN-PROFILE-EVIDENCE.md` | §5 reads: "Cases **3, 4, 5, 6, 12 and 12b** … are now asserted with `assertDeniedBeforeProjection`" — **case 13 is not listed and is not mentioned anywhere in §5** |
+| §5's only `assertDeniedBeforeProjection` mention | same | the sentence whose subject is the six-case list above |
+
+**What is and is NOT there — stated exactly.** At `f03a4f6`, §5 of the #107 evidence doc attributes
+the helper to cases **3, 4, 5, 6, 12 and 12b** only. It makes **no** attribution of case 13 to
+anything. The string "case 13" is absent from the reviewed tree entirely. Consequently the earlier
+banner/text in this branch — which asserted a §5 case-13 attribution — asserted a correction of text
+that **is not in the reviewed tree**.
+
+**Why the literal phrase appears nowhere (corroborating detail, VERIFIED).** The suite numbers its
+tests inside the `it()` title — `it('13. an absent identifier answers 404 and creates no row', …)` at
+`tests/user-credential-disclosure.test.js:679` — and §5 of the evidence doc refers to the converted
+cases by **bare number** ("Cases 3, 4, 5, 6, 12 and 12b"). The token "case 13" is therefore a
+*paraphrase* of "test 13", not a string that any repository document was ever written to contain.
+This is precisely why Arena's grep returned nothing, and it confirms that the attribution could only
+have come from prose, never from a file.
+
+**Provenance (a) vs (b), stated plainly:**
+
+- **(a) EARLIER HANDOFF PROSE** — the *source* of the case-13 attribution. Mission/handoff text
+  supplied to the implementing agent by a parent agent. It is **not repository content**, is **not
+  version-controlled**, and **exists at no commit**, so it can be cited to no path, line or SHA.
+- **(b) ACTUAL REPOSITORY CONTENT** — at `f03a4f6`: §5 lists 3, 4, 5, 6, 12, 12b and says nothing
+  about case 13; "case 13" appears nowhere in `docs`, `src` or `tests`. **No repository document
+  contains the attribution**, and none is alleged to.
+
+**Exact text changed (both instances of the assertion were removed/restated):**
+
+| File | Before | After |
+|---|---|---|
+| `ATM-001-SEC-107-R1-CORRECTION-EVIDENCE.md` §5.4 | heading "case 13 attribution corrected"; body asserting "The #107 evidence doc's §5 attributed \"case 13\" to `assertDeniedBeforeProjection`." | heading "case 13 attribution: corrected provenance (restated)"; body states the source was the **unversioned handoff prose**, quotes the two negative greps, reproduces §5's actual list, and states **no repository document is alleged** to contain the attribution. |
+| same, §3 row 3 (condition "Correct claim 5's case-13 attribution.") | "The #107 evidence doc carries a superseding banner explaining that case 13 was never converted by `assertDeniedBeforeProjection`…" | "**CLOSED — provenance restated**… The case-13 attribution appeared in **no repository document**… It originated in the **unversioned mission/handoff prose**… **no repository document is alleged to contain it**." |
+| same, §12 item 4 (Arena review scope) | "confirm case 13 is not attributed to `assertDeniedBeforeProjection`." | item rewritten to ask Arena to reproduce the negative grep, confirm §5's actual six-case list, confirm **no remaining text** attributes the claim to a repository document, and confirm case 13 is unchanged. |
+| `ATM-001-SEC-107-R1-OWN-PROFILE-EVIDENCE.md` banner | "**§5's attribution of \"case 13\"** to `assertDeniedBeforeProjection` — wrong…" | banner corrected: the attribution came from **earlier handoff prose, not this document**; "case 13" appears **nowhere in this file** or in `docs`/`src`/`tests` at the reviewed artefact; §5 below lists only **3, 4, 5, 6, 12, 12b**. |
+
+Note: the banner in `ATM-001-SEC-107-R1-OWN-PROFILE-EVIDENCE.md` is **correction-era** text added by
+the correction commit — the *historical §5 body itself is unchanged*, so this restatement does not
+alter the historical record.
+
+**Case 13's verified behaviour is preserved and was never altered:** it uses `ADMIN_A`, asserts
+**404**, is unchanged from base `2cd999a`, and was never converted to
+`assertDeniedBeforeProjection`. **No test file and no assertion was modified** (§13.3).
+
+### 13.2 Arena outstanding condition 2 — credential hygiene
+
+> **Verbatim:** "Remove the literal disposable test-DB password from the committed evidence doc;
+> reference the credential by name only."
+
+**Disposition: CLOSED in the current evidence files. ESCALATED for rotation/revocation (STOP).**
+
+**Removal.** At the pre-closure tip `e631888417da2953f7fae170f6f6f9e8a07e3666` the literal appeared
+**exactly once** in tracked files — the `TEST_DB_PASSWORD=` assignment in the §6 environment block
+of this document. It has been replaced by a **name-only** reference: "the **`TEST_DB_PASSWORD`**
+environment variable — **value not recorded in this document**". Presence is confirmed by
+count/hash only, **never by echoing the value**:
+
+| Measure | Pre-closure (`e631888`) | Closure tip |
+|---|---|---|
+| files in `docs/review-evidence/` matching the value | 1 | **0 (expected)** |
+| tracked files in the whole repo matching the value | 1 | **0 (expected)** |
+| value hash (sha256, first 8 hex) | `c0b9e569` | `c0b9e569` (unchanged — same value) |
+
+The credential is referred to by **name only** in this document, in the mission report and in all
+new text. **No other literal secret was found** in `docs/review-evidence/`.
+`ATM-001-SEC-106-B1-RECONCILIATION.md` already referenced the credential as the placeholder
+`'<TEST_DB_PASSWORD>'` — the correct pattern — and was left unchanged. All 14 long-hex tokens across
+the evidence files were verified to resolve to **existing commits or trees** (benign SHAs).
+`TEST_DB_USER=agadmin` is a **role name, not a secret**, and is retained as necessary context,
+matching the #106 reconciliation document.
+
+**Fabricated bcrypt-shaped placeholder — assessed BENIGN, and labelled here (not edited in place).**
+`ATM-001-SEC-107-R1-CORRECTION.diff` (and its source, `tests/user-profile-projection.test.js`)
+contains exactly one bcrypt-shaped string, in the frozen in-memory `RAW_ROW` fixture as
+`password_hash: '$2b$10$abc…XYZ012'`. It is a **fabricated placeholder, not a credential**: its body
+is the literal sequence `abcdefghijklmnopqrstuvwxyz` then `ABCDEFGHIJKLMNOPQRSTUVWXYZ` then `012`,
+and at **62** characters it is not even a well-formed bcrypt hash (bcrypt digests are 60). It
+corresponds to no password, authenticates nothing, and protects nothing. **Rationale for labelling
+rather than editing:** that `.diff` is a faithful `git diff f03a4f6 HEAD` evidence artefact; altering
+its bytes would itself be an evidence-integrity defect, so the assessment is recorded here instead.
+**No test file was changed.** The same string is likewise **not** a secret in the test.
+
+**Residual — the value remains in Git history.** The literal is still present in **commit
+`e631888417da2953f7fae170f6f6f9e8a07e3666`** (exactly **1** commit across all refs, per
+`git log --all -S<value>`), which is already on `origin/atm-001-sec-107-r1-correction-closure`.
+**Git history was NOT rewritten** and must not be without separate OWNER approval. Removing the
+literal from the tip **reduces** exposure; it does not eliminate it.
+
+**STOP / ESCALATION — the credential is potentially REUSABLE, and it grants more than a test
+database.** Determined by direct observation on 2026-10-16:
+
+| Question | Finding |
+|---|---|
+| Is the disposable cluster still running? | **YES.** `postgres -D /tmp/atiman104-pg -p 55435 -c listen_addresses=127.0.0.1` (PID 57271), PostgreSQL **16.14** (Homebrew), running as local user `gcb` |
+| Listen configuration | **Loopback only** — `lsof` shows `TCP 127.0.0.1:55435 (LISTEN)`; no `0.0.0.0` bind. `pg_hba.conf`: `host all all 127.0.0.1/32 md5` over TCP, `local all all trust` on the socket |
+| Who can reach it | Only processes on **this host** (loopback). No `cloudflared`/`ngrok`/`ssh -R`/`socat` tunnel exports port 55435. TCP loopback is **not** restricted by OS user, so any local user/process that learns the password can connect |
+| Does the credential still authenticate? | **YES — verified positively.** A TCP connection to `127.0.0.1:55435` as `agadmin` authenticated with the committed credential and returned `AUTH_OK superuser=true db=atiman_test` |
+| Does it grant anything beyond a disposable test database? | **YES.** `agadmin` is `rolsuper=t` **and** `rolcreatedb=t`, `rolcreaterole=t`, `rolreplication=t` — **cluster-wide superuser**. A PostgreSQL 16 superuser can read every database on the cluster and can execute OS-level commands as the cluster owner via `COPY … FROM PROGRAM` / `pg_read_server_files`. This **exceeds** "a disposable test database" |
+| What data is actually at risk | **Only disposable test data**: the cluster contains `atiman_test` (55 MB), `atiman_m5r4b2_test_34376_1` (17 MB), `postgres`, `template0/1` — owner `agadmin` throughout. **No production data and no production host** were touched |
+
+**Conclusion: potentially reusable → STOP and escalate.** Secure rotation or revocation is an
+**OWNER decision, not the author's**. **Nothing was rotated, revoked, dropped or otherwise altered —
+no database change was made by this mission.**
+
+**The exact OWNER decision required.** The OWNER must direct **one** of:
+
+- **(a) Rotate** the `agadmin` role password on the disposable cluster (e.g. `ALTER ROLE agadmin
+  PASSWORD …` on `127.0.0.1:55435` only) and update the local environment/secret store that supplies
+  `TEST_DB_PASSWORD`; or
+- **(b) Destroy and rebuild** the disposable cluster at `/tmp/atiman104-pg` under a fresh credential;
+  or
+- **(c) Explicitly accept the residual** — loopback-only, no tunnel, disposable data only,
+  workstation-local, and already on the remote's history — recording that acceptance as an OWNER risk
+  decision rather than letting it stand by default.
+
+and, separately:
+
+- **(d)** whether to **rewrite Git history** to purge the value from commit
+  `e631888417da2953f7fae170f6f6f9e8a07e3666` and force-push. **Not done; requires separate OWNER
+  approval** (prohibited in this mission).
+
+### 13.3 Bound of this closure — documentation/evidence only
+
+This closure changes **documentation only**. `git diff --name-only <baseline> <closure tip>` contains
+**only** paths under `docs/review-evidence/`. **No** `src/` change, **no** test change, **no**
+`database/`, schema or migration change, **no** CI/`.github` change, **no** configuration change, and
+**no** database change. `.gitignore` is untouched; the evidence remains Markdown, not `.log`
+(`.gitignore:17` is `*.log`, which would silently untrack it). Case 13's test and assertion are
+byte-identical to the baseline.
+
+### 13.4 What this section does NOT claim
+
+- It does **not** claim an Arena verdict, a PASS, a ratification, or an approval. The two conditions
+  are recorded **as relayed**; the author did not observe the Arena verdict artefact.
+- It does **not** close the credential exposure — that is **escalated** (§13.2) and remains open
+  until the OWNER decides (a), (b), (c) and (d).
+- It does **not** assert that any rotation, revocation or history rewrite occurred.

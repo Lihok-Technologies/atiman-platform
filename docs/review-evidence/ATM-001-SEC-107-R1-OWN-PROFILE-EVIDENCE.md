@@ -17,8 +17,17 @@
 >   `sanitizeUser ≡ redactSensitiveFields` and the pre-existing backstop applied the identical
 >   function to the whole body. Those cases proved *no credential reached the wire*; they did **not**
 >   prove the handler projection executed. (Arena condition 2.)
-> - **§5's attribution of "case 13"** to `assertDeniedBeforeProjection` — wrong; case 13 is
->   unchanged by that helper. (Arena condition 3.)
+> - **The "case 13" attribution** to `assertDeniedBeforeProjection` — wrong, and it did **not**
+>   originate in this document. The attribution came from **earlier mission/handoff prose** supplied
+>   by a parent agent, which is **not repository content and is not version-controlled**: the string
+>   "case 13" appears **nowhere in this file**, and nowhere in `docs`, `src` or `tests`, at the
+>   reviewed artefact. **§5 below lists only cases 3, 4, 5, 6, 12 and 12b** and attributes none of
+>   them, and no case 13, to the helper. An earlier revision of this banner wrongly implied that §5
+>   made that attribution; that wording has been removed. Case 13 uses `ADMIN_A`, asserts 404, is
+>   unchanged from the base, and was never converted. (Arena condition 3; full provenance and the
+>   exact text changed are in
+>   [`ATM-001-SEC-107-R1-CORRECTION-EVIDENCE.md`](ATM-001-SEC-107-R1-CORRECTION-EVIDENCE.md)
+>   §5.4 and §13.1.)
 >
 > Authored by the implementing agent. **This is not its own review.** No independent verdict
 > exists for this tree; an independent Arena review-only pass has been requested and has not
