@@ -84,7 +84,11 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'tests/knowledge-evidence-deletion-integrity.test.js',
   // ATM-001-SEC-107-D2: seat-count alias and integer type on real PostgreSQL
   // (the defect is only observable by executing the production SQL).
-  'tests/sec107-d2-seat-count-pg.test.js'
+  'tests/sec107-d2-seat-count-pg.test.js',
+  // ATM-001-SEC-B3B: sensitive-data disclosure (Issue #105) — no credential may
+  // leave a user-record response, at any nesting depth, for a foreign tenant, the
+  // caller's own tenant, an absent identifier or a malformed one.
+  'tests/user-credential-disclosure.test.js'
 ];
 
 /**

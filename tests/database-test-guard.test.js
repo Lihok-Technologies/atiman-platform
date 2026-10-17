@@ -87,6 +87,11 @@ const DB_MUTATING_SUITES = [
   // ATM-001-SEC-107-D2 seat-count alias/type (writes real organizations, plans,
   // subscriptions and users; asserts the production SQL on real PostgreSQL).
   'sec107-d2-seat-count-pg.test.js',
+  // ATM-001-SEC-B3B sensitive-data disclosure (Issue #105): creates its own
+  // two-tenant fixture - organizations, a facility and users carrying real
+  // bcrypt hashes - in the disposable test database and drives the real app
+  // over HTTP.
+  'user-credential-disclosure.test.js',
   'step6-access-control.test.js',
   'step6-coverage-e2e.test.js',
   'step6-performance.test.js',
@@ -125,7 +130,9 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'knowledge-accession-authority.test.js',
   'provenance-write-scope.test.js',
   'knowledge-evidence-deletion-integrity.test.js',
-  'sec107-d2-seat-count-pg.test.js'
+  'sec107-d2-seat-count-pg.test.js',
+  // ATM-001-SEC-B3B sensitive-data disclosure (Issue #105).
+  'user-credential-disclosure.test.js'
 ];
 
 const REPO_ROOT = path.resolve(__dirname, '..');
