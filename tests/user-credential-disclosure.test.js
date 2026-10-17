@@ -259,6 +259,56 @@ const storedHash = (userId) => scalar('SELECT password_hash FROM users WHERE id 
 
 // ==========================================================================
 
+/**
+ * Capture the application's own log stream for the duration of `fn`, so case 16
+ * can assert that the real BaseModel INSERT log carries the operation and
+ * withholds the credential.
+ *
+ * ATM-001-SEC-107-TA05 — why this patches `console.log` and no longer touches
+ * `process.stdout.write`
+ * ---------------------------------------------------------------------------
+ * Under `node --test` (both `npm test` and the sanctioned integration runner)
+ * this file does not run in the reporter's process. It runs in a CHILD process,
+ * and node:test delivers its results to the parent on `process.stdout.write`: as
+ * V8-serialized protocol frames (`test:enqueue` / `test:dequeue` / `test:pass` /
+ * `test:fail` / `test:complete`) on `NODE_TEST_CONTEXT='child-v8'`, but as TAP
+ * **text** frames on Node 20.0.0, while `package.json` declares
+ * `engines.node >=18.0.0`.
+ *
+ * TA01 corrected an earlier version of this capture that swallowed EVERY chunk
+ * written while it was installed — protocol frames included — so a leaf executed
+ * and its assertion was never witnessed while the run still exited 0. That
+ * correction forwarded `Buffer` chunks and withheld only `String` chunks, which
+ * still discriminates on chunk type: the runner never promised that a protocol
+ * frame is a `Buffer`, and a text-encoded frame would be withheld again. The
+ * capture now never touches the runner's channel at all.
+ *
+ * Every call site this case asserts on logs through the console interface:
+ * `User.create` (src/models/user.model.js, inherited `BaseModel.create`) reaches
+ * `BaseModel.query`, which logs via `console.log`
+ * (src/models/base.model.js:78). Patching `console.log` therefore captures the
+ * intended message and leaves `process.stdout.write` free for the runner in
+ * whatever encoding it uses.
+ *
+ * Captured text is withheld from the harness output for the duration of the
+ * capture, and the original is restored in `finally`, so a throwing capture
+ * cannot leak the patch and `fn`'s error still propagates.
+ */
+const captureStdout = async (fn) => {
+  const chunks = [];
+  const original = console.log;
+  console.log = (...args) => {
+    chunks.push(args.map(String).join(' '));
+  };
+  try {
+    await fn();
+  } finally {
+    console.log = original;
+  }
+  return chunks.join('\n');
+};
+
+
 describe('ATM-001-SEC-B3B user credential disclosure', { skip: DB_TEST_SKIP_REASON }, () => {
   before(async () => {
     await ensureFixture();
@@ -495,6 +545,45 @@ describe('ATM-001-SEC-B3B user credential disclosure', { skip: DB_TEST_SKIP_REAS
         assert.strictEqual(after, before, 'a rejected create must persist no row');
         assert.strictEqual(created, null, 'a rejected create must persist no row');
       }
+    });
+  });
+
+  // ------------------------------------------------- F. the logging source
+
+  describe('F. a credential-bearing INSERT emits no hash to stdout', () => {
+    it('16. the real BaseModel INSERT log carries the operation, not the credential', async () => {
+      const username = tag('stdout-probe');
+      let createdId = null;
+
+      const output = await captureStdout(async () => {
+        await User.create({
+          username,
+          email: `${username}@b3b.invalid`,
+          password_hash: FIXTURE_HASH,
+          full_name: 'B3B Stdout Probe',
+          role: 'operator',
+          organization_id: ORG_A,
+          is_active: true
+        });
+        createdId = await scalar('SELECT id FROM users WHERE username = $1', [username]);
+      });
+
+      assert.ok(!output.includes(FIXTURE_HASH), 'no bcrypt hash may reach stdout');
+      assert.ok(!BCRYPT_HASH_PATTERN.test(output), 'no bcrypt-shaped value may reach stdout');
+
+      // Preserved, non-sensitive evidence that operators rely on.
+      assert.ok(output.includes('INSERT users'), 'the operation and table must still be logged');
+      assert.ok(/param\(s\)/.test(output), 'the parameter count must still be logged');
+      assert.ok(output.includes(username), 'a non-credential identifier must still be logged');
+      assert.ok(output.includes('operator'), 'a non-credential value must still be logged');
+      assert.ok(output.includes('[REDACTED]'), 'the withheld position must be visible as withheld');
+
+      // Database effect: the credential really was written - so the absence of a
+      // hash in the log is a redaction, not an aborted statement.
+      assert.ok(createdId, 'the credential-bearing INSERT must have persisted a row');
+      const stored = await storedHash(createdId);
+      assert.ok(BCRYPT_HASH_PATTERN.test(String(stored)),
+        'the persisted row must hold the bcrypt hash that the log withheld');
     });
   });
 });
