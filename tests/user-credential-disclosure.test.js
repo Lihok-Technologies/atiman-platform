@@ -43,7 +43,7 @@ const http = require('node:http');
 const bcrypt = require('bcryptjs');
 const { getConnection, isIntegrationTest } = require('../src/config/database');
 const authConfig = require('../src/config/auth');
-const { User } = require('../src/models');
+const { User, Invitation } = require('../src/models');
 
 /**
  * The credential predicate is restated here rather than imported from
@@ -91,6 +91,7 @@ const tag = (name) => `b3b-${name}-${RUN}`;
 const FIXTURE_PASSPHRASE = `b3b-fixture-${RUN}-never-printed`;
 const ROTATED_PASSPHRASE = `b3b-rotated-${RUN}-never-printed`;
 const CREATED_PASSPHRASE = `b3b-created-${RUN}-never-printed`;
+const ACCEPT_PASSPHRASE = `b3b-accept-${RUN}-never-printed`;
 
 let ORG_A = null;
 let ORG_B = null;
@@ -164,6 +165,11 @@ async function ensureFixture() {
 
 async function removeFixture() {
   await withConn(async (conn) => {
+    // Added for the invitation-acceptance section: the invitation, its
+    // subscription and the plan row are this suite's own fixtures.
+    await conn.query('DELETE FROM invitations WHERE organization_id = ANY($1::int[])', [[ORG_A, ORG_B]]);
+    await conn.query('DELETE FROM organization_subscriptions WHERE organization_id = ANY($1::int[])', [[ORG_A, ORG_B]]);
+    await conn.query('DELETE FROM subscription_plans WHERE plan_code = $1', [`b3b-invite-plan-${RUN}`]);
     await conn.query('DELETE FROM users WHERE organization_id = ANY($1::int[])', [[ORG_A, ORG_B]]);
     await conn.query('DELETE FROM facilities WHERE organization_id = ANY($1::int[])', [[ORG_A, ORG_B]]);
     await conn.query('DELETE FROM organizations WHERE id = ANY($1::int[])', [[ORG_A, ORG_B]]);
@@ -495,6 +501,131 @@ describe('ATM-001-SEC-B3B user credential disclosure', { skip: DB_TEST_SKIP_REAS
         assert.strictEqual(after, before, 'a rejected create must persist no row');
         assert.strictEqual(created, null, 'a rejected create must persist no row');
       }
+    });
+  });
+
+  // ------------------------------------------------- G. invitation acceptance
+
+  describe('G. invitation acceptance creates the account and discloses no credential', () => {
+    // Named deterministically so the cleanup in `removeFixture` can find them.
+    const INVITE_PLAN_CODE = `b3b-invite-plan-${RUN}`;
+    const ACCEPT_USERNAME = tag('accepted');
+    const ACCEPT_EMAIL = `${tag('accepted')}@b3b.invalid`;
+    let acceptToken = null;
+
+    before(async () => {
+      // Seat admission needs a plan and a subscription with free seats: without
+      // them `subscriptionService.canAddUser` answers 403 before any user is
+      // created and this section could never reach the disclosure path.
+      await withConn(async (conn) => {
+        const plans = await conn.query(
+          `INSERT INTO subscription_plans
+             (plan_code, plan_name, included_users, max_users, base_price, is_active)
+           VALUES ($1, $2, $3, NULL, 0, TRUE) RETURNING id`,
+          [INVITE_PLAN_CODE, `B3B Invite Plan ${RUN}`, 50]);
+        await conn.query(
+          `INSERT INTO organization_subscriptions
+             (organization_id, plan_id, included_users, extra_users, status)
+           VALUES ($1, $2, $3, 0, 'active')`,
+          [ORG_A, Number(plans[0].id), 50]);
+      });
+
+      // A real pending invitation, created through the production model, so the
+      // token the accept path resolves is the token this test submits.
+      const invitation = await Invitation.createInvitation({
+        organization_id: ORG_A,
+        email: ACCEPT_EMAIL,
+        role: 'operator',
+        invited_by: ADMIN_A
+      });
+      acceptToken = invitation.token;
+    });
+
+    /**
+     * Requirement (f) - anti-vacuity: every assertion hangs off the response this request
+     * produced, and that response is tied back to the row this request created
+     * (count delta + matching id) and to the invitation this request consumed.
+     * A stubbed shortcut, an empty body or an error envelope fails at the
+     * `body.data.user` / id / invitation-status assertions instead of passing.
+     *
+     * Mutation-sensitivity of exactly this assertion on the real handler was
+     * demonstrated out of band, with only the persistence boundary faked
+     * (the database gate is not authorized here): against the pre-fix controller
+     * it fails at `$.data.user.password_hash`; against the fixed controller it
+     * passes with the envelope and safe fields intact.
+     */
+    it('17. POST /api/invitations/accept: created, hashed, and no credential in the response', async () => {
+      const before = Number(await scalar(
+        'SELECT count(*)::int FROM users WHERE organization_id = $1', [ORG_A]));
+
+      const res = await post('/api/invitations/accept', null, {
+        token: acceptToken,
+        username: ACCEPT_USERNAME,
+        password: ACCEPT_PASSPHRASE,
+        full_name: 'B3B Accepted'
+      });
+
+      // Requirement (f): The real route must answer with its own success envelope.
+      assert.strictEqual(res.status, 200,
+        `invitation acceptance must succeed: ${redacted(res.text)}`);
+      let body = null;
+      try { body = JSON.parse(res.text); } catch { body = null; }
+      assert.ok(body && body.success === true,
+        `the accept response must be the success envelope: ${redacted(res.text)}`);
+      assert.ok(body.data && body.data.user,
+        'the accept path must return the created user (a missing capture must fail here)');
+
+      // Requirement (a): A user is actually created, and the response describes that row.
+      const after = Number(await scalar(
+        'SELECT count(*)::int FROM users WHERE organization_id = $1', [ORG_A]));
+      assert.strictEqual(after, before + 1,
+        'acceptance must persist exactly one new user in the invitation organization');
+      const createdId = Number(await scalar(
+        'SELECT id FROM users WHERE username = $1', [ACCEPT_USERNAME]));
+      assert.ok(createdId > 0, 'the submitted username must exist as a real row');
+      assert.strictEqual(Number(body.data.user.id), createdId,
+        'the response must describe the row this request created, not a stub');
+
+      // The invitation was genuinely consumed by the real accept path.
+      assert.strictEqual(
+        await scalar('SELECT status FROM invitations WHERE token = $1', [acceptToken]),
+        'accepted',
+        'the real accept path must mark the invitation accepted');
+
+      // Requirement (b): The underlying record really carries password_hash - otherwise the
+      // redaction would remove nothing and a green run would be vacuous.
+      const stored = await User.findById(createdId);
+      assert.ok(stored && BCRYPT_HASH_PATTERN.test(String(stored.password_hash)),
+        'the raw SELECT * row must carry a bcrypt hash - this is what the redaction removes');
+      assert.strictEqual(bcrypt.compareSync(ACCEPT_PASSPHRASE, String(stored.password_hash)), true,
+        'the persisted hash must be a hash of the submitted passphrase');
+
+      // Requirement (c): The API response excludes password_hash, by name and by hash value.
+      assertNoCredential(res.text, 'POST /api/invitations/accept response',
+        [String(stored.password_hash)]);
+      assert.strictEqual(
+        Object.prototype.hasOwnProperty.call(body.data.user, 'password_hash'), false,
+        'the created user must not carry password_hash');
+      assert.ok(!res.text.includes(ACCEPT_PASSPHRASE),
+        `the submitted passphrase must never be echoed: ${redacted(res.text)}`);
+
+      // Requirement (d): The envelope, status and every safe field the client depends on are
+      // preserved: this is a projection, not a shape change.
+      assert.deepStrictEqual(Object.keys(body).sort(), ['data', 'message', 'success'],
+        'the response envelope must keep its shape');
+      assert.strictEqual(body.message, 'Invitation accepted! Account created successfully.');
+      assert.strictEqual(body.data.user.username, ACCEPT_USERNAME);
+      assert.strictEqual(body.data.user.email, ACCEPT_EMAIL);
+      assert.strictEqual(body.data.user.full_name, 'B3B Accepted');
+      assert.strictEqual(body.data.user.role, 'operator');
+      assert.strictEqual(Number(body.data.user.organization_id), ORG_A);
+      assert.strictEqual(body.data.user.is_active, true);
+      assert.strictEqual(body.data.user.status, 'active');
+
+      // Requirement (e): No credential material at ANY depth. The user object is nested under
+      // `data.user`, so a top-level-only filter would not be enough; this walks
+      // the whole parsed body.
+      assertNoSensitiveKey(body, 'invitation acceptance (nested)', '$');
     });
   });
 });

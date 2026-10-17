@@ -4,7 +4,7 @@
  */
 
 const { Invitation, User, Organization, OrganizationSubscription } = require('../models');
-const { hashPassword } = require('../utils/helpers');
+const { hashPassword, sanitizeUser } = require('../utils/helpers');
 const subscriptionService = require('../services/subscription.service');
 const emailService = require('../services/email.service');
 
@@ -307,7 +307,10 @@ class InvitationController {
       res.json({
         success: true,
         message: 'Invitation accepted! Account created successfully.',
-        data: { user }
+        // ATM-001-SEC-107 C-1: `User.create` returns the `SELECT *` row, so the
+        // created account carries its bcrypt `password_hash`. Project it through
+        // the same helper the user routes use; the envelope and safe fields stay.
+        data: { user: sanitizeUser(user) }
       });
     } catch (error) {
       next(error);
