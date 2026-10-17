@@ -5,6 +5,29 @@
 
 const { pool } = require('../config/database');
 
+/**
+ * Columns that must never appear on the object `BaseModel.create()` returns.
+ *
+ * `create()` reads the inserted row back with `SELECT *` (`findById`). For
+ * `users` that row carries the bcrypt `password_hash`, and two live handlers put
+ * a create() result straight into an HTTP response:
+ * `POST /api/users` (src/routes/user.routes.js) and
+ * `POST /api/invitations/accept` (src/controllers/invitation.controller.js).
+ * Before the D-1 repair below, create() returned `null` for every caller, so
+ * those responses carried no credential; once it returns the committed row they
+ * would. The write accessor therefore withholds the credential itself, by name,
+ * so a handler cannot leak it by forgetting to project the row.
+ *
+ * Deliberately NOT applied to the read accessors (`findById`, `findByField`,
+ * `findAll`, `query`): `login` needs `user.password_hash` to verify a credential
+ * (src/controllers/auth.controller.js) and `changePassword` needs it to compare
+ * the current password.
+ *
+ * `invitations.token` is intentionally absent: the creating administrator must
+ * receive the token in order to deliver the invitation.
+ */
+const PROTECTED_CREATE_COLUMNS = Object.freeze(['password_hash']);
+
 class BaseModel {
   constructor(tableName) {
     this.tableName = tableName;
@@ -116,20 +139,55 @@ class BaseModel {
   }
 
   /**
-   * Create a new record
+   * Create a new record.
+   *
+   * DEFECT D-1 (repaired here). The INSERT previously carried no `RETURNING`
+   * clause and the generated key was read from `result.insertId`:
+   *
+   *     INSERT INTO t (...) VALUES (...)
+   *     const insertId = (result && result.insertId) || ...;
+   *     return this.findById(insertId);
+   *
+   * The only runtime driver is PostgreSQL (`pg`, see src/config/database.js).
+   * A `pg` Result carries no `insertId`; `normalizeResult()` can only populate
+   * one from a row the statement returned (`rows[0].id`). With no `RETURNING`,
+   * `rows` is empty, `insertId` stays null and `findById(null)` matches
+   * nothing - so `create()` returned `null` for EVERY caller while the INSERT
+   * had already committed on an autocommit pool connection. Callers then threw
+   * on `.id` after a durable write (the observed failure:
+   * `InvitationModel.createInvitation` -> `result.id` on null).
+   *
+   * `RETURNING id` makes the write observable: either the INSERT reports the
+   * generated key, or this method throws instead of returning a value the
+   * caller must not treat as success. Every BaseModel table has an identity
+   * `id` column (database/postgresql/), so the clause is always satisfiable.
+   *
+   * The returned row has PROTECTED_CREATE_COLUMNS removed; see the constant.
+   *
    * @param {Object} data
-   * @returns {Promise<Object>}
+   * @returns {Promise<Object>} the committed row, with PROTECTED_CREATE_COLUMNS removed
    */
   async create(data) {
     const fields = Object.keys(data);
     const values = Object.values(data);
     const placeholders = fields.map(() => '?').join(', ');
 
-    const sql = `INSERT INTO ${this.tableName} (${fields.join(', ')}) VALUES (${placeholders})`;
+    const sql = `INSERT INTO ${this.tableName} (${fields.join(', ')}) VALUES (${placeholders}) RETURNING id`;
     const result = await this.query(sql, values);
 
-    const insertId = (result && result.insertId) || (Array.isArray(result) && result.insertId);
-    return this.findById(insertId);
+    const insertId = result && result.insertId;
+    if (insertId === null || insertId === undefined) {
+      throw new Error(
+        `INSERT INTO ${this.tableName} completed without reporting a generated id`
+      );
+    }
+
+    const row = await this.findById(insertId);
+    if (!row) return row;
+
+    const projected = { ...row };
+    for (const column of PROTECTED_CREATE_COLUMNS) delete projected[column];
+    return projected;
   }
 
   /**
