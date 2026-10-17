@@ -81,7 +81,11 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   // ATM-001-KF-06: knowledge evidence deletion integrity — a definition deletion
   // may not destroy working provenance evidence as a cascade side effect, so
   // authorization covers the operation's effect and not merely its route.
-  'tests/knowledge-evidence-deletion-integrity.test.js'
+  'tests/knowledge-evidence-deletion-integrity.test.js',
+  // ATM-001-SEC-B3B: sensitive-data disclosure (Issue #105) — no credential may
+  // leave a user-record response, at any nesting depth, for a foreign tenant, the
+  // caller's own tenant, an absent identifier or a malformed one.
+  'tests/user-credential-disclosure.test.js'
 ];
 
 /**
