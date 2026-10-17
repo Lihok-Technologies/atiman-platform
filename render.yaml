@@ -19,7 +19,7 @@ services:
     # production readiness BEFORE merge. Manual deploys remain available
     # operationally but are not the normal authorization path.
     # See DEPLOYMENT_CLOUD.md.
-    autoDeploy: true
+    autoDeploy: false
     envVars:
       - key: NODE_ENV
         value: production
