@@ -84,6 +84,9 @@ const DB_MUTATING_SUITES = [
   // steps, sources, versions, working evidence, a global source fixture and
   // out-of-band published versions).
   'knowledge-evidence-deletion-integrity.test.js',
+  // ATM-001-SEC-107-D2 seat-count alias/type (writes real organizations, plans,
+  // subscriptions and users; asserts the production SQL on real PostgreSQL).
+  'sec107-d2-seat-count-pg.test.js',
   'step6-access-control.test.js',
   'step6-coverage-e2e.test.js',
   'step6-performance.test.js',
@@ -121,7 +124,8 @@ const SANCTIONED_POSTGRES_INTEGRATION_SUITES = [
   'report-capture.test.js',
   'knowledge-accession-authority.test.js',
   'provenance-write-scope.test.js',
-  'knowledge-evidence-deletion-integrity.test.js'
+  'knowledge-evidence-deletion-integrity.test.js',
+  'sec107-d2-seat-count-pg.test.js'
 ];
 
 const REPO_ROOT = path.resolve(__dirname, '..');

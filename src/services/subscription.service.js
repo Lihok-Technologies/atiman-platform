@@ -95,7 +95,7 @@ class SubscriptionService {
     
     // Count active and invited billable users
     const [result] = await pool.execute(
-      `SELECT COUNT(*) as activeBillableUsers 
+      `SELECT COUNT(*)::int AS "activeBillableUsers" 
        FROM users 
        WHERE organization_id = ? 
        AND is_billable = TRUE 
