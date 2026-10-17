@@ -1,6 +1,7 @@
-const { describe, it } = require('node:test');
+const { describe, it, before, after, beforeEach } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { getDatabaseConfig, isIntegrationTest } = require('../src/config/database');
@@ -306,5 +307,156 @@ describe('sanctioned integration runner matches the PostgreSQL acceptance contra
       [],
       'every sanctioned integration suite must also be tracked as database-mutating'
     );
+  });
+});
+
+// ATM-001-SEC-107-TA04: tests/step6-runner.js used to derive its verdict from
+// parsed TAP counters alone. The default non-TTY reporter changed from TAP to
+// `spec` in Node >= 22, which emits no TAP lines at all, so a child that exited
+// 1 produced "ALL TESTS PASSED - Production Ready" and a zero exit status. The
+// runner must decide from each child's completion status instead. Every
+// scenario below is a controlled child-process fixture and reaches no database:
+// the sandbox supplies a stub src/config/database.js, so no pool, credentials
+// or repository .env are ever loaded.
+describe('step6 runner fails closed on child completion status, not parsed output', () => {
+  const SUITES = [
+    'step6-coverage-e2e.test.js',
+    'step6-access-control.test.js',
+    'step6-regression.test.js',
+    'step6-seed-migration.test.js',
+    'step6-performance.test.js'
+  ];
+
+  const PASSING = [
+    "const { test } = require('node:test');",
+    "const assert = require('node:assert');",
+    "test('fixture leaf passes', () => { assert.strictEqual(1, 1); });",
+    ''
+  ].join('\n');
+
+  // One passing and one deliberately failing leaf: under the `spec` reporter
+  // the child exits 1 while emitting no `not ok` line at all.
+  const ONE_PASS_ONE_FAIL = `${PASSING}test('fixture leaf fails', () => { assert.strictEqual(1, 2, 'deliberate controlled failure'); });\n`;
+
+  // Forged TAP success output plus the runner's own success wording, followed
+  // by a nonzero exit: the parsed counters look perfect, so only the child's
+  // completion status can distinguish this from a genuine pass.
+  const MISLEADING_SUCCESS_TEXT = [
+    "process.stdout.write('TAP version 13\\n1..2\\nok 1 - everything is fine\\nok 2 - everything is fine\\n# pass 2\\n# fail 0\\n');",
+    "process.stdout.write('ALL TESTS PASSED - Production Ready\\n');",
+    'process.exit(1);',
+    ''
+  ].join('\n');
+
+  const TERMINATED_BY_SIGNAL = [
+    "process.kill(process.ppid, 'SIGKILL');",
+    'process.exit(0);',
+    ''
+  ].join('\n');
+
+  let sandbox;
+
+  const suitePath = (suiteFile) => path.join(sandbox, 'tests', suiteFile);
+  const reportPath = () => path.join(sandbox, 'STEP6_TEST_REPORT.md');
+  const report = () => (fs.existsSync(reportPath()) ? fs.readFileSync(reportPath(), 'utf8') : '');
+
+  // The runner's own verdict is everything from the TEST SUMMARY banner onward.
+  // Echoed child output precedes it, so child-authored success text cannot be
+  // mistaken for the runner's verdict.
+  const runnerVerdict = (output) => output.slice(output.lastIndexOf('TEST SUMMARY'));
+
+  const writeSuites = (coverageE2e = PASSING) => {
+    for (const suiteFile of SUITES) {
+      fs.writeFileSync(suitePath(suiteFile), suiteFile === SUITES[0] ? coverageE2e : PASSING);
+    }
+  };
+
+  // The runner spawns `node`, so the sandbox needs a resolvable node on PATH.
+  // The spawn-failure scenario overrides PATH with a location that cannot.
+  const runSandbox = (overrides = {}) => runNode(
+    [path.join(sandbox, 'tests', 'step6-runner.js')],
+    {
+      PATH: `${path.dirname(process.execPath)}${path.delimiter}${process.env.PATH || ''}`,
+      ...overrides
+    }
+  );
+
+  before(() => {
+    sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'step6-runner-status-'));
+    fs.mkdirSync(path.join(sandbox, 'tests'), { recursive: true });
+    fs.mkdirSync(path.join(sandbox, 'src', 'config'), { recursive: true });
+    fs.writeFileSync(
+      path.join(sandbox, 'src', 'config', 'database.js'),
+      '// Stub adapter: no pg, no dotenv, no credentials, no connection.\nexports.getDatabaseConfig = () => ({ host: "stub", database: "stub" });\n'
+    );
+    // The real runner is copied, so the sandbox layout can satisfy its
+    // `../src/config/database` import and its `__dirname`-relative suite paths
+    // without touching the repository tree.
+    fs.copyFileSync(
+      path.join(REPO_ROOT, 'tests', 'step6-runner.js'),
+      path.join(sandbox, 'tests', 'step6-runner.js')
+    );
+  });
+
+  after(() => {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  });
+
+  beforeEach(() => {
+    fs.rmSync(reportPath(), { force: true });
+    writeSuites();
+  });
+
+  it('still reports production readiness when every child exits 0 with evidence', () => {
+    const { status, output } = runSandbox();
+    assert.strictEqual(status, 0, `a clean run must stay green:\n${output}`);
+    assert.match(runnerVerdict(output), /ALL TESTS PASSED - Production Ready/);
+    assert.match(report(), /System is production-ready/);
+  });
+
+  it('fails when a child exits 1 without emitting any TAP failure text', () => {
+    writeSuites(ONE_PASS_ONE_FAIL);
+    const { status, output } = runSandbox();
+    assert.notStrictEqual(status, 0, `a failed child must fail the run:\n${output}`);
+    assert.ok(
+      !/ALL TESTS PASSED|Production Ready/.test(runnerVerdict(output)),
+      `the runner must not claim success:\n${output}`
+    );
+    assert.match(report(), /child exited with code 1/);
+    assert.ok(!/System is production-ready/.test(report()), 'the report must not claim production readiness');
+  });
+
+  it('fails when a child emits misleading success text and then exits 1', () => {
+    writeSuites(MISLEADING_SUCCESS_TEXT);
+    const { status, output } = runSandbox();
+    assert.notStrictEqual(status, 0, `a failed child must fail the run:\n${output}`);
+    assert.ok(
+      !/ALL TESTS PASSED|Production Ready/.test(runnerVerdict(output)),
+      `the runner must not claim success:\n${output}`
+    );
+    assert.ok(!/System is production-ready/.test(report()), 'the report must not claim production readiness');
+  });
+
+  it('fails when a child is terminated by a signal', () => {
+    writeSuites(TERMINATED_BY_SIGNAL);
+    const { status, output } = runSandbox();
+    assert.notStrictEqual(status, 0, `a signalled child must fail the run:\n${output}`);
+    assert.match(report(), /terminated by signal/);
+    assert.ok(!/System is production-ready/.test(report()), 'the report must not claim production readiness');
+  });
+
+  it('fails when a child cannot be spawned at all', () => {
+    const { status, output } = runSandbox({ PATH: '/nonexistent-step6-runner-path' });
+    assert.notStrictEqual(status, 0, `a spawn failure must fail the run:\n${output}`);
+    assert.match(report(), /spawn error/);
+    assert.ok(!/System is production-ready/.test(report()), 'the report must not claim production readiness');
+  });
+
+  it('fails when a required suite file is missing', () => {
+    fs.rmSync(suitePath('step6-performance.test.js'));
+    const { status, output } = runSandbox();
+    assert.notStrictEqual(status, 0, `a missing required suite must fail the run:\n${output}`);
+    assert.match(report(), /step6-performance\.test\.js \(not found\)/);
+    assert.ok(!/System is production-ready/.test(report()), 'the report must not claim production readiness');
   });
 });
