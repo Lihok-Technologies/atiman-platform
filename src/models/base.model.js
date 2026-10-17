@@ -4,6 +4,11 @@
  */
 
 const { pool } = require('../config/database');
+const {
+  redactSensitiveParams,
+  describeStatement,
+  REDACTED
+} = require('../utils/helpers');
 
 class BaseModel {
   constructor(tableName) {
@@ -26,7 +31,28 @@ class BaseModel {
       return p;
     });
     
-    console.log('[BASE MODEL] Params:', validParams);
+    // ATM-001-SEC-B3B: this line used to print every bind parameter verbatim
+    // (`console.log('[BASE MODEL] Params:', validParams)`), which put bcrypt
+    // password hashes, invitation/API tokens and OIDC client secrets on stdout
+    // for every INSERT, UPDATE, SELECT and DELETE this layer performed - including
+    // statements that later failed, because the log is written before execution.
+    //
+    // Preserved, because operators rely on it: the statement's operation and
+    // target table, the parameter count, the null-coercion outcome (undefined,
+    // NaN and empty strings are normalised to null above), and every
+    // non-credential value verbatim.
+    //
+    // Withheld: any parameter bound to a credential-adjacent column name
+    // (`password_hash`, `token`, `client_secret`, ...) and any value that has the
+    // shape of a credential (bcrypt hash, JWT, long opaque secret) even when its
+    // column is not named in the statement text.
+    const safeParams = redactSensitiveParams(sql, validParams);
+    const renderedParams = safeParams
+      .map((value) => (value === REDACTED ? REDACTED : JSON.stringify(value)))
+      .join(', ');
+    console.log(
+      `[BASE MODEL] ${describeStatement(sql)} | ${safeParams.length} param(s) | ${renderedParams}`
+    );
     
     // Phase 2: pg adapter returns normalized array directly (no destructuring [rows])
     const results = await this.pool.execute(sql, validParams);

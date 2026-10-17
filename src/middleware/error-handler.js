@@ -2,8 +2,21 @@
  * Error Handling Middleware
  */
 
+const util = require('util');
+const { redactCredentialText } = require('../utils/helpers');
+
 const errorHandler = (err, req, res, next) => {
-  console.error('Error:', err);
+  // ATM-001-SEC-B3B: a database driver can echo a bind parameter back inside an
+  // error - `pg` reports a failed cast as `invalid input syntax for type
+  // integer: "<the value>"` - so printing the whole error object printed the
+  // value. The logged form keeps every diagnostic field (name, message, code,
+  // stack, driver metadata) and withholds only credential-shaped substrings.
+  //
+  // The response body below is deliberately NOT changed: altering `message`
+  // would change the error contract of every route in the application, which is
+  // outside this remediation's bounded scope. That residual channel is recorded
+  // as an open finding rather than silently changed.
+  console.error('Error:', redactCredentialText(util.inspect(err)));
 
   // Default error
   let statusCode = err.statusCode || 500;
