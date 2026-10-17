@@ -81,14 +81,93 @@ const calculateNextDueDate = (currentDate, frequencyType, frequencyValue = 1) =>
 };
 
 /**
- * Sanitize user object (remove sensitive data)
- * @param {Object} user
- * @returns {Object}
+ * Credential material that must never appear in an API response or in a log line.
+ *
+ * Two complementary rules. Redaction is name-based and fails closed for a
+ * credential-adjacent name: it withholds any field whose name contains a
+ * credential word as a delimited segment, even when that field is metadata rather
+ * than a secret (for example `password_expires_at`). Withholding a non-sensitive
+ * field is recoverable; leaking a credential is not.
+ *
+ *  1. `SENSITIVE_FIELD_PATTERN` matches a sensitive word that is a whole
+ *     `_`/`-` delimited segment of the field name - the naming convention the
+ *     database rows actually use (`password_hash`, `reset_token`).
+ *  2. `SENSITIVE_FIELD_NAMES` enumerates the remaining concrete spellings:
+ *     camelCase variants (`refreshToken`), plurals (`credentials`) and
+ *     abbreviations. Redaction is deliberately NOT a blanket substring match, so
+ *     a permission resource key such as `API_KEYS` is not mistaken for `api_key`.
+ *     `api_keys`/`apikeys` are likewise absent: that is the name of a real
+ *     resource in this codebase (the `api_keys` table and its route module), so a
+ *     response key of that name identifies a collection of key metadata rather
+ *     than a secret value.
  */
-const sanitizeUser = (user) => {
-  const { password_hash, ...sanitized } = user;
-  return sanitized;
+const SENSITIVE_FIELD_PATTERN = /(?:^|[_-])(?:password|passwd|secret|token|credential|api_?key|private_?key)(?:$|[_-])/i;
+
+const SENSITIVE_FIELD_NAMES = new Set([
+  // password / passphrase material
+  'password', 'passwd', 'pwd', 'passwordhash', 'password_hash', 'passwd_hash',
+  'password_confirmation', 'confirm_password', 'current_password', 'new_password', 'old_password',
+  'passphrase', 'salt', 'password_salt',
+  // short-code credentials
+  'pin', 'pin_hash', 'pin_code', 'otp', 'otp_hash', 'one_time_code', 'backup_codes', 'recovery_codes',
+  // password-reset and other authentication tokens
+  'password_reset', 'password_reset_token', 'reset_password_token', 'reset_token',
+  'password_reset_expires', 'password_reset_expires_at',
+  'accesstoken', 'access_token', 'refreshtoken', 'refresh_token', 'idtoken', 'id_token',
+  'invitation_token', 'invite_token', 'verification_token', 'email_verification_token',
+  'sessiontoken', 'session_token', 'session_key', 'sso_token', 'csrf_token', 'tokens',
+  // shared secrets and private keys
+  'secret', 'secrets', 'clientsecret', 'client_secret', 'jwt_secret', 'sso_secret',
+  'signing_key', 'privatekey', 'private_key', 'encryption_key', 'key_hash',
+  'license_key', 'api_key', 'apikey', 'api_key_hash',
+  // multi-factor material
+  'mfa_secret', 'two_factor_secret', 'two_factor_code', 'totp_secret', 'otp_secret', 'otp_code',
+  // generic credential containers
+  'credential', 'credentials'
+]);
+
+const isSensitiveField = (fieldName) => {
+  const name = String(fieldName);
+  return SENSITIVE_FIELD_NAMES.has(name.toLowerCase()) || SENSITIVE_FIELD_PATTERN.test(name);
 };
+
+/**
+ * Deep-copy a JSON-bound value with every sensitive field removed.
+ *
+ * This is the defence-in-depth primitive: it walks nested objects and arrays
+ * (so `{ data: { users: [...] } }` is covered), never mutates its input, and
+ * passes non-plain values such as Date through unchanged.
+ *
+ * @param {*} value
+ * @returns {*}
+ */
+const redactSensitiveFields = (value) => {
+  if (Array.isArray(value)) {
+    return value.map((entry) => redactSensitiveFields(entry));
+  }
+  if (value === null || typeof value !== 'object' || value instanceof Date || Buffer.isBuffer(value)) {
+    return value;
+  }
+  const redacted = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (isSensitiveField(key)) continue;
+    redacted[key] = redactSensitiveFields(entry);
+  }
+  return redacted;
+};
+
+/**
+ * Sanitize user object (remove sensitive data) - deep and non-mutating.
+ *
+ * ATM-001-SEC-B3B: this was a single-field destructure that removed only a
+ * top-level `password_hash`, so a user row nested inside an envelope kept its
+ * credential, and a `null` input threw a TypeError. It now delegates to
+ * `redactSensitiveFields`, which walks nested objects and arrays.
+ *
+ * @param {Object|Array} user
+ * @returns {Object|Array}
+ */
+const sanitizeUser = (user) => redactSensitiveFields(user);
 
 /**
  * Parse JSON safely
@@ -140,6 +219,8 @@ module.exports = {
   formatDateForMySQL,
   calculateNextDueDate,
   sanitizeUser,
+  redactSensitiveFields,
+  isSensitiveField,
   safeJsonParse,
   isValidEmail,
   getPaginationMeta
