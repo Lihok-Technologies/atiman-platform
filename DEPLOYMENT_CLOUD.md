@@ -101,20 +101,25 @@ one. It exits non-zero when the schema is not compatible.
 
 ### Production authorization
 
-**An approved merge to `main` is the production deployment authorization event.**
-Auto-Deploy is intentionally enabled, so the merge deploys and the database
-migrations included in that release are authorized by that same approved merge.
-There is no additional post-merge manual-deploy authorization step.
+**The SEC-107 production HOLD is active: `render.yaml` sets `autoDeploy: false`.**
+An approved merge to `main` is therefore a *release-readiness* event, not a
+deployment event. Production deployment requires an explicit OWNER authorization
+(Manual Deploy) after the HOLD is lifted. Database migrations included in an
+authorized release are authorized by that same OWNER authorization.
 
-Because merging deploys, **PRs must be reviewed for production readiness before
-merge**, not after. The governed path is:
+Because the HOLD gates deployment, **PRs must still be reviewed for production
+readiness before merge** (a merge does not deploy today, but it becomes the
+release candidate). The governed path while the HOLD is active:
 
 ```
-reviewed and approved PR  ->  merge to main  ->  automatic production deployment
+reviewed and approved PR  ->  merge to main  ->  OWNER release authorization  ->  Manual Deploy
 ```
 
-Do not commit directly to `main` as a deployment shortcut: the merge is only an
-authorization event because the PR was reviewed and approved first.
+When the OWNER lifts the HOLD (and only then), `autoDeploy` may be re-enabled and
+the automatic deployment path restored.
+
+Do not commit directly to `main` as a deployment shortcut: the merge is only a
+release-readiness event because the PR was reviewed and approved first.
 
 The safety rule is unchanged and remains mandatory — Render executes the
 canonical pre-deploy gate before application startup:
@@ -125,14 +130,13 @@ canonical pre-deploy gate before application startup:
 - A failed migration or readiness assertion fails the deployment **closed**, so
   the application never starts against a schema it cannot use.
 
-> **OWNER action required once, in Render:** confirm that the `atiman-api`
-> service has **Auto-Deploy set to On Commit** and that the Blueprint has been
-> synced so `preDeployCommand` reflects the repository. Until that is done,
-> repository configuration and live service settings may disagree.
+> **OWNER action required, in Render:** keep **Auto-Deploy disabled** (the
+> SEC-107 HOLD) until the OWNER explicitly authorizes production release. When
+> the HOLD is lifted, set Auto-Deploy to On Commit only after confirming the
+> Blueprint is synced so `preDeployCommand` reflects the repository.
 
-Manual deploys (`Manual Deploy > Deploy latest commit`) remain available for
-operational recovery, but they are not required by this policy and are not the
-normal authorization path.
+Manual deploys (`Manual Deploy > Deploy latest commit`) are the deployment path
+while the HOLD is active and require explicit OWNER authorization.
 
 ### ATM-001 M1 production consequence
 
