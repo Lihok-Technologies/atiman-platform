@@ -341,5 +341,25 @@ describe('ATM-001-SEC-B3B sensitive-data redaction', () => {
       assert.strictEqual(redactCredentialText(text), text,
         'a column NAME is not a credential and must not be masked');
     });
+
+    it('21. a credential echoed in an error message does not leave in the response body', async () => {
+      const err = new Error(`invalid input syntax for type integer: "${SYNTHETIC_BCRYPT}"`);
+      err.code = '22P02';
+      err.statusCode = 500;
+
+      let body = null;
+      await new Promise((resolve) => {
+        errorHandler(err, { path: '/api/probe', headers: {} }, {
+          status: () => ({ json: (payload) => { body = payload; resolve(); } })
+        }, () => resolve());
+      });
+
+      assert.ok(body, 'the API error response must have been produced');
+      assert.ok(!body.message.includes(SYNTHETIC_BCRYPT),
+        'a credential echoed by the driver must not reach the response body');
+      assert.ok(body.message.includes(REDACTED),
+        'the withheld position must be visible as withheld in the response');
+      assert.strictEqual(body.success, false, 'the error envelope must be preserved');
+    });
   });
 });
