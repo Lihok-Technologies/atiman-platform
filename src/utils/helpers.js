@@ -393,7 +393,7 @@ const getPublicBaseUrl = () => {
   try {
     url = new URL(raw);
   } catch {
-    throw new Error(`APP_URL is malformed: ${raw}`);
+    throw new Error('APP_URL is malformed');
   }
 
   if (url.protocol !== 'https:' && url.protocol !== 'http:') {
