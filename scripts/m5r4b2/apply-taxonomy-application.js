@@ -126,6 +126,7 @@ require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const { Pool } = require('pg');
+const { resolvePgSsl } = require('../../src/config/pg-ssl');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const RECONCILIATION = path.join(REPO_ROOT, 'docs', 'research', 'm5r4a', 'equipment-type-reconciliation.jsonl');
@@ -468,7 +469,7 @@ function createPool() {
     database: process.env.PGDATABASE || process.env.DB_NAME || 'odm_cmms',
     user: process.env.PGUSER || process.env.DB_USER || 'postgres',
     password: process.env.PGPASSWORD || process.env.DB_PASSWORD || '',
-    ssl: process.env.PGSSL === 'true' ? { rejectUnauthorized: false } : false
+    ssl: resolvePgSsl()
   });
 }
 

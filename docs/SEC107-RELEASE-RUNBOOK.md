@@ -92,20 +92,36 @@ They are recorded here as open items, not asserted.
 
 ---
 
-## 3. Database SSL posture
+## 3. Database TLS (certificate verification)
 
-- **Why certificate verification is disabled:** `render.yaml` sets `DB_SSL=true` +
-  `DB_SSL_REJECT_UNAUTHORIZED=false`. `DEPLOYMENT_CLOUD.md` documents that Supabase does not provide
-  a locally-installable CA certificate, so the connection is encrypted but the server certificate is
-  not verified.
-- **Is verified TLS supported?** Yes. `src/config/database.js` defaults `rejectUnauthorized` to
-  `true` whenever `DB_SSL_REJECT_UNAUTHORIZED` is not exactly `'false'`, so `verify-ca`/`verify-full`
-  is available once a CA is installed (e.g. via `NODE_EXTRA_CA_CERTS`).
-- **Security implication:** `DB_SSL_REJECT_UNAUTHORIZED=false` is encrypted-but-unauthenticated
-  (exposed to an active man-in-the-middle that can present any certificate).
-- **Recommended production posture:** move to certificate verification
-  (`DB_SSL_REJECT_UNAUTHORIZED=true`, or omit it) after installing the provider CA; otherwise the
-  OWNER explicitly accepts the encrypted-but-unauthenticated residual risk.
+- **Required production configuration:** `DB_SSL=true` + `DB_SSL_REJECT_UNAUTHORIZED=true` (or omit the
+  latter) with the Supabase root certificate installed. This yields `verify-full`-equivalent behavior:
+  chain verification plus hostname verification.
+- **Supabase root certificate:** Supabase issues its own "Server root certificate"
+  (`prod-supabase.cer`), downloadable from the project dashboard (see
+  [Supabase docs — Connecting with PSQL](https://supabase.com/docs/guides/database/psql)). It is not in
+  the standard public CA store, so it must be provided explicitly.
+- **Installation procedure (no application code change):**
+  1. Download `prod-supabase.cer` from the Supabase dashboard.
+  2. Expose it to the Node runtime via `NODE_EXTRA_CA_CERTS=<path>/prod-supabase.cer`.
+  3. Set `DB_SSL_REJECT_UNAUTHORIZED=true`.
+  The shared `resolvePgSsl()` policy (`src/config/database.js`) then negotiates TLS with
+  `rejectUnauthorized: true` against Node's trust store, which includes `NODE_EXTRA_CA_CERTS`.
+- **Certificate rotation:** Supabase rotates its certificates; the locally stored root certificate must
+  be refreshed when Supabase announces rotation and the deployment re-verified. Rotation is an
+  operational procedure, not automatic.
+- **Pre-deployment verification:** run `node scripts/smoke-test-pg.js` (read-only) with the production
+  `DB_*`/`DB_SSL` environment; it must connect with certificate verification enabled. A failure indicates
+  a missing or rotated CA and must fail the deployment closed.
+- **Rollback (security exception):** disabling TLS certificate verification by setting
+  `DB_SSL_REJECT_UNAUTHORIZED=false` is a **security exception, not a routine rollback**. It:
+  - requires documented OWNER risk acceptance before it is applied;
+  - must be performed as an explicit, recorded manual action — it must **not** happen automatically;
+  - must be restored to verification (`DB_SSL_REJECT_UNAUTHORIZED=true`, or omitted) once the correct
+    certificate is installed.
+  The SEC-107 production HOLD remains active throughout; this exception does not lift it.
+- **Current interim posture:** `DB_SSL_REJECT_UNAUTHORIZED=false` is encrypted-but-unauthenticated
+  (MITM-exposed); move to verification before production release.
 
 ---
 

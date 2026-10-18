@@ -14,6 +14,7 @@ require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const { Pool } = require('pg');
+const { resolvePgSsl } = require('../../src/config/pg-ssl');
 
 const DATA_DIR = __dirname;
 
@@ -161,7 +162,7 @@ function getPool() {
     database: process.env.PGDATABASE || process.env.DB_NAME || 'odm_cmms',
     user: process.env.PGUSER || process.env.DB_USER || 'postgres',
     password: process.env.PGPASSWORD || process.env.DB_PASSWORD || '',
-    ssl: process.env.PGSSL === 'true' ? { rejectUnauthorized: false } : false
+    ssl: resolvePgSsl()
   };
   return new Pool(config);
 }

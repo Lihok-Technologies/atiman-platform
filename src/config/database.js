@@ -17,6 +17,7 @@
  */
 
 const { Pool } = require('pg');
+const { resolvePgSsl } = require('./pg-ssl');
 const { prepareQuery, translateSql } = require('../utils/sql-translator');
 
 /**
@@ -120,9 +121,7 @@ const getDatabaseConfig = () => {
     database,
     user,
     password,
-    ssl: process.env.DB_SSL === 'true' || process.env.PGSSLMODE === 'require'
-      ? { rejectUnauthorized: process.env.DB_SSL_REJECT_UNAUTHORIZED !== 'false' }
-      : false
+    ssl: resolvePgSsl()
   };
 };
 
@@ -252,6 +251,7 @@ module.exports = {
   getDb,
   getDatabaseConfig,
   isIntegrationTest,
+  resolvePgSsl,
   getConnection,
   // Expose translator for testing / advanced
   _translate: { prepareQuery, normalizeResult, translateSql },
