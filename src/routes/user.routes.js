@@ -193,7 +193,7 @@ router.post('/', requirePermission('USERS', 'CREATE'), canCreateUser, validateAv
  */
 router.put('/:id', canManageUser, async (req, res, next) => {
   try {
-    const { username, email, full_name, role, facility_id, is_active, password, is_organization_admin } = req.body;
+    const { username, email, full_name, role, facility_id, is_active, password, is_organization_admin, status } = req.body;
     const id = parseInt(req.params.id);
     const currentUserId = req.user.id;
     const currentUserRole = req.user.role;
