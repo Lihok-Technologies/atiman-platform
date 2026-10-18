@@ -40,6 +40,7 @@
 const fs = require('fs');
 const path = require('path');
 const { Client } = require('pg');
+const { resolvePgSsl } = require('../src/config/pg-ssl');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const MIGRATIONS_DIR = path.join(REPO_ROOT, 'database', 'postgresql');
@@ -115,7 +116,6 @@ function resolveConfig() {
     return { config: null, exitCode: EXIT_CONFIG_REFUSED };
   }
 
-  const sslEnabled = process.env.DB_SSL === 'true' || process.env.PGSSLMODE === 'require';
 
   return {
     exitCode: EXIT_OK,
@@ -125,9 +125,7 @@ function resolveConfig() {
       database,
       user,
       password,
-      ssl: sslEnabled
-        ? { rejectUnauthorized: process.env.DB_SSL_REJECT_UNAUTHORIZED !== 'false' }
-        : false,
+      ssl: resolvePgSsl(),
       application_name: 'atiman-migrate-postgres'
     }
   };

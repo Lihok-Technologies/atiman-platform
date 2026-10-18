@@ -14,7 +14,7 @@ require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const { Pool } = require('pg');
-const { resolvePgSsl } = require('../../src/config/database');
+const { resolvePgSsl } = require('../../src/config/pg-ssl');
 
 const DATA_DIR = __dirname;
 

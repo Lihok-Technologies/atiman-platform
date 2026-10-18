@@ -22,9 +22,8 @@
  */
 
 const { Pool } = require('pg');
+const { resolvePgSsl } = require('../src/config/pg-ssl');
 
-const sslModes = new Set(['require', 'verify-ca', 'verify-full']);
-const sslEnabled = process.env.DB_SSL === 'true' || sslModes.has(process.env.PGSSLMODE);
 
 const pool = new Pool({
   host: process.env.PGHOST || process.env.DB_HOST || 'localhost',
@@ -32,9 +31,7 @@ const pool = new Pool({
   database: process.env.PGDATABASE || process.env.DB_NAME || 'odm_cmms',
   user: process.env.PGUSER || process.env.DB_USER || 'postgres',
   password: process.env.PGPASSWORD || process.env.DB_PASSWORD || '',
-  ssl: sslEnabled
-    ? { rejectUnauthorized: process.env.DB_SSL_REJECT_UNAUTHORIZED !== 'false' }
-    : false,
+  ssl: resolvePgSsl(),
   connectionTimeoutMillis: 5000
 });
 
