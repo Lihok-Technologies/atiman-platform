@@ -361,5 +361,31 @@ describe('ATM-001-SEC-B3B sensitive-data redaction', () => {
         'the withheld position must be visible as withheld in the response');
       assert.strictEqual(body.success, false, 'the error envelope must be preserved');
     });
+
+    it('22. a credential in the error stack does not leave in the development response', async () => {
+      const previous = process.env.NODE_ENV;
+      process.env.NODE_ENV = 'development';
+      try {
+        const err = new Error(`invalid input syntax for type integer: "${SYNTHETIC_BCRYPT}"`);
+        err.code = '22P02';
+        err.statusCode = 500;
+
+        let body = null;
+        await new Promise((resolve) => {
+          errorHandler(err, { path: '/api/probe', headers: {} }, {
+            status: () => ({ json: (payload) => { body = payload; resolve(); } })
+          }, () => resolve());
+        });
+
+        assert.ok(body, 'the development error response must have been produced');
+        assert.ok(body.stack, 'development mode must include the stack');
+        assert.ok(!body.stack.includes(SYNTHETIC_BCRYPT),
+          'the stack must not leak the credential echoed by the driver');
+        assert.ok(!body.message.includes(SYNTHETIC_BCRYPT),
+          'the message must not leak the credential either');
+      } finally {
+        process.env.NODE_ENV = previous;
+      }
+    });
   });
 });
