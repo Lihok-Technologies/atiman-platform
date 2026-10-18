@@ -113,9 +113,13 @@ They are recorded here as open items, not asserted.
 - **Pre-deployment verification:** run `node scripts/smoke-test-pg.js` (read-only) with the production
   `DB_*`/`DB_SSL` environment; it must connect with certificate verification enabled. A failure indicates
   a missing or rotated CA and must fail the deployment closed.
-- **Rollback:** if verification blocks startup, temporarily set `DB_SSL_REJECT_UNAUTHORIZED=false`
-  (encrypted-but-unauthenticated) as a recorded fallback, then restore verification once the correct
-  certificate is installed.
+- **Rollback (security exception):** disabling TLS certificate verification by setting
+  `DB_SSL_REJECT_UNAUTHORIZED=false` is a **security exception, not a routine rollback**. It:
+  - requires documented OWNER risk acceptance before it is applied;
+  - must be performed as an explicit, recorded manual action — it must **not** happen automatically;
+  - must be restored to verification (`DB_SSL_REJECT_UNAUTHORIZED=true`, or omitted) once the correct
+    certificate is installed.
+  The SEC-107 production HOLD remains active throughout; this exception does not lift it.
 - **Current interim posture:** `DB_SSL_REJECT_UNAUTHORIZED=false` is encrypted-but-unauthenticated
   (MITM-exposed); move to verification before production release.
 
