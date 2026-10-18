@@ -45,11 +45,17 @@ async function runTests() {
   const results = {
     startTime: new Date().toISOString(),
     tests: [],
+    // Required suites that could not be located. A named suite that is absent
+    // supplies no completion evidence, so it fails the run closed.
+    missingFiles: [],
     summary: {
       total: 0,
       passed: 0,
       failed: 0,
-      skipped: 0
+      skipped: 0,
+      // Required suites whose child process did not prove a successful
+      // completion. Never inferred from parsed output.
+      executionFailures: 0
     }
   };
   
@@ -61,6 +67,8 @@ async function runTests() {
     
     if (!fs.existsSync(testPath)) {
       console.log(`⚠️  Test file not found: ${testFile}`);
+      results.missingFiles.push(testFile);
+      results.summary.executionFailures++;
       continue;
     }
     
@@ -74,10 +82,21 @@ async function runTests() {
     results.summary.passed += result.passed;
     results.summary.failed += result.failed;
     results.summary.skipped += result.skipped;
+    
+    if (result.executionFailure) {
+      results.summary.executionFailures++;
+    }
   }
   
   results.endTime = new Date().toISOString();
   results.duration = new Date(results.endTime) - new Date(results.startTime);
+  
+  // Fail closed. The verdict is derived from each child's completion status,
+  // never from the presence or absence of TAP failure text: the default
+  // non-TTY reporter is `spec` on Node >= 22, which emits no TAP lines at all,
+  // so a child that exits 1 can leave the parsed counters at zero.
+  results.success = results.summary.executionFailures === 0
+    && results.summary.failed === 0;
   
   // Generate report
   generateReport(results);
@@ -85,7 +104,40 @@ async function runTests() {
   // Print summary
   printSummary(results);
   
-  return results.summary.failed === 0;
+  return results.success;
+}
+
+// A child run is only a success when it produced positive evidence of a
+// successful completion: an integer exit status of 0, no termination signal
+// and no spawn error. Absence of TAP failure text is never sufficient on its
+// own, because the default non-TTY reporter is version-dependent.
+function evaluateCompletion(result) {
+  const reasons = [];
+  
+  if (result.spawnError) {
+    reasons.push(`spawn error: ${result.spawnError}`);
+  } else if (result.signal) {
+    reasons.push(`terminated by signal ${result.signal}`);
+  }
+  
+  if (result.exitCode === null) {
+    if (!result.spawnError) {
+      reasons.push('no exit status reported (indeterminate completion)');
+    }
+  } else if (result.exitCode !== 0) {
+    reasons.push(`child exited with code ${result.exitCode}`);
+  } else if (!result.output.trim()) {
+    // A clean exit with no output at all is missing evidence, not a pass.
+    reasons.push('child exited 0 without producing any output');
+  }
+  
+  if (result.failed > 0) {
+    reasons.push(`${result.failed} failing test line(s) in child output`);
+  }
+  
+  result.failureReasons = reasons;
+  result.executionFailure = reasons.length > 0;
+  return result;
 }
 
 function runTestFile(testPath) {
@@ -95,7 +147,15 @@ function runTestFile(testPath) {
       passed: 0,
       failed: 0,
       skipped: 0,
-      output: ''
+      output: '',
+      // Completion evidence from the child process. A successful verdict
+      // requires a clean, complete run; these defaults fail closed and are
+      // replaced by observed evidence in evaluateCompletion().
+      exitCode: null,
+      signal: null,
+      spawnError: null,
+      executionFailure: true,
+      failureReasons: ['child completion status was never observed']
     };
     
     const child = spawn('node', ['--test', testPath], {
@@ -104,6 +164,13 @@ function runTestFile(testPath) {
     });
     
     let output = '';
+    let settled = false;
+    
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      resolve(evaluateCompletion(result));
+    };
     
     child.stdout.on('data', (data) => {
       const text = data.toString();
@@ -117,10 +184,17 @@ function runTestFile(testPath) {
       process.stderr.write(text);
     });
     
-    child.on('close', (code) => {
+    child.on('error', (error) => {
+      // A child that could not be spawned yields no completion evidence at all.
+      result.spawnError = error && error.message ? error.message : String(error);
+      settle();
+    });
+    
+    child.on('close', (code, signal) => {
       result.output = output;
       
-      // Parse TAP output
+      // Parse TAP output for reporting only. The verdict never depends on it,
+      // so a reporter that emits no TAP lines cannot manufacture a pass.
       const lines = output.split('\n');
       for (const line of lines) {
         if (line.startsWith('ok ')) {
@@ -135,7 +209,9 @@ function runTestFile(testPath) {
         }
       }
       
-      resolve(result);
+      result.exitCode = Number.isInteger(code) ? code : null;
+      result.signal = signal || null;
+      settle();
     });
   });
 }
@@ -160,12 +236,15 @@ function generateReport(results) {
 
 ${results.tests.map(t => `
 ### ${t.file}
-- **Status:** ${t.failed === 0 ? '✅ PASSED' : '❌ FAILED'}
+- **Status:** ${t.executionFailure ? '❌ FAILED' : '✅ PASSED'}
+- **Child exit code:** ${t.exitCode === null ? 'none reported' : t.exitCode}
+- **Child signal:** ${t.signal || 'none'}
 - **Total:** ${t.total}
 - **Passed:** ${t.passed}
 - **Failed:** ${t.failed}
 - **Skipped:** ${t.skipped}
-`).join('\n')}
+${t.failureReasons && t.failureReasons.length ? `- **Failure evidence:** ${t.failureReasons.join('; ')}\n` : ''}`).join('\n')}
+${results.missingFiles.length ? `\n### Missing required suites\n\n${results.missingFiles.map(f => `- ❌ ${f} (not found)`).join('\n')}\n` : ''}
 
 ## Detailed Output
 
@@ -221,15 +300,15 @@ ${t.output}
 
 | Criterion | Status | Notes |
 |-----------|--------|-------|
-| E2E Coverage | ${results.summary.failed === 0 ? '✅' : '❌'} | All flows tested |
-| Security | ${results.summary.failed === 0 ? '✅' : '❌'} | Access control validated |
-| Regression | ${results.summary.failed === 0 ? '✅' : '❌'} | Existing features preserved |
-| Data Integrity | ${results.summary.failed === 0 ? '✅' : '❌'} | Seed/migration safe |
-| Performance | ${results.summary.failed === 0 ? '✅' : '❌'} | Queries within thresholds |
+| E2E Coverage | ${results.success ? '✅' : '❌'} | All flows tested |
+| Security | ${results.success ? '✅' : '❌'} | Access control validated |
+| Regression | ${results.success ? '✅' : '❌'} | Existing features preserved |
+| Data Integrity | ${results.success ? '✅' : '❌'} | Seed/migration safe |
+| Performance | ${results.success ? '✅' : '❌'} | Queries within thresholds |
 
 ## Recommendations
 
-${results.summary.failed === 0 ? `
+${results.success ? `
 ✅ **All tests passed. System is production-ready.**
 
 The implementation meets all requirements:
@@ -266,10 +345,21 @@ function printSummary(results) {
   console.log(`Success Rate: ${((results.summary.passed / results.summary.total) * 100).toFixed(1)}%`);
   console.log('='.repeat(80));
   
-  if (results.summary.failed === 0) {
+  if (results.success) {
     console.log('\n✅ ALL TESTS PASSED - Production Ready');
   } else {
-    console.log(`\n❌ ${results.summary.failed} TEST(S) FAILED - Review Required`);
+    // Report the authoritative failure evidence rather than the
+    // reporter-dependent counter: under the `spec` reporter a failed child
+    // yields no parsed failure lines, so a bare counter would read
+    // "0 TEST(S) FAILED" while the run has in fact failed.
+    const reasons = [];
+    if (results.summary.executionFailures > 0) {
+      reasons.push(`${results.summary.executionFailures} SUITE(S) DID NOT COMPLETE SUCCESSFULLY`);
+    }
+    if (results.summary.failed > 0) {
+      reasons.push(`${results.summary.failed} TEST(S) FAILED`);
+    }
+    console.log(`\n❌ ${reasons.join(' + ') || 'RUN FAILED'} - Review Required`);
   }
 }
 
