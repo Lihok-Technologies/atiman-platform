@@ -86,6 +86,24 @@ function normalizeResult(pgResult, originalSql = '') {
 }
 require('dotenv').config();
 
+/**
+ * Resolve the shared PostgreSQL TLS policy.
+ *
+ * SEC-107 DB-TLS: every `pg` connection path must apply the SAME verified-TLS
+ * policy driven by `DB_SSL` / `DB_SSL_REJECT_UNAUTHORIZED` (or `PGSSLMODE=require`),
+ * so no path can silently fall back to unverified or disabled TLS.
+ *
+ * Returns:
+ *   - `{ rejectUnauthorized: <bool> }` when TLS is enabled, or
+ *   - `false` when TLS is disabled.
+ */
+const resolvePgSsl = () => {
+  const sslEnabled = process.env.DB_SSL === 'true' || process.env.PGSSLMODE === 'require';
+  return sslEnabled
+    ? { rejectUnauthorized: process.env.DB_SSL_REJECT_UNAUTHORIZED !== 'false' }
+    : false;
+};
+
 const isIntegrationTest = () => process.env.NODE_ENV === 'test' && process.env.RUN_DB_TESTS === 'true';
 
 const getDatabaseConfig = () => {
@@ -120,9 +138,7 @@ const getDatabaseConfig = () => {
     database,
     user,
     password,
-    ssl: process.env.DB_SSL === 'true' || process.env.PGSSLMODE === 'require'
-      ? { rejectUnauthorized: process.env.DB_SSL_REJECT_UNAUTHORIZED !== 'false' }
-      : false
+    ssl: resolvePgSsl()
   };
 };
 
@@ -252,6 +268,7 @@ module.exports = {
   getDb,
   getDatabaseConfig,
   isIntegrationTest,
+  resolvePgSsl,
   getConnection,
   // Expose translator for testing / advanced
   _translate: { prepareQuery, normalizeResult, translateSql },
