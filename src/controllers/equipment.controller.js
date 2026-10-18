@@ -4,6 +4,7 @@
  */
 
 const { Equipment } = require('../models');
+const { getPublicBaseUrl } = require('../utils/helpers');
 const {
   resolveAsset,
   IDENTIFIER_TYPES,
@@ -258,9 +259,7 @@ const getQRCode = async (req, res, next) => {
     const organizationId = req.user.organization_id;
     
     // Get base URL from request
-    const protocol = req.headers['x-forwarded-proto'] || req.protocol;
-    const host = req.headers['x-forwarded-host'] || req.headers.host;
-    const baseUrl = `${protocol}://${host}`;
+    const baseUrl = getPublicBaseUrl();
     
     const qrData = await Equipment.getQRCodeData(id, organizationId, baseUrl);
     
@@ -300,9 +299,7 @@ const generateQRToken = async (req, res, next) => {
     const token = await Equipment.generateQRToken(id, organizationId);
     
     // Get base URL from request
-    const protocol = req.headers['x-forwarded-proto'] || req.protocol;
-    const host = req.headers['x-forwarded-host'] || req.headers.host;
-    const baseUrl = `${protocol}://${host}`;
+    const baseUrl = getPublicBaseUrl();
     
     res.json({
       success: true,

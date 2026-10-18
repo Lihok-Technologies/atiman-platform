@@ -4,6 +4,7 @@
  */
 
 const qrLabelService = require('../services/qr-label.service');
+const { getPublicBaseUrl } = require('../utils/helpers');
 
 class QRLabelController {
   /**
@@ -14,9 +15,7 @@ class QRLabelController {
     try {
       const assetId = req.params.id;
       
-      const protocol = req.headers['x-forwarded-proto'] || req.protocol;
-      const host = req.headers['x-forwarded-host'] || req.headers.host;
-      const baseUrl = `${protocol}://${host}`;
+      const baseUrl = getPublicBaseUrl();
       
       const result = await qrLabelService.generateForAsset(assetId, baseUrl);
       
@@ -50,9 +49,7 @@ class QRLabelController {
       const size = req.query.size || '70x40';
       const result = await qrLabelService.generateForAsset(assetId);
       
-      const protocol = req.headers['x-forwarded-proto'] || req.protocol;
-      const host = req.headers['x-forwarded-host'] || req.headers.host;
-      const baseUrl = `${protocol}://${host}`;
+      const baseUrl = getPublicBaseUrl();
       
       const labelBuffer = await qrLabelService.generateLabelImage(result.asset, { size, baseUrl });
       
@@ -79,9 +76,7 @@ class QRLabelController {
       const size = req.query.size || '70x40';
       const result = await qrLabelService.generateForAsset(assetId);
       
-      const protocol = req.headers['x-forwarded-proto'] || req.protocol;
-      const host = req.headers['x-forwarded-host'] || req.headers.host;
-      const baseUrl = `${protocol}://${host}`;
+      const baseUrl = getPublicBaseUrl();
       
       const pdfBuffer = await qrLabelService.generateLabelPDF(result.asset, { size, baseUrl });
       
@@ -117,9 +112,7 @@ class QRLabelController {
       const { Equipment } = require('../models');
       
       // Get base URL for QR generation
-      const protocol = req.headers['x-forwarded-proto'] || req.protocol;
-      const host = req.headers['x-forwarded-host'] || req.headers.host;
-      const baseUrl = `${protocol}://${host}`;
+      const baseUrl = getPublicBaseUrl();
       
       console.log('[QR-BATCH] Generating for', assetIds.length, 'assets, size:', size);
       
@@ -174,9 +167,7 @@ class QRLabelController {
     try {
       const assetId = req.params.id;
       
-      const protocol = req.headers['x-forwarded-proto'] || req.protocol;
-      const host = req.headers['x-forwarded-host'] || req.headers.host;
-      const baseUrl = `${protocol}://${host}`;
+      const baseUrl = getPublicBaseUrl();
       
       const result = await qrLabelService.generateForAsset(assetId, baseUrl);
       
@@ -206,9 +197,7 @@ class QRLabelController {
     try {
       const assetId = req.params.id;
       
-      const protocol = req.headers['x-forwarded-proto'] || req.protocol;
-      const host = req.headers['x-forwarded-host'] || req.headers.host;
-      const baseUrl = `${protocol}://${host}`;
+      const baseUrl = getPublicBaseUrl();
       
       const result = await qrLabelService.generateForAsset(assetId, baseUrl);
       

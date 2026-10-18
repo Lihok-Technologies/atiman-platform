@@ -362,6 +362,53 @@ const getPaginationMeta = (page, limit, total) => {
   };
 };
 
+/**
+ * Return the validated canonical public application URL.
+ *
+ * SEC-107 URL-trust correction: externally visible URLs (payment redirects,
+ * QR labels, asset links) must NOT be constructed from client-controllable
+ * headers such as `x-forwarded-host`/`x-forwarded-proto` or the `Host` header.
+ * They are derived from the single configured canonical origin `APP_URL`.
+ *
+ * Fails closed (throws) when APP_URL is missing or unsafe, so a missing or
+ * misconfigured canonical origin can never silently degrade into
+ * header-derived, attacker-influenceable URLs.
+ *
+ * Rejects:
+ *  - missing APP_URL
+ *  - malformed URL
+ *  - non-http(s) schemes
+ *  - embedded credentials (userinfo)
+ *  - any path / query / fragment (must be a bare origin)
+ *
+ * @returns {string} the canonical origin, e.g. "https://atiman-api.onrender.com"
+ */
+const getPublicBaseUrl = () => {
+  const raw = process.env.APP_URL;
+  if (!raw) {
+    throw new Error('APP_URL (canonical public application URL) is not configured');
+  }
+
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error(`APP_URL is malformed: ${raw}`);
+  }
+
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    throw new Error(`APP_URL uses an unsupported scheme: ${url.protocol}`);
+  }
+  if (url.username || url.password) {
+    throw new Error('APP_URL must not contain credentials');
+  }
+  if (url.pathname !== '/' || url.search || url.hash) {
+    throw new Error('APP_URL must be an origin only (no path, query, or fragment)');
+  }
+
+  return url.origin;
+};
+
 module.exports = {
   hashPassword,
   comparePassword,
@@ -379,5 +426,6 @@ module.exports = {
   REDACTED,
   safeJsonParse,
   isValidEmail,
-  getPaginationMeta
+  getPaginationMeta,
+  getPublicBaseUrl
 };

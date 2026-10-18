@@ -4,6 +4,7 @@
  */
 
 const paymentService = require('../services/payment.service');
+const { getPublicBaseUrl } = require('../utils/helpers');
 
 class PaymentController {
   /**
@@ -30,9 +31,7 @@ class PaymentController {
       }
       
       // Build return URLs
-      const protocol = req.headers['x-forwarded-proto'] || req.protocol;
-      const host = req.headers['x-forwarded-host'] || req.headers.host;
-      const baseUrl = `${protocol}://${host}`;
+      const baseUrl = getPublicBaseUrl();
       
       const successUrl = `${baseUrl}/mobile/admin/subscription?payment=success`;
       const cancelUrl = `${baseUrl}/mobile/admin/subscription?payment=cancelled`;
@@ -84,9 +83,7 @@ class PaymentController {
       }
       
       // Build return URLs
-      const protocol = req.headers['x-forwarded-proto'] || req.protocol;
-      const host = req.headers['x-forwarded-host'] || req.headers.host;
-      const baseUrl = `${protocol}://${host}`;
+      const baseUrl = getPublicBaseUrl();
       
       const successUrl = `${baseUrl}/mobile/admin/subscription?payment=seats_success`;
       const cancelUrl = `${baseUrl}/mobile/admin/subscription?payment=cancelled`;
@@ -193,9 +190,7 @@ class PaymentController {
         return res.redirect('/login');
       }
       
-      const protocol = req.headers['x-forwarded-proto'] || req.protocol;
-      const host = req.headers['x-forwarded-host'] || req.headers.host;
-      const baseUrl = `${protocol}://${host}`;
+      const baseUrl = getPublicBaseUrl();
       
       const successUrl = `${baseUrl}/mobile/admin/subscription?payment=success`;
       const cancelUrl = `${baseUrl}/mobile/admin/subscription?payment=cancelled`;
