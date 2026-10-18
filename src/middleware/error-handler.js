@@ -12,10 +12,11 @@ const errorHandler = (err, req, res, next) => {
   // value. The logged form keeps every diagnostic field (name, message, code,
   // stack, driver metadata) and withholds only credential-shaped substrings.
   //
-  // The response body below is deliberately NOT changed: altering `message`
-  // would change the error contract of every route in the application, which is
-  // outside this remediation's bounded scope. That residual channel is recorded
-  // as an open finding rather than silently changed.
+  // Both the log and the response body can carry a driver-echoed credential
+  // (`pg` reports a failed cast as `invalid input syntax ... "<the value>"`).
+  // The log is redacted here; the response `message` is redacted below so the
+  // same value cannot leave through the JSON/HTML error body. Status codes,
+  // the envelope shape, and every non-credential message are unchanged.
   console.error('Error:', redactCredentialText(util.inspect(err)));
 
   // Default error
@@ -43,16 +44,18 @@ const errorHandler = (err, req, res, next) => {
                        req.path.startsWith('/api/') || 
                        acceptHeader.includes('application/json');
 
+  const safeMessage = redactCredentialText(message);
+
   if (isApiRequest) {
     res.status(statusCode).json({
       success: false,
-      message,
-      ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+      message: safeMessage,
+      ...(process.env.NODE_ENV === 'development' && { stack: redactCredentialText(err.stack) })
     });
   } else {
     res.status(statusCode).render('error', {
       title: 'Error',
-      message,
+      message: safeMessage,
       statusCode,
       user: req.user
     });
