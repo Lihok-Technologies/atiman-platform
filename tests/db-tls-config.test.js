@@ -60,6 +60,13 @@ describe('resolvePgSsl — shared PostgreSQL TLS policy', () => {
     assert.deepStrictEqual(resolvePgSsl(), { rejectUnauthorized: true });
   });
 
+  it('PGSSLMODE=verify-full forces verification even when DB_SSL_REJECT_UNAUTHORIZED=false', () => {
+    setEnv('DB_SSL', 'true');
+    setEnv('DB_SSL_REJECT_UNAUTHORIZED', 'false');
+    setEnv('PGSSLMODE', 'verify-full');
+    assert.deepStrictEqual(resolvePgSsl(), { rejectUnauthorized: true });
+  });
+
   it('PGSSLMODE=require enables TLS (verification per DB_SSL_REJECT_UNAUTHORIZED)', () => {
     setEnv('DB_SSL', undefined);
     setEnv('PGSSLMODE', 'require');

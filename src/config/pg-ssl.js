@@ -6,13 +6,14 @@
  * Every `pg` connection path must apply this SAME policy so no path can
  * silently fall back to unverified or disabled TLS.
  *
- * TLS is enabled by `DB_SSL=true` or by any libpq SSL mode that implies
- * encryption (`prefer`, `require`, `verify-ca`, `verify-full`). The stricter
- * modes must never silently downgrade to plaintext:
+ * Precedence (strictest first):
  *   - `verify-ca` / `verify-full` explicitly request certificate verification,
- *     so they force `rejectUnauthorized: true`.
- *   - `require` / `prefer` encrypt without forcing verification; verification is
- *     then controlled by `DB_SSL_REJECT_UNAUTHORIZED` (default true).
+ *     so they force `rejectUnauthorized: true` and take precedence over a
+ *     permissive `DB_SSL_REJECT_UNAUTHORIZED=false`.
+ *   - `DB_SSL=true` enables TLS; verification is controlled by
+ *     `DB_SSL_REJECT_UNAUTHORIZED` (default true).
+ *   - `require` / `prefer` enable TLS (verification per `DB_SSL_REJECT_UNAUTHORIZED`).
+ *   - otherwise TLS is disabled.
  *
  * Returns:
  *   - `{ rejectUnauthorized: <bool> }` when TLS is enabled, or
@@ -21,11 +22,11 @@
 const resolvePgSsl = () => {
   const mode = process.env.PGSSLMODE;
 
-  if (process.env.DB_SSL === 'true') {
-    return { rejectUnauthorized: process.env.DB_SSL_REJECT_UNAUTHORIZED !== 'false' };
-  }
   if (mode === 'verify-ca' || mode === 'verify-full') {
     return { rejectUnauthorized: true };
+  }
+  if (process.env.DB_SSL === 'true') {
+    return { rejectUnauthorized: process.env.DB_SSL_REJECT_UNAUTHORIZED !== 'false' };
   }
   if (mode === 'require' || mode === 'prefer') {
     return { rejectUnauthorized: process.env.DB_SSL_REJECT_UNAUTHORIZED !== 'false' };
