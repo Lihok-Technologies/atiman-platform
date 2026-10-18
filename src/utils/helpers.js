@@ -399,6 +399,9 @@ const getPublicBaseUrl = () => {
   if (url.protocol !== 'https:' && url.protocol !== 'http:') {
     throw new Error(`APP_URL uses an unsupported scheme: ${url.protocol}`);
   }
+  if (process.env.NODE_ENV === 'production' && url.protocol !== 'https:') {
+    throw new Error('APP_URL must use HTTPS in production');
+  }
   if (url.username || url.password) {
     throw new Error('APP_URL must not contain credentials');
   }

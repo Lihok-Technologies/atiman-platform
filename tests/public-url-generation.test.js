@@ -56,6 +56,39 @@ describe('getPublicBaseUrl — canonical URL validation', () => {
     setAppUrl('https://app.example.com/#frag');
     assert.throws(() => getPublicBaseUrl(), /origin only/);
   });
+
+  it('accepts HTTPS in production', () => {
+    const prev = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      setAppUrl('https://atiman-api.onrender.com');
+      assert.strictEqual(getPublicBaseUrl(), 'https://atiman-api.onrender.com');
+    } finally {
+      process.env.NODE_ENV = prev;
+    }
+  });
+
+  it('rejects HTTP in production', () => {
+    const prev = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      setAppUrl('http://atiman-api.onrender.com');
+      assert.throws(() => getPublicBaseUrl(), /HTTPS in production/);
+    } finally {
+      process.env.NODE_ENV = prev;
+    }
+  });
+
+  it('accepts HTTP in development', () => {
+    const prev = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'development';
+    try {
+      setAppUrl('http://localhost:3000');
+      assert.strictEqual(getPublicBaseUrl(), 'http://localhost:3000');
+    } finally {
+      process.env.NODE_ENV = prev;
+    }
+  });
 });
 
 describe('controllers ignore client-controllable headers', () => {

@@ -21,6 +21,13 @@ Status: documentation-only. Labels: **VERIFIED** (repository/CI evidence observe
 | Independent VUDA | per-PR **PASS** + final-release **PASS** |
 | Dependency audit | `npm audit` and `npm audit --omit=dev` → **0 vulnerabilities** |
 
+### Production APP_URL prerequisite (REQUIRED)
+
+`APP_URL` **must** be configured to the verified canonical **HTTPS** application origin before
+production deployment — the approved example is `https://atiman-api.onrender.com`. `getPublicBaseUrl()`
+rejects an `http://` `APP_URL` when `NODE_ENV=production`. Local development may use HTTP (for example
+`http://localhost:3000`).
+
 ### Authoritative dependency inventory (VERIFIED from PR #120)
 
 | Package | Before | After | Notes |
