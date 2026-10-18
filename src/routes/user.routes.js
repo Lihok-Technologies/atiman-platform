@@ -10,6 +10,32 @@ const { authenticate, requireAdmin, requireSupervisor } = require('../middleware
 const { requirePermission, canCreateUser, canManageUser, getUserPermissions } = require('../middleware/rbac');
 const { validateAvailableSeats, validateReactivation, checkSeatUsage } = require('../middleware/seat-validation');
 const { getMyCapabilities } = require('../controllers/capability.controller');
+const { sanitizeUser, redactSensitiveFields } = require('../utils/helpers');
+
+/**
+ * ATM-001-SEC-B3B defence in depth.
+ *
+ * Every JSON response this router produces passes through `redactSensitiveFields`
+ * before serialisation, so credential material cannot leave through a handler
+ * that forgets to sanitise explicitly - including the JSON error paths. The
+ * explicit `sanitizeUser(...)` calls below remain the primary, reviewable
+ * protection; this guard is the backstop.
+ *
+ * The primary defect this closes: `GET /api/users/:id` returned the raw
+ * `SELECT *` row, so every response carried the target's bcrypt `password_hash`.
+ * The same was true of the user list and the facility/operator listing, and of
+ * the create/update responses, all of which return a `User.findById`-shaped row.
+ *
+ * Deliberately NOT changed here: the authorization of these routes (the
+ * `canManageUser` guard admits an operator for any record in any tenant) belongs
+ * to the ATM-001-SEC-LEGACY-01 single-user lane (#85 `fc9eb298` / #102
+ * `749043b`) and is not duplicated, to avoid re-forking the same anchor.
+ */
+router.use((req, res, next) => {
+  const sendJson = res.json.bind(res);
+  res.json = (body) => sendJson(redactSensitiveFields(body));
+  next();
+});
 
 router.use(authenticate);
 
@@ -58,7 +84,7 @@ router.get('/', requirePermission('USERS', 'VIEW'), async (req, res, next) => {
     
     res.json({
       success: true,
-      data: { users }
+      data: { users: redactSensitiveFields(users) }
     });
   } catch (error) {
     next(error);
@@ -91,7 +117,7 @@ router.get('/facility/operators', requireSupervisor, async (req, res, next) => {
     
     res.json({
       success: true,
-      data: { users: operators }
+      data: { users: redactSensitiveFields(operators) }
     });
   } catch (error) {
     next(error);
@@ -100,6 +126,11 @@ router.get('/facility/operators', requireSupervisor, async (req, res, next) => {
 
 /**
  * Get user by ID - users can view their own, admins/supervisors can view users in their facility
+ *
+ * ATM-001-SEC-B3B: the response is projected through `sanitizeUser` so the
+ * `SELECT *` row's `password_hash` is not returned. The route's authorization
+ * (the `canManageUser` guard) is unchanged and is owned by the
+ * ATM-001-SEC-LEGACY-01 lane.
  */
 router.get('/:id', canManageUser, async (req, res, next) => {
   try {
@@ -116,7 +147,7 @@ router.get('/:id', canManageUser, async (req, res, next) => {
     
     res.json({
       success: true,
-      data: { user }
+      data: { user: sanitizeUser(user) }
     });
   } catch (error) {
     next(error);
@@ -179,7 +210,7 @@ router.post('/', requirePermission('USERS', 'CREATE'), canCreateUser, validateAv
     res.status(201).json({
       success: true,
       message: 'User created successfully',
-      data: { user }
+      data: { user: sanitizeUser(user) }
     });
   } catch (error) {
     next(error);
@@ -193,7 +224,7 @@ router.post('/', requirePermission('USERS', 'CREATE'), canCreateUser, validateAv
  */
 router.put('/:id', canManageUser, async (req, res, next) => {
   try {
-    const { username, email, full_name, role, facility_id, is_active, password, is_organization_admin } = req.body;
+    const { username, email, full_name, role, facility_id, is_active, password, is_organization_admin, status } = req.body;
     const id = parseInt(req.params.id);
     const currentUserId = req.user.id;
     const currentUserRole = req.user.role;
@@ -309,7 +340,7 @@ router.put('/:id', canManageUser, async (req, res, next) => {
     res.json({
       success: true,
       message: 'User updated successfully',
-      data: { user }
+      data: { user: sanitizeUser(user) }
     });
   } catch (error) {
     next(error);
