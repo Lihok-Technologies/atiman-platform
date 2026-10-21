@@ -3,8 +3,8 @@
 **Document ID:** ATM-001-KF-AR
 **Mission:** ATIMAN-KF-01/02 — Knowledge Foundation Closure and Engineering Evidence Qualification
 **Status:** Verified acceptance register. **Records status only; authorises no implementation, no publication and no deployment.**
-**Register revision:** 1.1 — dated reconciliation against current `main` (`bfa18c7ffa4c7f46ffa1bfd31447f0f9360b254e`, merge of PR #80 / ATM-001-KF-06). Revision 1.0 was verified against `988fbb99f31737dbc8f6050511964091e7962ce0` (merge of PR #78).
-**Repository baseline (current):** `origin/main` = `bfa18c7ffa4c7f46ffa1bfd31447f0f9360b254e` (merge of PR #80, KF-06)
+**Register revision:** 1.2 — dated KF-FINAL workstream reconciliation (§0.2) against `main` = `f156aa4479efe783eefd4f13fd62171647f83b7f`. Revision 1.1 reconciled against `bfa18c7ffa4c7f46ffa1bfd31447f0f9360b254e` (merge of PR #80 / ATM-001-KF-06). Revision 1.0 was verified against `988fbb99f31737dbc8f6050511964091e7962ce0` (merge of PR #78).
+**Repository baseline (current):** `origin/main` = `f156aa4479efe783eefd4f13fd62171647f83b7f` (merge of PR #79, KF-01/02 records + acceptance register)
 **Originating baseline (revision 1.0):** `988fbb99f31737dbc8f6050511964091e7962ce0` (merge of PR #78)
 **Register date:** 2026-10-10
 
@@ -54,8 +54,8 @@ changes no capability, no bundle, no route guard, no migration and no schema.
 
 **Boundary.** The KF-06 review verified *one milestone* at integration level. It does **not** satisfy
 requirement 16 (independent acceptance), which requires an independent review mission over ATM-001 as a
-whole **and** production acceptance. Requirement 16 remains **PENDING**. The review's report is currently
-an external mission record, **not yet a repository artifact** (see KF-01 §18.2).
+whole **and** production acceptance. Requirement 16 remains **PENDING**. The review's report is now
+committed in this repository as `ATM-001-KF-06-VUDA-Independent-Verification.md` (see §0.2).
 
 **Evidence base — revision 1.0 (`988fbb99…`, PR #78):**
 
@@ -77,6 +77,31 @@ sanctioned integration **915/915** (26 suites), `npm test` **162/162**, independ
 > 14, 15 and 16 are re-examined but **not** upgraded, because KF-06 supplies no new implementation
 > evidence for operational resolution, historical version attribution, operational consumption, or
 > whole-ATM-001 independent acceptance.
+
+### 0.2 ATM-001-KF-FINAL workstream reconciliation (2026-10-10, revision 1.2)
+
+The KF-FINAL mission ran the remaining Knowledge Foundation workstreams against baseline
+`f156aa4479efe783eefd4f13fd62171647f83b7f`. **No requirement status changes in this revision.** The
+register distinguishes four levels — *implementation complete*, *integration tested*, *independently
+accepted*, *production verified* — and the workstreams below reach only the first two, at most, and none
+is merged.
+
+| Workstream | Deliverable | Level reached | Requirement effect |
+|---|---|---|---|
+| **KF-03** | `ATM-001-KF-03-Engineering-Evidence-Adjudication.md` — adjudicates the Knife Gate Valve pilot | reviewed documentation | **No change.** Pilot evidence remains `NO_ADMISSIBLE_ENGINEERING_EVIDENCE`; G1 remains the live gate |
+| **KF-04A** | PR #81 — read-only resolution of immutable **published** versions (fail-closed, tenant-scoped, no implicit "latest") | **implementation complete + integration tested**; **not merged**, **not independently accepted** | **No change** (G-13/G-15 stay PARTIAL until merged and independently verified) |
+| **KF-04B** | PR #82 — historical version attribution **design and approval request**; migration `024` proposed but **not written, not applied** | design only; **blocked at the architectural approval gate** (Q-1…Q-5) | **No change** (G-14 stays PARTIAL) |
+| **KF-04C** | not started | — | **No change**; blocked behind KF-04B |
+| **Record accuracy** | closure-ledger addendum (F-4), KF-06 addendum (R-5, F-3 relation), KF-06 VUDA report committed | reviewed documentation | **No change**; F-3 (parallel-execution nondeterminism) remains **OPEN** and would need a bounded engineering change |
+
+**Independent acceptance (requirement 16, G-16) remains PENDING.** The KF-FINAL workstreams were **not**
+independently reviewed: the executor that produced PR #81/#82/#83 cannot certify its own work, and no
+separate independent review mission has been commissioned for them. No independent acceptance is claimed.
+**Production acceptance remains NOT claimed**; `PRODUCTION_STATUS_UNVERIFIED` is unchanged.
+
+**Evidence base — revision 1.2 (KF-04A candidate, unmerged):** focused suite **13/13**; sanctioned
+integration **928/928** (27 suites); `npm test` **165/165**. These are candidate-branch figures and are
+recorded as **not merged** evidence.
 
 ---
 

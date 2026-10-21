@@ -335,3 +335,41 @@ The ledger document itself authorises no implementation, creates no milestone, a
 decision, and alters no schema, code or data. The deferrals recorded in §3 are **OWNER decisions
 recorded here**; the completion statement in §9 records the outcome of the OWNER's V1 closure
 adjudication against the evidence assembled in this ledger.
+
+---
+
+## 11. Dated addendum — statement reconciliation (2026-10-10, baseline `f156aa44`)
+
+**This addendum is appended, not substituted.** §9 remains the OWNER's historical completion record at
+its own baseline `922a0405…` (migration 021). This addendum records the statements in this ledger that
+later, separately authorised missions have rendered **stale**, so the ledger can be read truthfully
+against the current revision. It was recommended as finding **F-4** by
+`ATM-001-KF-01-Post-Merge-Verification-and-Closure-Reconciliation.md` §13.3 and is delivered here.
+
+| # | Ledger statement | Current verified truth at `f156aa44…` |
+|---|---|---|
+| **S-1** | Migration endpoint `021_ai_assistance_disclosure.sql` (§9 and header) | Endpoint is **`023_asset_observations.sql`** (chain 001–023, forward-only). Migrations `022` (capability grants) and `023` (asset observations) were added by later, separately authorised missions |
+| **S-2** | Accepted production revision `922a0405…` (§9) | That revision is no longer the tip of `main`, and the **deployed revision remains unidentifiable** — `PRODUCTION_STATUS_UNVERIFIED` at the current revision |
+| **S-3** | §6 gate totals: "sanctioned native PostgreSQL integration 680/680 · `npm test` 138/138" | Superseded. At the KF-06 revision: **915/915** and **162/162**. At the current revision (KF-04A candidate not merged): **928/928** and **165/165** |
+| **S-4** | §6 "13 immutability guards" | **14** immutability triggers at this revision (adds `trg_user_capabilities_immutable`, migration 022) |
+| **S-5** | §2 row 3 (M3 governed provenance authoring) records completion with no authorization surface | The provenance **mutation authority** changed twice (ATM-001-K3, then K3-G2) and the **global-write MAJOR-1 defect was repaired** (K3-R1). M3's *completion* stands; its description no longer matches the current authorization mapping |
+| **S-6** | §4c: "G1 trigger has **not fired** — 0 authored definitions"; "G2 trigger has not fired" | Still true as recorded about the corpus, **but** the KF-02 and KF-03 evidence work establishes that **G1 is now the next live gate** for the Knife Gate Valve pilot (the only candidate sources are rights-unresolved OEM manuals and licensed standards). G2 is engaged by any type-specific evidenced safety/applicability claim. Neither trigger has been *pulled*; both are now **live** |
+
+**Additional reconciliations.**
+
+- **`trg_knowledge_source_versions_immutable` / KF-06 residual R-5.** The KF-06 record describes the
+  `fk_knowledge_template_evidence_source_version` `ON DELETE CASCADE` as latent; a `BEFORE DELETE`
+  trigger (`immutable_source_version_check`) actually raises SQLSTATE `23503` before the cascade can run.
+  See the dated addendum in `ATM-001-KF-06-Knowledge-Evidence-Deletion-Integrity.md`.
+- **F-3 (parallel-execution nondeterminism) remains OPEN.** It was reproduced independently during
+  KF-06 verification as a deadlock between `knowledge_pack_membership_guard()` (`RowShareLock` on
+  `knowledge_pack_versions`) and a concurrent `AccessExclusiveLock` on
+  `knowledge_pack_version_task_template_versions` — neither relation belongs to KF-06. It is **not**
+  fixed by any record in this addendum and would require a bounded CI-determinism engineering change.
+- **KF-06 independent verification.** The independent KF-06 verification report is committed to this
+  repository as `ATM-001-KF-06-VUDA-Independent-Verification.md`, so the evidence cited by the
+  acceptance register is traceable from the repository alone.
+
+**Boundary.** This addendum changes no completion judgement, no deferral, no architecture decision, no
+code, schema, migration or data. The V1 completion statement in §9 remains accurate for its baseline;
+this addendum makes the **current** state readable without rewriting history.
