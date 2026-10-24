@@ -1,14 +1,14 @@
-# Atiman / ODM-CMMS — Product Roadmap (proposed)
+# ODM-CMMS — Repository Roadmap (proposed; Atiman identity unverified)
 
 **Created:** 2026-10-25 · **Status:** DRAFT / documentation-only / not merged · **Source:** atiman-platform repository. This is a new roadmap index because no roadmap was found at the conventional paths checked; it does **not** establish that no other roadmap exists in other paths or branches. Reconcile any later-discovered authoritative plan rather than superseding it.
 
 ## Purpose and existing boundaries
-Maintenance/CMMS platform; reconcile repo naming with the product portfolio before relabeling.
+This repository explicitly identifies itself as **ODM-CMMS**, an Operator-Driven Maintenance CMMS, not a verified canonical Atiman product repository. Its runtime uses Node.js, Express and PostgreSQL; MySQL is restricted to one-off import utilities. Preserve the PostgreSQL-only runtime and migration safeguards. **Do not conflate this repository with Atiman until an OWNER-authenticated mapping exists.**
 
 ## Milestones (sequencing proposals, not release commitments)
 | Phase | Work | Gate |
 |---|---|---|
-| P0 — Baseline | Verify active ODM-CMMS baseline, SAP-PM/asset workflows and customer data contracts. | Verify repository, existing decisions and OWNER/product authority |
+| P0 — Baseline | Verify ODM-CMMS accepted baseline, PostgreSQL migrations, knowledge-governance admission, ISO 14224 safety controls and customer data contracts. SAP-PM integration is a potential dependency, not a verified existing feature. | Verify repository, existing decisions and OWNER/product authority |
 | P1 — Design | Plan asset inspections, maintenance execution, PM compliance, evidence and tenant-ready modules only after scope validation. | Scope, security/privacy, cost, LCQE/independent VUDA where applicable |
 | P2 — Pilot | Bounded non-production demonstration after explicit approval | Independent acceptance and rollback evidence |
 | P3 — Release | Production rollout only after separate release authorization | Product-specific publication/deployment gate |
